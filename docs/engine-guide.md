@@ -1,0 +1,229 @@
+# OMR engine guide
+
+This guide covers the production engine built on top of OMRChecker: confidence
+and review, sheet registration, barcode/QR/OCR/ICR zones, the library and batch
+APIs, the REST service and GUI, automatic template generation, model training,
+benchmarking, the in-browser engine, client libraries and Windows packaging.
+
+The classic CLI (`python main.py -i <dir>`) still works as before. It now also
+writes `Manual/NeedsReview.csv`.
+
+## How "100% accuracy" is reached
+
+No reader is right on every sheet. Erasures, half-filled bubbles, crossed-out
+answers and damaged sheets will always exist. The engine is built so that:
+
+1. every value it reports is either **confidently right** or **sent to review**;
+2. the review rate stays low enough that people can clear the queue quickly.
+
+Every field and zone gets a `confidence` in [0, 1], `flags` and `needs_review`.
+A sheet's `status` is `ok`, `needs_review` or `error`. Measure both numbers
+with the benchmark (`accuracy on auto-accepted values` and `review rate`). Then
+tune `review_params` or train a model until auto-accepted accuracy is 100% on
+your labelled data.
+
+### Field flags
+
+| flag | meaning | sent to review by default |
+|---|---|---|
+| `multi_marked` | more than one bubble marked in a single-answer field | yes |
+| `empty` | nothing marked | no (blank answers are normal) |
+| `ambiguous_threshold` | the strip has no clear dark/light gap and can't use the page-wide threshold | yes |
+| `low_confidence` | the weakest bubble sits close to the decision threshold | yes |
+| `weak_mark` | a bubble read as marked has little ink inside its circle (partial fill, tick, misregistration) | yes |
+| `possible_missed_mark` | an unmarked bubble has a lot of ink inside its circle | yes |
+| `model_disagrees` | the learned classifier and the threshold reader disagree | yes |
+
+Zones add `not_found`, `multiple_symbols`, `pattern_mismatch`,
+`engine_unavailable`, `no_icr_model` and `read_error`.
+
+Tune these in `config.json`:
+
+```json
+"review_params": {
+  "confidence_margin": 20,
+  "min_confidence": 0.35,
+  "min_marked_fill_ratio": 0.25,
+  "max_unmarked_fill_ratio": 0.6,
+  "review_flags": ["multi_marked", "ambiguous_threshold", "low_confidence",
+                   "weak_mark", "possible_missed_mark", "model_disagrees"]
+}
+```
+
+## Designing sheets for machine reading
+
+The engine works with existing sheets, but these choices make the biggest
+difference to accuracy and review rate:
+
+- **Timing tracks.** Print a row of solid rectangles down one side and along
+  the top or bottom, with one mark per row band. Make the layout asymmetric
+  (for example left plus top) so upside-down sheets are detected.
+- **Corner markers** as a fallback for scanners that crop edges.
+- **Bubbles** at least 3.5 mm in diameter, with light outlines and light
+  letters inside. Dark printed letters reduce the contrast between filled and
+  empty bubbles.
+- **Barcodes.** Code 128 needs a narrow bar of at least 0.25 mm and a quiet
+  zone of 10 narrow bars. Scan at 200–300 DPI. A QR code in one corner can
+  also carry the template id.
+- **Handwriting.** Use one box per character (`characterBoxes`) with
+  light-coloured box lines.
+
+## Templates: new options
+
+`template.json` additions:
+
+```json
+{
+  "preProcessors": [
+    {
+      "name": "TimingMarkAlignment",
+      "options": {
+        "tracks": {
+          "left": {"marks": [[50, 200], [50, 255], [50, 310]]},
+          "top":  {"marks": [[200, 50], [280, 50], [360, 50]]}
+        },
+        "markDimensions": [24, 12],
+        "maxResidual": 3.0,
+        "nonRigid": false,
+        "detectOrientation": true
+      }
+    },
+    {"name": "EccAlignment", "options": {"reference": "blank.png", "motion": "affine"}}
+  ],
+  "zones": {
+    "sheet_id":  {"type": "barcode", "origin": [700, 110], "dimensions": [460, 120],
+                  "options": {"formats": ["Code128"], "pattern": "SHEET-\\d{6}"}},
+    "qr":        {"type": "qrcode",  "origin": [560, 90],  "dimensions": [130, 130]},
+    "exam_code": {"type": "ocr",     "origin": [140, 120], "dimensions": [380, 60]},
+    "candidate": {"type": "icr",     "origin": [140, 230], "dimensions": [360, 60],
+                  "options": {"characterBoxes": 6, "whitelist": "0123456789"}}
+  }
+}
+```
+
+**TimingMarkAlignment.** Mark centres are given in template (page) pixels. The
+preprocessor works on the original image resolution, tries all four
+orientations, fits a RANSAC homography to the matched marks and rejects the
+sheet if fewer than `minMatchedMarks` marks match or the mean residual exceeds
+`maxResidual`. It then warps straight into template coordinates.
+`nonRigid: true` adds a thin-plate-spline correction for curled paper and
+phone lens distortion.
+
+**EccAlignment.** Dense refinement against an image of the blank form. Use it
+after a coarse step.
+
+**Zones.** Barcode and QR zones use ZXing-C++ and accept every symbology it
+supports:
+- linear codes: Code 128, Code 39 and 93, Codabar, EAN-8 and EAN-13, UPC-A and UPC-E, ITF, DataBar
+- 2D codes: PDF417, QR (all versions), Micro QR, rMQR, Data Matrix, Aztec and MaxiCode
+
+Restrict a zone with `formats`. OCR uses Tesseract's LSTM engine, in-process
+through `tesserocr` when it is installed, which takes about 10 ms per zone.
+ICR reads boxed characters with a trained crop classifier. Until a model is
+configured, ICR results are always sent to review.
+
+Other `config.json` additions:
+- `alignment_params.block_snap_radius`: snaps each block in x and y onto its printed bubbles; off by default.
+- `ml_params.bubble_model_path` and `ml_params.icr_model_path`: paths to ONNX models.
+
+## Library and batch
+
+```python
+from src.pipeline import OMREngine
+engine = OMREngine("forms/exam/template.json")
+result = engine.scan(gray_image, "sheet-001.jpg")
+result.status, result.responses, result.review
+```
+
+The batch runner uses every core, with one engine per process:
+
+```bash
+python -m src.batch --template forms/exam/template.json --input scans/ --out results/ --workers 8
+```
+
+It writes `results.csv`, which has a `needs_review` column, and
+`results.jsonl`, which has full per-field detail.
+
+On the 4-core development machine, single-threaded reading takes about 65–80 ms
+per sheet, measured on synthetic phone-like sheets at roughly 150 DPI:
+- registration: about 25 ms
+- bubbles: about 15 ms
+- zones: about 20 ms
+
+That gives roughly 8–10 sheets per second per core. An 8-core machine should
+manage several thousand sheets per minute.
+
+## REST API and GUI
+
+```bash
+pip install -r requirements.api.txt
+python -m src.api --host 0.0.0.0 --port 8000 --data-dir ./omr_data --workers 8
+```
+
+Open `http://host:8000/` for the GUI and `/docs` for the OpenAPI reference.
+
+| Area | What you can do |
+|---|---|
+| Templates | upload, validate, edit in the visual editor, auto-generate |
+| Scans | read synchronously; get crops for review |
+| Jobs | run bulk work from uploads or a server folder, with progress, ETA and CSV results |
+| Review | work the review queue; corrections rescore the sheet and are saved as training data |
+
+Set `OMR_API_KEY` to require an `X-API-Key` header. Set `OMR_ALLOWED_DIRS`
+before exposing folder jobs beyond localhost.
+
+## Automatic template generation
+
+Give it about 20 sheets of the same form. A blank one helps. Add a labels CSV
+whose first column is `file_name` and whose other columns are the field labels
+with each sheet's true answers:
+
+```bash
+python -m src.template_gen --images samples_dir --labels labels.csv --out forms/new_exam
+```
+
+Or use **Templates → Auto-generate** in the GUI. The generator:
+1. registers the sheets;
+2. detects bubble grids, timing tracks, barcodes, QR codes and character boxes;
+3. assigns field labels and values by matching fill patterns against your labels;
+4. re-reads the input sheets to check itself.
+
+Anything below 99% agreement, and every zone, is listed for you to verify. The
+editor highlights each item; fix it and save.
+
+## Training models (when you have data)
+
+```bash
+pip install -r requirements.ml.txt
+
+# 1. Build a dataset from labelled scans (or from review corrections in omr_data/training)
+python -m src.ml.dataset scans --template T.json --images scans/ --truth truth.csv --out datasets/bubbles
+
+# 2. Train, calibrate and export to ONNX
+python -m src.ml.train --data datasets/bubbles --out models/bubble_model.onnx --kind bubble
+
+# 3. Measure before switching it on
+python -m src.benchmark --template T.json --images holdout/ --truth holdout.csv --bubble-model models/bubble_model.onnx
+```
+
+Then set `ml_params.bubble_model_path` in `config.json`. With a model
+configured, the model decides and the threshold reader acts as a cross-check:
+where they disagree, the field goes to review. ICR models are trained the same
+way with `--kind icr`.
+
+## Benchmark
+
+```bash
+python -m src.benchmark --template T.json --images dir --truth truth.csv --workers 8 --report report.json
+python -m src.benchmark --synthetic 500 --preset phone --zones
+```
+
+Reported metrics:
+- per-bubble precision and recall
+- field and sheet accuracy
+- review rate
+- accuracy on auto-accepted values
+- silent errors
+- registration failures
+- per-stage p50 and p95 latency and throughput
+- the worst errors
