@@ -11,6 +11,7 @@ OpenAPI docs are served at /docs.
 import csv
 import io
 import json
+import mimetypes
 import secrets
 import shutil
 import threading
@@ -34,7 +35,14 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -56,15 +64,14 @@ from src.api.storage import (
     safe_filename,
     write_json_atomic,
 )
-from src.api.templates import (
-    EnginePool,
-    TemplateError,
-    TemplateStore,
-    draw_layout,
-)
+from src.api.templates import EnginePool, TemplateError, TemplateStore, draw_layout
 from src.api.worker import SAVE_ALL, SAVE_NONE, SAVE_REVIEW, scan_and_store
 
 STATIC_DIR = Path(__file__).parent / "static"
+# Older Pythons (3.8, the Windows 7 build) do not know these types
+mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("text/javascript", ".mjs")
+BROWSER_DIR = Path(__file__).resolve().parents[2] / "web" / "omr-browser"
 API_VERSION = "1.0"
 
 
@@ -141,6 +148,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         lifespan=lifespan,
     )
     app.state.ctx = ctx
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["Content-Disposition"],
+        )
 
     def require_api_key(request: Request):
         expected = settings.api_key
@@ -314,6 +329,19 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     @app.get("/templates/{template_id}", tags=["templates"], dependencies=secured)
     def get_template(template_id: str):
         return template_detail(template_id)
+
+    @app.get(
+        "/templates/{template_id}/files/{file_path:path}",
+        tags=["templates"],
+        dependencies=secured,
+    )
+    def get_template_file(template_id: str, file_path: str):
+        """A file stored with the template, such as a CropOnMarkers marker image."""
+        directory = require_template(template_id).resolve()
+        path = (directory / file_path).resolve()
+        if directory not in path.parents or not path.is_file():
+            raise HTTPException(404, f"File '{file_path}' not found")
+        return FileResponse(path)
 
     @app.put("/templates/{template_id}", tags=["templates"], dependencies=secured)
     def put_template(template_id: str, body: Dict[str, Any] = Body(...)):
@@ -866,6 +894,19 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     # ------------------------------------------------------------------
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    if BROWSER_DIR.exists():
+
+        @app.get("/browser", include_in_schema=False)
+        @app.get("/browser/", include_in_schema=False)
+        def browser_demo():
+            return RedirectResponse("/browser/demo.html")
+
+        # In-browser engine: phones read sheets locally with a template from this API
+        app.mount(
+            "/browser",
+            StaticFiles(directory=BROWSER_DIR, html=True),
+            name="browser",
+        )
 
     @app.get("/", include_in_schema=False)
     @app.get("/ui", include_in_schema=False)

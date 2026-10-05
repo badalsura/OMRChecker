@@ -19,3 +19,5 @@ models/
 datasets/
 *.onnx
 omr_data/
+
+web/omr-browser/node_modules/

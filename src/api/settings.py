@@ -30,6 +30,8 @@ class Settings:
     mp_start_method: str = "spawn"
     # Restart jobs that were interrupted by a server restart
     resume_jobs: bool = True
+    # Origins allowed to call the API from a browser (CORS); empty = none
+    cors_origins: List[str] = field(default_factory=list)
 
     @classmethod
     def from_env(cls, data_dir=None, **overrides):
@@ -48,6 +50,11 @@ class Settings:
             allowed_dirs=allowed,
             mp_start_method=os.environ.get("OMR_MP_START", "spawn"),
             resume_jobs=os.environ.get("OMR_RESUME_JOBS", "1") not in ("0", "false"),
+            cors_origins=[
+                o.strip()
+                for o in os.environ.get("OMR_CORS_ORIGINS", "").split(",")
+                if o.strip()
+            ],
         )
         for key, value in overrides.items():
             if value is not None:

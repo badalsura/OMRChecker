@@ -405,3 +405,38 @@ def test_filename_sanitized(tmp_path, spec):
         result = scan_one(client, template_id, image, name="../../etc/passwd.png")
         assert result["file_name"] == "passwd.png"
         assert Path(result["input_path"]).parent.name == result["scan_id"]
+
+
+def test_browser_engine_cors_and_template_files(tmp_path, spec):
+    origin = "https://exams.example.com"
+    with make_client(tmp_path, cors_origins=[origin]) as client:
+        page = client.get("/browser/")
+        assert page.status_code == 200
+        assert "<html" in page.text.lower()
+        assert client.get("/browser/omr.js").status_code == 200
+
+        template_id = upload_template(client, spec)
+        assert (
+            client.get(f"/templates/{template_id}/files/template.json").status_code
+            == 200
+        )
+        assert (
+            client.get(f"/templates/{template_id}/files/../meta.json").status_code
+            == 404
+        )
+        assert (
+            client.get(f"/templates/{template_id}/files/missing.png").status_code == 404
+        )
+
+        preflight = client.options(
+            "/scans",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "x-api-key",
+            },
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == origin
+        other = client.get("/health", headers={"Origin": "https://evil.example"})
+        assert "access-control-allow-origin" not in other.headers
