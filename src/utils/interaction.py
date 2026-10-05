@@ -6,7 +6,23 @@ from screeninfo import get_monitors
 from src.logger import logger
 from src.utils.image import ImageUtils
 
-monitor_window = get_monitors()[0]
+
+
+@dataclass
+class _FallbackMonitor:
+    width: int = 1920
+    height: int = 1080
+
+
+def _get_primary_monitor():
+    # Headless environments (servers, CI, containers) have no display to enumerate
+    try:
+        return get_monitors()[0]
+    except Exception:
+        return _FallbackMonitor()
+
+
+monitor_window = _get_primary_monitor()
 
 
 @dataclass

@@ -139,17 +139,17 @@
 # ---
 # name: test_run_community_celin_mampilly
   dict({
-    'MobileCamera\\Manual\\ErrorFiles.csv': '''
+    'MobileCamera/Manual/ErrorFiles.csv': '''
       "file_id","input_path","output_path","score","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
   
     ''',
-    'MobileCamera\\Manual\\MultiMarkedFiles.csv': '''
+    'MobileCamera/Manual/MultiMarkedFiles.csv': '''
       "file_id","input_path","output_path","score","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
   
     ''',
-    'MobileCamera\\Results\\Results_05AM.csv': '''
+    'MobileCamera/Results/Results_05AM.csv': '''
       "file_id","input_path","output_path","score","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
-      "sheet1.jpg","samples\community\celin-mampilly\MobileCamera\sheet1.jpg","outputs\community\celin-mampilly\MobileCamera\CheckedOMRs\sheet1.jpg","0","B","","","","","","","","","","","","","","","","","","","D"
+      "sheet1.jpg","samples/community/celin-mampilly/MobileCamera/sheet1.jpg","outputs/community/celin-mampilly/MobileCamera/CheckedOMRs/sheet1.jpg","0","B","","","","","","","","","","","","","","","","","","","D"
   
     ''',
   })
@@ -173,6 +173,15 @@
 # ---
 # name: test_run_sample1
   dict({
+    'Manual/ErrorFiles.csv': '''
+      "file_id","input_path","output_path","score","Roll","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
+      "single_image_error_p2.png","samples/sample1/single_image_error.pdf","outputs/sample1/Manual/ErrorFiles/single_image_error_p2.png","NA","","","","","","","","","","","","","","","","","","","","",""
+  
+    ''',
+    'Manual/MultiMarkedFiles.csv': '''
+      "file_id","input_path","output_path","score","Roll","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
+  
+    ''',
     'MobileCamera/Manual/ErrorFiles.csv': '''
       "file_id","input_path","output_path","score","Roll","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
   
@@ -184,6 +193,11 @@
     'MobileCamera/Results/Results_05AM.csv': '''
       "file_id","input_path","output_path","score","Roll","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
       "sheet1.jpg","samples/sample1/MobileCamera/sheet1.jpg","outputs/sample1/MobileCamera/CheckedOMRs/sheet1.jpg","0","E503110026","B","","D","B","6","11","20","7","16","B","D","C","D","A","D","B","A","C","C","D"
+  
+    ''',
+    'Results/Results_05AM.csv': '''
+      "file_id","input_path","output_path","score","Roll","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15","q16","q17","q18","q19","q20"
+      "single_image_error_p1.png","samples/sample1/single_image_error.pdf","outputs/sample1/CheckedOMRs/single_image_error_p1.png","0","E503110026","B","","D","B","6","11","20","7","16","B","D","C","D","A","D","B","A","C","C","D"
   
     ''',
   })
@@ -202,6 +216,20 @@
       "file_id","input_path","output_path","score","q1","q2","q3","q4","q5"
       "adrian_omr.png","samples/sample2/AdrianSample/adrian_omr.png","outputs/sample2/AdrianSample/CheckedOMRs/adrian_omr.png","0","B","E","A","C","B"
       "adrian_omr_2.png","samples/sample2/AdrianSample/adrian_omr_2.png","outputs/sample2/AdrianSample/CheckedOMRs/adrian_omr_2.png","0","C","E","A","B","B"
+  
+    ''',
+    'Manual/ErrorFiles.csv': '''
+      "file_id","input_path","output_path","score","q1","q2","q3","q4","q5"
+  
+    ''',
+    'Manual/MultiMarkedFiles.csv': '''
+      "file_id","input_path","output_path","score","q1","q2","q3","q4","q5"
+  
+    ''',
+    'Results/Results_05AM.csv': '''
+      "file_id","input_path","output_path","score","q1","q2","q3","q4","q5"
+      "AdrianSample_p1.png","samples/sample2/AdrianSample.pdf","outputs/sample2/CheckedOMRs/AdrianSample_p1.png","0","B","E","A","C","B"
+      "AdrianSample_p2.png","samples/sample2/AdrianSample.pdf","outputs/sample2/CheckedOMRs/AdrianSample_p2.png","0","C","E","A","B","B"
   
     ''',
   })
@@ -283,6 +311,36 @@
       "q11","D","C","Incorrect","-1.0","-2.0"
   
     ''',
+    'Evaluation/multiple-images_p1_evaluation.csv': '''
+      "Question","Marked","Answer(s)","Verdict","Delta","Score"
+      "q1","B","B","Correct","3.0","3.0"
+      "q2","D","D","Correct","3.0","6.0"
+      "q3","C","C","Correct","3.0","9.0"
+      "q4","B","B","Correct","3.0","12.0"
+      "q5","D","D","Correct","3.0","15.0"
+      "q6","C","C","Correct","3.0","18.0"
+      "q7","BC","['B', 'C', 'BC']","Correct-Bc","3.0","21.0"
+      "q8","A","A","Correct","3.0","24.0"
+      "q9","C","C","Correct","3.0","27.0"
+      "q10","D","D","Correct","3.0","30.0"
+      "q11","C","C","Correct","3.0","33.0"
+  
+    ''',
+    'Evaluation/multiple-images_p3_evaluation.csv': '''
+      "Question","Marked","Answer(s)","Verdict","Delta","Score"
+      "q1","A","B","Incorrect","-1.0","-1.0"
+      "q2","","D","Unmarked","0.0","-1.0"
+      "q3","D","C","Incorrect","-1.0","-2.0"
+      "q4","C","B","Incorrect","-1.0","-3.0"
+      "q5","AC","D","Incorrect","-1.0","-4.0"
+      "q6","A","C","Incorrect","-1.0","-5.0"
+      "q7","D","['B', 'C', 'BC']","Incorrect","-1.0","-6.0"
+      "q8","B","A","Incorrect","-1.0","-7.0"
+      "q9","C","C","Correct","3.0","-4.0"
+      "q10","D","D","Correct","3.0","-1.0"
+      "q11","D","C","Incorrect","-1.0","-2.0"
+  
+    ''',
     'Manual/ErrorFiles.csv': '''
       "file_id","input_path","output_path","score","q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11"
   
@@ -296,6 +354,8 @@
       "IMG_20201116_143512.jpg","samples/sample4/IMG_20201116_143512.jpg","outputs/sample4/CheckedOMRs/IMG_20201116_143512.jpg","33.0","B","D","C","B","D","C","BC","A","C","D","C"
       "IMG_20201116_150717658.jpg","samples/sample4/IMG_20201116_150717658.jpg","outputs/sample4/CheckedOMRs/IMG_20201116_150717658.jpg","33.0","B","D","C","B","D","C","BC","A","C","D","C"
       "IMG_20201116_150750830.jpg","samples/sample4/IMG_20201116_150750830.jpg","outputs/sample4/CheckedOMRs/IMG_20201116_150750830.jpg","-2.0","A","","D","C","AC","A","D","B","C","D","D"
+      "multiple-images_p1.png","samples/sample4/multiple-images.pdf","outputs/sample4/CheckedOMRs/multiple-images_p1.png","33.0","B","D","C","B","D","C","BC","A","C","D","C"
+      "multiple-images_p3.png","samples/sample4/multiple-images.pdf","outputs/sample4/CheckedOMRs/multiple-images_p3.png","-2.0","A","","D","C","AC","A","D","B","C","D","D"
   
     ''',
   })
