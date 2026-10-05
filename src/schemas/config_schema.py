@@ -40,6 +40,7 @@ CONFIG_SCHEMA = {
                 "max_steps": {"type": "integer", "minimum": 1, "maximum": 100},
                 "stride": {"type": "integer", "minimum": 1, "maximum": 10},
                 "thickness": {"type": "integer", "minimum": 1, "maximum": 10},
+                "block_snap_radius": {"type": "integer", "minimum": 0, "maximum": 50},
             },
         },
         "review_params": {

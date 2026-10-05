@@ -243,6 +243,7 @@ class FieldBlock:
     def __init__(self, block_name, field_block_object):
         self.name = block_name
         self.shift = 0
+        self.shift_y = 0
         self.setup_field_block(field_block_object)
 
     def setup_field_block(self, field_block_object):

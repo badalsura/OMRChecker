@@ -23,6 +23,9 @@ CONFIG_DEFAULTS = DotMap(
             "max_steps": 20,
             "stride": 1,
             "thickness": 3,
+            # Search radius (px) for snapping each field block onto its printed
+            # bubbles in both directions after registration; 0 disables it
+            "block_snap_radius": 0,
         },
         "review_params": {
             # Intensity distance from the threshold that counts as fully confident

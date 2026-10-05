@@ -205,3 +205,45 @@ def test_marker_quadrilateral_sanity_check():
 
     assert CropOnMarkers.is_plausible_quadrilateral(good, shape)
     assert not CropOnMarkers.is_plausible_quadrilateral(bad, shape)
+
+
+@pytest.mark.parametrize("snap_radius,expect_correct", [(0, False), (20, True)])
+def test_block_snap_recovers_locally_offset_blocks(
+    tmp_path, spec, snap_radius, expect_correct
+):
+    template = spec.to_template(pre_processors=[])
+    # The printed form drifted relative to the template for one block
+    block = template["fieldBlocks"]["MCQ_1"]
+    block["origin"] = [block["origin"][0] + 16, block["origin"][1] - 14]
+    (tmp_path / "config.json").write_text(
+        json.dumps({"alignment_params": {"block_snap_radius": snap_radius}})
+    )
+    engine = make_engine(tmp_path, template)
+    rng = random.Random(9)
+    answers = random_answers(spec, rng)
+    image, _ = render_sheet(spec, answers, rng=rng, mark_style="mixed")
+
+    result = engine.scan(image, "sheet")
+
+    mcq_1 = spec.blocks[1].field_labels
+    errors = {k: v for k, v in field_errors(result, answers).items() if k in mcq_1}
+    assert (errors == {}) == expect_correct
+
+
+def test_crop_page_finds_white_sheet_on_light_background(tmp_path, spec):
+    rng = random.Random(10)
+    answers = random_answers(spec, rng)
+    image, _ = render_sheet(spec, answers, rng=rng)
+    small = cv2.resize(image, (620, 877))
+    # A white sheet on a light desk: the fixed truncation at 200 erases the edge
+    canvas = np.full((1100, 860), 215, np.uint8)
+    canvas[100:977, 120:740] = small
+    template = spec.to_template(
+        pre_processors=[{"name": "CropPage", "options": {"morphKernel": [10, 10]}}]
+    )
+    engine = make_engine(tmp_path, template)
+
+    result = engine.scan(canvas, "light-desk")
+
+    assert result.status != STATUS_ERROR
+    assert field_errors(result, answers) == {}

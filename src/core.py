@@ -204,6 +204,14 @@ class ImageInstanceOps:
                 #   "origin:", field_block.origin,'\n')
             # print("End Alignment")
 
+        snap_radius = config.alignment_params.block_snap_radius
+        for field_block in template.field_blocks:
+            field_block.shift_y = 0
+            if snap_radius:
+                field_block.shift, field_block.shift_y = self.snap_field_block(
+                    img, field_block, snap_radius
+                )
+
         final_align = None
         if config.outputs.show_image_level >= 2:
             initial_align = self.draw_template_layout(img, template, shifted=False)
@@ -228,7 +236,7 @@ class ImageInstanceOps:
                 q_strip_vals = []
                 for pt in field_block_bubbles:
                     # shifted
-                    x, y = (pt.x + field_block.shift, pt.y)
+                    x, y = (pt.x + field_block.shift, pt.y + field_block.shift_y)
                     rect = [y, y + box_h, x, x + box_w]
                     q_strip_vals.append(
                         cv2.mean(img[rect[0] : rect[1], rect[2] : rect[3]])[0]
@@ -305,7 +313,7 @@ class ImageInstanceOps:
                     total_q_box_no += 1
                     x, y, field_value = (
                         bubble.x + field_block.shift,
-                        bubble.y,
+                        bubble.y + field_block.shift_y,
                         bubble.field_value,
                     )
                     bubble_is_marked = per_q_strip_threshold > bubble_mean
@@ -484,6 +492,49 @@ class ImageInstanceOps:
             },
         }
 
+    @staticmethod
+    def snap_field_block(img, field_block, radius):
+        """Find the (dx, dy) within radius that best fits the block's printed bubbles.
+
+        Correlates a mask of the expected bubble outlines and interiors with the
+        darkness of the page around the block. Corrects residual local offsets
+        (template drift, paper curl) that a global page transform leaves behind.
+        """
+        box_w, box_h = field_block.bubble_dimensions
+        block_w, block_h = field_block.dimensions
+        x0, y0 = field_block.origin
+        img_h, img_w = img.shape[:2]
+        left, top = x0 - radius, y0 - radius
+        right, bottom = x0 + block_w + radius, y0 + block_h + radius
+        if left < 0 or top < 0 or right > img_w or bottom > img_h:
+            return field_block.shift, 0
+        region = 255.0 - img[top:bottom, left:right].astype(np.float32)
+
+        mask = np.zeros((int(block_h), int(block_w)), dtype=np.float32)
+        for field_block_bubbles in field_block.traverse_bubbles:
+            for bubble in field_block_bubbles:
+                centre = (
+                    int(bubble.x - x0 + box_w / 2),
+                    int(bubble.y - y0 + box_h / 2),
+                )
+                axes = (max(int(box_w / 2) - 1, 1), max(int(box_h / 2) - 1, 1))
+                cv2.ellipse(mask, centre, axes, 0, 0, 360, 1.0, 2)
+        if (
+            not mask.any()
+            or mask.shape[0] > region.shape[0]
+            or mask.shape[1] > region.shape[1]
+        ):
+            return field_block.shift, 0
+        scores = cv2.matchTemplate(region, mask, cv2.TM_CCOEFF_NORMED)
+        _, best, _, (best_x, best_y) = cv2.minMaxLoc(scores)
+        centre_score = scores[radius, radius]
+        dx, dy = best_x - radius, best_y - radius
+        # Only move when the fit is clearly better than staying put, and never to
+        # the edge of the search window (the true optimum may lie beyond it)
+        if best - centre_score < 0.02 or abs(dx) == radius or abs(dy) == radius:
+            return field_block.shift, 0
+        return dx, dy
+
     def get_model_marked_probs(self, img, template):
         """Probability that each bubble is marked, in template traversal order."""
         if self.bubble_classifier is None:
@@ -493,7 +544,8 @@ class ImageInstanceOps:
             box_w, box_h = field_block.bubble_dimensions
             for field_block_bubbles in field_block.traverse_bubbles:
                 for bubble in field_block_bubbles:
-                    x, y = bubble.x + field_block.shift, bubble.y
+                    x = bubble.x + field_block.shift
+                    y = bubble.y + field_block.shift_y
                     crops.append(img[max(y, 0) : y + box_h, max(x, 0) : x + box_w])
         probabilities = self.bubble_classifier.predict_proba(crops)
         return probabilities[:, self.bubble_classifier.label_index("marked")]
@@ -587,7 +639,14 @@ class ImageInstanceOps:
                 )
             for field_block_bubbles in field_block.traverse_bubbles:
                 for pt in field_block_bubbles:
-                    x, y = (pt.x + field_block.shift, pt.y) if shifted else (pt.x, pt.y)
+                    x, y = (
+                        (
+                            pt.x + field_block.shift,
+                            pt.y + getattr(field_block, "shift_y", 0),
+                        )
+                        if shifted
+                        else (pt.x, pt.y)
+                    )
                     cv2.rectangle(
                         final_align,
                         (int(x + box_w / 10), int(y + box_h / 10)),

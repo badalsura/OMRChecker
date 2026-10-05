@@ -1,6 +1,7 @@
 """
 https://www.pyimagesearch.com/2015/04/06/zero-parameter-automatic-canny-edge-detection-with-python-and-opencv/
 """
+
 import cv2
 import numpy as np
 
@@ -16,6 +17,8 @@ from src.constants.image_processing import (
     MIN_PAGE_AREA_THRESHOLD,
     PAGE_THRESHOLD_PARAMS,
 )
+
+DEFAULT_PROCESSING_AREA = 666 * 820
 from src.logger import logger
 from src.processors.interfaces.ImagePreprocessor import ImagePreprocessor
 from src.utils.image import ImageUtils
@@ -69,6 +72,11 @@ class CropPage(ImagePreprocessor):
         # Resize should be done with another preprocessor is needed
         sheet = self.find_page(image, file_path)
         if len(sheet) == 0:
+            # Fixed thresholds miss white-on-white or dark sheets; retry adaptively
+            sheet = self.find_page_adaptive(image)
+            if len(sheet):
+                logger.info("Page found with adaptive thresholding fallback")
+        if len(sheet) == 0:
             logger.error(
                 f"\tError: Paper boundary not found for: '{file_path}'\nHave you accidentally included CropPage preprocessor?"
             )
@@ -115,8 +123,9 @@ class CropPage(ImagePreprocessor):
         cnts = [cv2.convexHull(c) for c in cnts]
         cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
         sheet = []
+        min_area = self.min_page_area(image)
         for c in cnts:
-            if cv2.contourArea(c) < MIN_PAGE_AREA_THRESHOLD:
+            if cv2.contourArea(c) < min_area:
                 continue
             peri = cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(
@@ -141,3 +150,38 @@ class CropPage(ImagePreprocessor):
                 break
 
         return sheet
+
+    @staticmethod
+    def min_page_area(image):
+        """The page must cover a fixed share of the frame, whatever the resolution.
+
+        MIN_PAGE_AREA_THRESHOLD was tuned for the default 666x820 processing size.
+        """
+        h, w = image.shape[:2]
+        return MIN_PAGE_AREA_THRESHOLD * (h * w) / float(DEFAULT_PROCESSING_AREA)
+
+    def find_page_adaptive(self, image):
+        """Otsu + auto-Canny page search used when the fixed-threshold search fails."""
+        blurred = cv2.GaussianBlur(image, (5, 5), 0)
+        _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, self.morph_kernel)
+        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        candidates = []
+        for edges in (ImageUtils.auto_canny(closed), ImageUtils.auto_canny(blurred)):
+            cnts = ImageUtils.grab_contours(
+                cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            )
+            candidates.extend(cv2.convexHull(c) for c in cnts)
+        candidates = sorted(candidates, key=cv2.contourArea, reverse=True)[:10]
+        min_area = self.min_page_area(image)
+        for c in candidates:
+            if cv2.contourArea(c) < min_area:
+                continue
+            approx = cv2.approxPolyDP(
+                c,
+                epsilon=APPROX_POLY_EPSILON_FACTOR * cv2.arcLength(c, True),
+                closed=True,
+            )
+            if validate_rect(approx):
+                return np.reshape(approx, (4, -1))
+        return []
