@@ -227,3 +227,92 @@ Reported metrics:
 - registration failures
 - per-stage p50 and p95 latency and throughput
 - the worst errors
+
+## Reading sheets in the browser
+
+`web/omr-browser/omr.js` is a JavaScript port of the reader for web apps that
+take phone photos. It reads a photo on the user's device with a preset template
+and returns the same result as `ScanResult.to_dict()`. It is plain JavaScript
+with no build step, and it runs in Chrome 109+, Safari/iOS 13+, Android Chrome,
+Firefox and Node 18+.
+
+```html
+<script src="https://your-api/browser/omr.js"></script>
+<script>
+  OMR.loadTemplate(templateJson)
+    .then(engine => engine.scan(fileInput.files[0], { fileId: "photo.jpg" }))
+    .then(result => console.log(result.status, result.responses, result.review));
+</script>
+```
+
+- **Supported:** TimingMarkAlignment (including rotation and `nonRigid`),
+  CropPage, CropOnMarkers, Levels, the blur filters and `block_snap_radius`.
+- **Matches Python:** on synthetic clean, scanned and phone sheets and on every
+  template in `samples/`, the browser reads the same values and review flags.
+- **Speed:** about 130 ms per phone sheet in Node, and 300–450 ms per photo in
+  headless Chrome on a slow VM. That includes decoding and drawing.
+- **Optional:** barcode/QR zones use zxing-wasm, and the bubble model uses
+  onnxruntime-web; both are loaded on demand.
+- **Not supported:** OCR/ICR zones need a reader you register (for example
+  tesseract.js); without one they are flagged for review. FeatureBasedAlignment
+  and EccAlignment don't run in the browser.
+
+Send sheets that come back `needs_review` or `error` to `POST /scans` so they
+join the review queue.
+
+The API serves the engine and a mobile demo at `/browser/`. To let a web app on
+another domain call the API, set `OMR_CORS_ORIGINS` to its origins, separated by
+commas. Templates are available from `GET /templates/{id}`, and their marker
+images from `GET /templates/{id}/files/{path}`.
+
+See [web/omr-browser/README.md](../web/omr-browser/README.md) for the full API.
+
+## Calling the API from Python, Java and Go
+
+[`clients/`](../clients/README.md) has standard-library-only clients:
+
+| Client | Location | Requires |
+|---|---|---|
+| Python | `clients/python/omr_client.py` | Python 3.8+ |
+| Java | `clients/java`, a Maven project | Java 11+ |
+| Go | `clients/go/omrclient` | Go 1.18+ |
+
+All three cover templates, synchronous scans, bulk jobs, CSV results and the
+review queue. `clients/openapi.json` is the spec; regenerate it with
+`python clients/export_openapi.py` and use it to generate clients in other
+languages.
+
+For millions of files, use a folder job, so the server reads files from its own
+disk. Here is the Python client:
+
+```python
+from omr_client import OMRClient
+client = OMRClient("http://omr-server:8000", api_key="...")
+job = client.create_job(template_id="exam", folder="D:/scans/day1", save_images="review")
+client.wait_for_job(job["id"])
+client.job_results_csv(job["id"], "day1.csv")
+```
+
+Measured through the API on a 4-core machine, folder jobs reached:
+- **2,964 sheets/min** with `save_images="none"`;
+- **1,311 sheets/min** with `"review"`, where images are written for sheets that need review.
+
+## Portable Windows build (Windows 7 and later)
+
+[`packaging/`](../packaging/README.md) builds `OMRChecker.exe` with Python 3.8
+and PyInstaller 5.13. Python 3.8 is the last Python that runs on Windows 7.
+
+- **How to build:** run the **Build Windows portable exe** workflow manually, or
+  push a `v*` tag. It builds the exe, smoke-tests it on Windows and uploads a
+  zip and a single-file exe.
+- **Running it:** the exe starts the API and GUI on the local machine, opens
+  the browser and keeps its data next to the exe.
+- **Headless options:**
+  - `OMRChecker.exe --bulk FOLDER --template T.json` runs a batch without the GUI;
+  - `--host 0.0.0.0` serves the webapp to other machines;
+  - `--selftest` checks the install.
+- **Browser needed for the GUI:** Chrome 109 or Firefox ESR 115 on Windows 7.
+- **Not yet tested on Windows 7:** CI builds on Windows Server 2022. Run
+  `--selftest` once on a real Windows 7 PC.
+- **ONNX Runtime on Windows 7:** it may need the updates listed in the
+  packaging README. The engine runs without it.
