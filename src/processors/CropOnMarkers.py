@@ -159,6 +159,14 @@ class CropOnMarkers(ImagePreprocessor):
         # analysis data
         self.threshold_circles.append(sum_t / 4)
 
+        if not self.is_plausible_quadrilateral(np.array(centres), image.shape):
+            logger.error(
+                file_path,
+                "\nError: Marker positions don't form a plausible page rectangle:",
+                centres,
+            )
+            return None
+
         image = ImageUtils.four_point_transform(image, np.array(centres))
         # appendSaveImg(1,image_eroded_sub)
         # appendSaveImg(1,image_norm)
@@ -188,6 +196,23 @@ class CropOnMarkers(ImagePreprocessor):
         # iterations : Tuned to 2.
         # image_eroded_sub = image_norm - cv2.erode(image_norm, kernel=np.ones((5,5)),iterations=2)
         return image
+
+    @staticmethod
+    def is_plausible_quadrilateral(centres, image_shape, max_side_ratio=1.5):
+        """Reject marker sets where one false match would produce a wild warp."""
+        tl, tr, br, bl = ImageUtils.order_points(centres.astype(np.float32))
+        quad = np.array([tl, tr, br, bl], dtype=np.float32)
+        if not cv2.isContourConvex(quad.reshape(-1, 1, 2)):
+            return False
+        image_area = float(image_shape[0] * image_shape[1])
+        if cv2.contourArea(quad) < 0.2 * image_area:
+            return False
+        top, bottom = np.linalg.norm(tr - tl), np.linalg.norm(br - bl)
+        left, right = np.linalg.norm(bl - tl), np.linalg.norm(br - tr)
+        for a, b in ((top, bottom), (left, right)):
+            if max(a, b) / max(min(a, b), 1e-6) > max_side_ratio:
+                return False
+        return True
 
     def load_marker(self, marker_ops, config):
         if not os.path.exists(self.marker_path):

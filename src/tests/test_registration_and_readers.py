@@ -187,3 +187,15 @@ def test_ocr_zone_reads_printed_text(tmp_path, spec):
     # Without a trained ICR model handwriting is always routed to review
     assert result.zones["candidate_no"]["needs_review"]
     assert "no_icr_model" in result.zones["candidate_no"]["flags"]
+
+
+def test_marker_quadrilateral_sanity_check():
+    from src.processors.CropOnMarkers import CropOnMarkers
+
+    shape = (1000, 800)
+    good = np.array([[50, 50], [750, 60], [740, 950], [60, 940]])
+    # One false match near the centre collapses the page
+    bad = np.array([[50, 50], [750, 60], [400, 500], [60, 940]])
+
+    assert CropOnMarkers.is_plausible_quadrilateral(good, shape)
+    assert not CropOnMarkers.is_plausible_quadrilateral(bad, shape)
