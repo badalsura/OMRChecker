@@ -33,12 +33,15 @@ class ImageInstanceOps:
 
     def apply_preprocessors(self, file_path, in_omr, template):
         tuning_config = self.tuning_config
-        # resize to conform to template
-        in_omr = ImageUtils.resize_util(
-            in_omr,
-            tuning_config.dimensions.processing_width,
-            tuning_config.dimensions.processing_height,
-        )
+        pre_processors = template.pre_processors
+        # resize to conform to template, unless registration works on the original
+        # pixels (or there is nothing to run, so reading resizes straight to the page)
+        if pre_processors and not pre_processors[0].needs_full_resolution:
+            in_omr = ImageUtils.resize_util(
+                in_omr,
+                tuning_config.dimensions.processing_width,
+                tuning_config.dimensions.processing_height,
+            )
 
         # run pre_processors in sequence
         for pre_processor in template.pre_processors:
@@ -704,6 +707,13 @@ class ImageInstanceOps:
             if jump > max2 and abs(thr1 - new_thr) > JUMP_DELTA:
                 max2 = jump
                 thr2 = new_thr
+        if max1 == MIN_JUMP and len(q_vals) >= 4:
+            # No single large jump (e.g. pencil and partial marks fill the gap between
+            # empty and dark bubbles): fall back to Otsu's two-class split instead of
+            # a fixed page-type default, which can mark every bubble on light scans
+            otsu_thr = self.otsu_threshold(q_vals)
+            if otsu_thr is not None:
+                thr1 = otsu_thr
         # global_thr = min(thr1,thr2)
         global_thr, j_low, j_high = thr1, thr1 - max1 // 2, thr1 + max1 // 2
 
@@ -733,6 +743,29 @@ class ImageInstanceOps:
                 plt.show()
 
         return global_thr, j_low, j_high
+
+    @staticmethod
+    def otsu_threshold(values, min_separation=30):
+        """Otsu split of 1-D intensities; None if the classes aren't clearly apart."""
+        values = np.sort(np.asarray(values, dtype=np.float64))
+        n = len(values)
+        best_score, best_index = -1.0, None
+        cumulative = np.cumsum(values)
+        total = cumulative[-1]
+        for i in range(1, n):
+            w0, w1 = i / n, (n - i) / n
+            mean0 = cumulative[i - 1] / i
+            mean1 = (total - cumulative[i - 1]) / (n - i)
+            score = w0 * w1 * (mean0 - mean1) ** 2
+            if score > best_score:
+                best_score, best_index = score, i
+        if best_index is None:
+            return None
+        mean0 = values[:best_index].mean()
+        mean1 = values[best_index:].mean()
+        if mean1 - mean0 < min_separation:
+            return None
+        return float((values[best_index - 1] + values[best_index]) / 2)
 
     def get_local_threshold(
         self, q_vals, global_thr, no_outliers, plot_title=None, plot_show=True

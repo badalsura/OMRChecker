@@ -77,6 +77,8 @@ class Template:
                 relative_dir=relative_dir,
                 image_instance_ops=self.image_instance_ops,
             )
+            # Registration preprocessors warp straight into template coordinates
+            pre_processor_instance.page_dimensions = self.page_dimensions
             self.pre_processors.append(pre_processor_instance)
 
     def setup_field_blocks(self, field_blocks_object):
