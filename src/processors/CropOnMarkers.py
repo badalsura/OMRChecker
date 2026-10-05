@@ -52,10 +52,9 @@ class CropOnMarkers(ImagePreprocessor):
     def apply_filter(self, image, file_path):
         config = self.tuning_config
         image_instance_ops = self.image_instance_ops
+        # Must mirror the preprocessing applied to the marker in load_marker()
         image_eroded_sub = ImageUtils.normalize_util(
-            image
-            if self.apply_erode_subtract
-            else (
+            (
                 image
                 - cv2.erode(
                     image,
@@ -63,6 +62,8 @@ class CropOnMarkers(ImagePreprocessor):
                     iterations=EROSION_PARAMS["iterations"],
                 )
             )
+            if self.apply_erode_subtract
+            else image
         )
         # Quads on warped image
         quads = {}
@@ -194,7 +195,9 @@ class CropOnMarkers(ImagePreprocessor):
                 "Marker not found at path provided in template:",
                 self.marker_path,
             )
-            exit(31)
+            raise FileNotFoundError(
+                f"Marker not found at path provided in template: {self.marker_path}"
+            )
 
         marker = cv2.imread(self.marker_path, cv2.IMREAD_GRAYSCALE)
 

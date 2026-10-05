@@ -39,6 +39,8 @@ EROSION_PARAMS = {"kernel_size": (5, 5), "iterations": 5}
 # FeatureBasedAlignment constants
 DEFAULT_MAX_FEATURES = 500
 DEFAULT_GOOD_MATCH_PERCENT = 0.15
+DEFAULT_MIN_ALIGNMENT_INLIERS = 10
+DEFAULT_MAX_TRANSFORM_SCALE_CHANGE = 2.0
 
 # Builtin processor constants
 DEFAULT_MEDIAN_BLUR_KERNEL_SIZE = 5
