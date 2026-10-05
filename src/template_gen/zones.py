@@ -38,9 +38,13 @@ def format_name(fmt):
     try:
         import zxingcpp
 
-        return zxingcpp.barcode_format_from_str(fmt).name
+        name = zxingcpp.barcode_format_from_str(fmt).name
+        if name != "NONE":
+            return name
     except Exception:
-        return fmt.replace(" ", "").replace("-", "")
+        pass
+    # zxing-cpp 2.2 doesn't parse the spaced spellings
+    return fmt.replace(" ", "").replace("-", "")
 
 
 def _iou(a, b):

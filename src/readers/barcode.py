@@ -17,6 +17,11 @@ try:
 except ImportError:  # pragma: no cover - exercised only without the dependency
     zxingcpp = None
 
+from src.readers.zxing_compat import apply as _apply_zxing_compat
+from src.readers.zxing_compat import format_label
+
+_apply_zxing_compat()
+
 
 def supported_formats():
     if zxingcpp is None:
@@ -86,10 +91,14 @@ def read_barcode_zone(zone, image):
         symbol.text,
         confidence,
         flags,
-        format=str(symbol.format),
+        format=format_label(symbol.format),
         details={
             "symbols": [
-                {"text": s.text, "format": str(s.format), "valid": bool(s.valid)}
+                {
+                    "text": s.text,
+                    "format": format_label(s.format),
+                    "valid": bool(s.valid),
+                }
                 for s in symbols
             ],
             "orientation": int(symbol.orientation),
@@ -119,7 +128,7 @@ def read_all_symbols(image, formats=None):
         results.append(
             {
                 "text": symbol.text,
-                "format": str(symbol.format),
+                "format": format_label(symbol.format),
                 "box": [int(x), int(y), int(x1 - x), int(y1 - y)],
             }
         )

@@ -145,6 +145,12 @@ def test_multi_marked_field_is_sent_to_review(tmp_path, spec):
     ],
 )
 def test_barcode_zone_reads_symbology(fmt, value):
+    from src.readers.zxing_compat import apply as apply_zxing_compat
+
+    if fmt in ("Codabar", "MicroQRCode") and apply_zxing_compat.patched:
+        # zxing-cpp 2.2 (the Python 3.8 / Windows 7 build) can't write Micro QR
+        # and drops Codabar start/stop characters
+        pytest.skip("needs zxing-cpp >= 2.3")
     zxingcpp = pytest.importorskip("zxingcpp")
     symbol = zxingcpp.create_barcode(value, zxingcpp.barcode_format_from_str(fmt))
     code = np.array(zxingcpp.write_barcode_to_image(symbol, scale=4))

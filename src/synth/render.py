@@ -333,6 +333,10 @@ def _draw_zone(img, zone, value, rng):
     if zone.type in ("barcode", "qrcode"):
         import zxingcpp
 
+        from src.readers.zxing_compat import apply as apply_zxing_compat
+
+        apply_zxing_compat()
+
         fmt = (
             zxingcpp.BarcodeFormat.QRCode
             if zone.type == "qrcode"

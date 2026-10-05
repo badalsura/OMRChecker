@@ -7,6 +7,7 @@ and reused, and writes its results straight to disk so only small summaries
 travel back to the parent process.
 """
 
+import logging
 import os
 import shutil
 import time
@@ -32,6 +33,9 @@ def worker_init():
     # Processes, not OpenCV threads, provide the parallelism
     cv2.setNumThreads(1)
     os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OMR_ONNX_THREADS", "1")
+    # Per-sheet INFO logs cost real time at thousands of sheets per minute
+    logging.getLogger("src.logger").setLevel(logging.WARNING)
 
 
 def template_version(template_dir):
