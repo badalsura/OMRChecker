@@ -17,12 +17,13 @@ from src.constants.image_processing import (
     MIN_PAGE_AREA_THRESHOLD,
     PAGE_THRESHOLD_PARAMS,
 )
-
-DEFAULT_PROCESSING_AREA = 666 * 820
 from src.logger import logger
 from src.processors.interfaces.ImagePreprocessor import ImagePreprocessor
 from src.utils.image import ImageUtils
 from src.utils.interaction import InteractionUtils
+
+# MIN_PAGE_AREA_THRESHOLD was tuned for the default 666x820 processing size
+DEFAULT_PROCESSING_AREA = 666 * 820
 
 
 def normalize(image):
