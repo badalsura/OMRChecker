@@ -50,6 +50,8 @@ jobs:
           # TZ: Asia/Kolkata
 
       - name: Pytest coverage comment
+        # The token is read-only on PRs from forks; the comment is informational only
+        continue-on-error: true
         uses: MishaKav/pytest-coverage-comment@v1
         with:
           pytest-coverage-path: ./.github-pytest/pytest-coverage.txt
