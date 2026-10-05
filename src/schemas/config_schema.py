@@ -42,6 +42,43 @@ CONFIG_SCHEMA = {
                 "thickness": {"type": "integer", "minimum": 1, "maximum": 10},
             },
         },
+        "review_params": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "confidence_margin": {"type": "number", "exclusiveMinimum": 0},
+                "min_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "min_marked_fill_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                "max_unmarked_fill_ratio": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                },
+                "review_flags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "multi_marked",
+                            "empty",
+                            "ambiguous_threshold",
+                            "low_confidence",
+                            "weak_mark",
+                            "possible_missed_mark",
+                            "model_disagrees",
+                        ],
+                    },
+                },
+            },
+        },
+        "ml_params": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "bubble_model_path": {"type": ["string", "null"]},
+                "icr_model_path": {"type": ["string", "null"]},
+            },
+        },
         "pdf_params": {
             "type": "object",
             "additionalProperties": False,

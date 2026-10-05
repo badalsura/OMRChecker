@@ -28,6 +28,8 @@ class ImageInstanceOps:
         self.save_image_level = tuning_config.outputs.save_image_level
         # Per-instance so that concurrent templates/requests don't share debug images
         self.save_img_list: Any = defaultdict(list)
+        # Optional learned classifier (src/ml/classifiers.py) for bubble crops
+        self.bubble_classifier = None
 
     def apply_preprocessors(self, file_path, in_omr, template):
         tuning_config = self.tuning_config
@@ -46,6 +48,16 @@ class ImageInstanceOps:
         return in_omr
 
     def read_omr_response(self, template, image, name, save_dir=None):
+        result = self.read_omr_response_detailed(template, image, name, save_dir)
+        return (
+            result["omr_response"],
+            result["final_marked"],
+            result["multi_marked"],
+            result["multi_roll"],
+        )
+
+    def read_omr_response_detailed(self, template, image, name, save_dir=None):
+        """Read all bubble fields, returning per-field values, confidence and review flags."""
         config = self.tuning_config
         auto_align = config.alignment_params.auto_align
         img = image.copy()
@@ -264,20 +276,18 @@ class ImageInstanceOps:
         #     appendSaveImg(5,hist)
         #     appendSaveImg(2,hist)
 
+        model_marked_probs = self.get_model_marked_probs(img, template)
+
         per_omr_threshold_avg, total_q_strip_no, total_q_box_no = 0, 0, 0
+        review_params = config.review_params
+        field_details = {}
         for field_block in template.field_blocks:
             block_q_strip_no = 1
             box_w, box_h = field_block.bubble_dimensions
-            shift = field_block.shift
-            s, d = field_block.origin, field_block.dimensions
             key = field_block.name[:3]
-            # cv2.rectangle(final_marked,(s[0]+shift,s[1]),(s[0]+shift+d[0],
-            #   s[1]+d[1]),CLR_BLACK,3)
             for field_block_bubbles in field_block.traverse_bubbles:
                 # All Black or All White case
                 no_outliers = all_q_std_vals[total_q_strip_no] < global_std_thresh
-                # print(total_q_strip_no, field_block_bubbles[0].field_label,
-                #   all_q_std_vals[total_q_strip_no], "no_outliers:", no_outliers)
                 per_q_strip_threshold = self.get_local_threshold(
                     all_q_strip_arrs[total_q_strip_no],
                     global_thr,
@@ -285,25 +295,17 @@ class ImageInstanceOps:
                     f"Mean Intensity Histogram for {key}.{field_block_bubbles[0].field_label}.{block_q_strip_no}",
                     config.outputs.show_image_level >= 6,
                 )
-                # print(field_block_bubbles[0].field_label,key,block_q_strip_no, "THR: ",
-                #   round(per_q_strip_threshold,2))
+                strip_low_confidence = self.last_local_threshold_low_confidence
                 per_omr_threshold_avg += per_q_strip_threshold
 
-                # Note: Little debugging visualization - view the particular Qstrip
-                # if(
-                #     0
-                #     # or "q17" in (field_block_bubbles[0].field_label)
-                #     # or (field_block_bubbles[0].field_label+str(block_q_strip_no))=="q15"
-                #  ):
-                #     st, end = qStrip
-                #     InteractionUtils.show("QStrip: "+key+"-"+str(block_q_strip_no),
-                #     img[st[1] : end[1], st[0]+shift : end[0]+shift],0,config=config)
-
-                # TODO: get rid of total_q_box_no
                 detected_bubbles = []
+                bubble_details = []
                 for bubble in field_block_bubbles:
-                    bubble_is_marked = (
-                        per_q_strip_threshold > all_q_vals[total_q_box_no]
+                    bubble_mean = all_q_vals[total_q_box_no]
+                    model_prob = (
+                        None
+                        if model_marked_probs is None
+                        else float(model_marked_probs[total_q_box_no])
                     )
                     total_q_box_no += 1
                     x, y, field_value = (
@@ -311,6 +313,50 @@ class ImageInstanceOps:
                         bubble.y,
                         bubble.field_value,
                     )
+                    bubble_is_marked = per_q_strip_threshold > bubble_mean
+                    # Count only pixels clearly darker than the decision threshold so
+                    # printed letters and tinted bubble backgrounds don't count as ink
+                    fill_ratio = self.get_fill_ratio(
+                        img,
+                        x,
+                        y,
+                        box_w,
+                        box_h,
+                        per_q_strip_threshold - review_params.confidence_margin,
+                    )
+                    # How far the bubble sits from the decision boundary, in [0, 1]
+                    bubble_confidence = float(
+                        np.clip(
+                            abs(per_q_strip_threshold - bubble_mean)
+                            / review_params.confidence_margin,
+                            0,
+                            1,
+                        )
+                    )
+                    bubble_detail = {
+                        "value": field_value,
+                        "x": int(x),
+                        "y": int(y),
+                        "w": int(box_w),
+                        "h": int(box_h),
+                        "mean_intensity": round(float(bubble_mean), 2),
+                        "fill_ratio": round(fill_ratio, 3),
+                        "marked": bool(bubble_is_marked),
+                        "confidence": round(bubble_confidence, 3),
+                    }
+                    if model_prob is not None:
+                        # The learned classifier decides; the threshold read is a cross-check
+                        model_is_marked = model_prob >= 0.5
+                        bubble_detail["model_marked_prob"] = round(model_prob, 4)
+                        bubble_detail["model_disagrees"] = bool(
+                            model_is_marked != bubble_is_marked
+                        )
+                        bubble_is_marked = model_is_marked
+                        bubble_detail["marked"] = bool(model_is_marked)
+                        bubble_detail["confidence"] = round(
+                            abs(model_prob - 0.5) * 2, 3
+                        )
+                    bubble_details.append(bubble_detail)
                     if bubble_is_marked:
                         detected_bubbles.append(bubble)
                         cv2.rectangle(
@@ -357,13 +403,20 @@ class ImageInstanceOps:
                         if multi_marked_local
                         else field_value
                     )
-                    # TODO: generalize this into identifier
-                    # multi_roll = multi_marked_local and "Roll" in str(q)
                     multi_marked = multi_marked or multi_marked_local
 
+                field_label = field_block_bubbles[0].field_label
                 if len(detected_bubbles) == 0:
-                    field_label = field_block_bubbles[0].field_label
                     omr_response[field_label] = field_block.empty_val
+
+                field_details[field_label] = self.summarize_field(
+                    field_label,
+                    omr_response[field_label],
+                    bubble_details,
+                    len(detected_bubbles),
+                    strip_low_confidence,
+                    review_params,
+                )
 
                 if config.outputs.show_image_level >= 5:
                     if key in all_c_box_vals:
@@ -426,7 +479,94 @@ class ImageInstanceOps:
             for i in range(config.outputs.save_image_level):
                 self.save_image_stacks(i + 1, name, save_dir)
 
-        return omr_response, final_marked, multi_marked, multi_roll
+        return {
+            "omr_response": omr_response,
+            "final_marked": final_marked,
+            "multi_marked": multi_marked,
+            "multi_roll": multi_roll,
+            "field_details": field_details,
+            "aligned_image": img,
+            "thresholds": {
+                "global": round(float(global_thr), 2),
+                "global_std": round(float(global_std_thresh), 2),
+                "average_local": per_omr_threshold_avg,
+            },
+        }
+
+    def get_model_marked_probs(self, img, template):
+        """Probability that each bubble is marked, in template traversal order."""
+        if self.bubble_classifier is None:
+            return None
+        crops = []
+        for field_block in template.field_blocks:
+            box_w, box_h = field_block.bubble_dimensions
+            for field_block_bubbles in field_block.traverse_bubbles:
+                for bubble in field_block_bubbles:
+                    x, y = bubble.x + field_block.shift, bubble.y
+                    crops.append(img[max(y, 0) : y + box_h, max(x, 0) : x + box_w])
+        probabilities = self.bubble_classifier.predict_proba(crops)
+        return probabilities[:, self.bubble_classifier.label_index("marked")]
+
+    @staticmethod
+    def get_fill_ratio(img, x, y, box_w, box_h, threshold):
+        """Fraction of dark pixels inside the bubble's inscribed ellipse.
+
+        Ignores the box corners and most of the printed outline, so it measures
+        how much of the bubble interior was actually filled in.
+        """
+        roi = img[max(y, 0) : y + box_h, max(x, 0) : x + box_w]
+        if roi.size == 0:
+            return 0.0
+        h, w = roi.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.ellipse(
+            mask,
+            (w // 2, h // 2),
+            (max(int(w * 0.35), 1), max(int(h * 0.35), 1)),
+            0,
+            0,
+            360,
+            255,
+            -1,
+        )
+        inside = roi[mask > 0]
+        if inside.size == 0:
+            return 0.0
+        return float(np.count_nonzero(inside < threshold)) / float(inside.size)
+
+    @staticmethod
+    def summarize_field(
+        field_label, value, bubble_details, marked_count, low_confidence, params
+    ):
+        flags = []
+        if marked_count > 1:
+            flags.append("multi_marked")
+        if marked_count == 0:
+            flags.append("empty")
+        if low_confidence:
+            flags.append("ambiguous_threshold")
+        for bubble in bubble_details:
+            if bubble["marked"] and bubble["fill_ratio"] < params.min_marked_fill_ratio:
+                flags.append("weak_mark")
+            if (
+                not bubble["marked"]
+                and bubble["fill_ratio"] > params.max_unmarked_fill_ratio
+            ):
+                flags.append("possible_missed_mark")
+            if bubble.get("model_disagrees"):
+                flags.append("model_disagrees")
+        confidence = min((b["confidence"] for b in bubble_details), default=0.0)
+        if confidence < params.min_confidence:
+            flags.append("low_confidence")
+        flags = sorted(set(flags))
+        return {
+            "label": field_label,
+            "value": value,
+            "confidence": round(float(confidence), 3),
+            "flags": flags,
+            "needs_review": any(flag in params.review_flags for flag in flags),
+            "bubbles": bubble_details,
+        }
 
 
     @staticmethod
@@ -622,6 +762,8 @@ class ImageInstanceOps:
 
         """
         config = self.tuning_config
+        # Set when the strip has no clear jump and can't fall back to the global threshold
+        self.last_local_threshold_low_confidence = False
         # Sort the Q bubbleValues
         q_vals = sorted(q_vals)
 
@@ -671,8 +813,8 @@ class ImageInstanceOps:
                     # All Black or All White case
                     thr1 = global_thr
                 else:
-                    # TODO: Low confidence parameters here
-                    pass
+                    # No clear jump yet the strip has outliers: the read is a guess
+                    self.last_local_threshold_low_confidence = True
 
             # if(thr1 == 255):
             #     print("Warning: threshold is unexpectedly 255! (Outlier Delta issue?)",plot_title)

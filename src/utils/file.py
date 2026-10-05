@@ -92,4 +92,18 @@ def setup_outputs_for_template(paths, template):
             logger.info(f"Present : appending to '{file_name}'")
             ns.files_obj[file_key] = open(file_name, "a")
 
+    ns.filesMap["NeedsReview"] = os.path.join(paths.manual_dir, "NeedsReview.csv")
+    ns.files_obj["NeedsReview"] = ns.filesMap["NeedsReview"]
+    if not os.path.exists(ns.filesMap["NeedsReview"]):
+        pd.DataFrame([REVIEW_COLUMNS], dtype=str).to_csv(
+            ns.filesMap["NeedsReview"],
+            mode="a",
+            quoting=QUOTE_NONNUMERIC,
+            header=False,
+            index=False,
+        )
+
     return ns
+
+
+REVIEW_COLUMNS = ["file_id", "input_path", "kind", "name", "value", "confidence", "flags"]

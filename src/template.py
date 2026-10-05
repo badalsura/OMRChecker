@@ -32,6 +32,7 @@ class Template:
             self.global_empty_val,
             self.options,
             self.page_dimensions,
+            zones_object,
         ) = map(
             json_object.get,
             [
@@ -43,12 +44,14 @@ class Template:
                 "emptyValue",
                 "options",
                 "pageDimensions",
+                "zones",
             ],
         )
 
         self.parse_output_columns(output_columns_array)
         self.setup_pre_processors(pre_processors_object, template_path.parent)
         self.setup_field_blocks(field_blocks_object)
+        self.setup_zones(zones_object)
         self.parse_custom_labels(custom_labels_object)
 
         non_custom_columns, all_custom_columns = (
@@ -82,6 +85,30 @@ class Template:
         self.all_parsed_labels = set()
         for block_name, field_block_object in field_blocks_object.items():
             self.parse_and_add_field_block(block_name, field_block_object)
+
+    def setup_zones(self, zones_object):
+        self.zones = []
+        page_width, page_height = self.page_dimensions
+        for zone_name, zone_object in zones_object.items():
+            if zone_name in self.all_parsed_labels:
+                raise Exception(
+                    f"Zone name '{zone_name}' overlaps with an existing field label"
+                )
+            (x, y), (w, h) = zone_object["origin"], zone_object["dimensions"]
+            if x + w > page_width or y + h > page_height:
+                raise Exception(
+                    f"Overflowing zone '{zone_name}' with origin {[x, y]} and dimensions {[w, h]} in template with dimensions {self.page_dimensions}"
+                )
+            self.zones.append(
+                Zone(
+                    zone_name,
+                    zone_object["type"],
+                    [x, y],
+                    [w, h],
+                    zone_object.get("options", {}),
+                )
+            )
+            self.all_parsed_labels.add(zone_name)
 
     def parse_custom_labels(self, custom_labels_object):
         all_parsed_custom_labels = set()
@@ -305,6 +332,25 @@ class FieldBlock:
                 bubble_point[_h] += bubbles_gap
             self.traverse_bubbles.append(field_bubbles)
             lead_point[_v] += labels_gap
+
+
+class Zone:
+    """A rectangular non-bubble region (barcode, QR code, printed or handwritten text)"""
+
+    def __init__(self, name, zone_type, origin, dimensions, options):
+        self.name = name
+        self.type = zone_type
+        self.origin = origin
+        self.dimensions = dimensions
+        self.options = options
+        self.empty_val = options.get("emptyValue", "")
+
+    def crop(self, image, padding=0):
+        (x, y), (w, h) = self.origin, self.dimensions
+        img_h, img_w = image.shape[:2]
+        x0, y0 = max(x - padding, 0), max(y - padding, 0)
+        x1, y1 = min(x + w + padding, img_w), min(y + h + padding, img_h)
+        return image[y0:y1, x0:x1]
 
 
 class Bubble:

@@ -24,6 +24,7 @@ from src.constants.common import (
 from src.defaults import CONFIG_DEFAULTS
 from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import console, logger
+from src.readers import read_zones
 from src.template import Template
 from src.utils.file import Paths, setup_dirs_for_paths, setup_outputs_for_template
 from src.utils.image import ImageUtils
@@ -269,13 +270,16 @@ def _process_single_image(
     # uniquify
     file_id = str(img_name)
     save_dir = outputs_namespace.paths.save_marked_dir
-    (
-        response_dict,
-        final_marked,
-        multi_marked,
-        _,
-    ) = template.image_instance_ops.read_omr_response(
+    detailed = template.image_instance_ops.read_omr_response_detailed(
         template, image=in_omr, name=file_id, save_dir=save_dir
+    )
+    response_dict = detailed["omr_response"]
+    final_marked, multi_marked = detailed["final_marked"], detailed["multi_marked"]
+    zone_results = read_zones(template.zones, detailed["aligned_image"])
+    for zone_name, zone_result in zone_results.items():
+        response_dict[zone_name] = zone_result.value
+    write_review_rows(
+        outputs_namespace, img_name, file_path, detailed["field_details"], zone_results
     )
 
     # TODO: move inner try catch here
@@ -347,6 +351,42 @@ def _process_single_image(
             )
 
     return multi_marked
+
+
+def write_review_rows(outputs_namespace, img_name, file_path, field_details, zones):
+    rows = [
+        [
+            img_name,
+            file_path,
+            "field",
+            name,
+            details["value"],
+            details["confidence"],
+            "|".join(details["flags"]),
+        ]
+        for name, details in field_details.items()
+        if details["needs_review"]
+    ] + [
+        [
+            img_name,
+            file_path,
+            zone.type,
+            name,
+            zone.value,
+            round(zone.confidence, 3),
+            "|".join(zone.flags),
+        ]
+        for name, zone in zones.items()
+        if zone.needs_review
+    ]
+    if rows:
+        pd.DataFrame(rows, dtype=str).to_csv(
+            outputs_namespace.files_obj["NeedsReview"],
+            mode="a",
+            quoting=QUOTE_NONNUMERIC,
+            header=False,
+            index=False,
+        )
 
 
 def process_files(

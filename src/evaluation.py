@@ -362,7 +362,7 @@ class EvaluationConfig:
 
     # Explanation Table to CSV
     def conditionally_save_explanation_csv(self, file_path, evaluation_output_dir):
-        if self.enable_evaluation_table_to_csv:
+        if self.enable_evaluation_table_to_csv and evaluation_output_dir is not None:
             data = {col.header: col._cells for col in self.explanation_table.columns}
 
             output_path = os.path.join(
