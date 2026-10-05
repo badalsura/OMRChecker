@@ -21,7 +21,8 @@ from src.readers.base import ZoneReadResult
 
 try:
     import tesserocr
-except ImportError:  # pragma: no cover
+except (ImportError, ValueError):  # pragma: no cover
+    # ValueError: cysignals refuses to install handlers outside the main thread
     tesserocr = None
 
 try:

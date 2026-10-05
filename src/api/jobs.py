@@ -1,0 +1,329 @@
+"""
+Bulk jobs: a single runner thread processes queued jobs one after another and
+spreads the files of the running job over a shared process pool. Results are
+written to disk by the workers and indexed in SQLite in batches.
+
+A job is resumable: its file list is stored next to its JSON, and on restart
+the runner skips files that already have results.
+"""
+
+import multiprocessing
+import queue
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from pathlib import Path
+
+from src.api.storage import new_id, read_json, write_json_atomic
+from src.api.worker import (
+    SAVE_REVIEW,
+    get_process_engine,
+    job_task,
+    scan_and_store,
+    summarize,
+    template_version,
+    worker_init,
+)
+from src.logger import logger
+
+INPUT_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".pdf"}
+
+QUEUED, UPLOADING, RUNNING = "queued", "uploading", "running"
+COMPLETED, FAILED, CANCELLED, INTERRUPTED = (
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+)
+ACTIVE_STATES = {QUEUED, RUNNING}
+
+
+def collect_folder(folder, recursive=True):
+    folder = Path(folder)
+    pattern = "**/*" if recursive else "*"
+    return sorted(
+        p
+        for p in folder.glob(pattern)
+        if p.is_file() and p.suffix.lower() in INPUT_SUFFIXES
+    )
+
+
+class JobManager:
+    def __init__(self, data, index, templates, settings):
+        self.data = data
+        self.index = index
+        self.templates = templates
+        self.settings = settings
+        self.queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.live = {}  # job_id -> job dict while queued/running
+        self.cancelled = set()
+        self.pool = None
+        self.thread = None
+        self.stopping = threading.Event()
+
+    # ---- lifecycle -----------------------------------------------------
+    def start(self):
+        self.thread = threading.Thread(
+            target=self._runner, name="omr-jobs", daemon=True
+        )
+        self.thread.start()
+        for job_file in sorted(self.data.jobs.glob("*.json")):
+            job = read_json(job_file)
+            if not job or job.get("state") not in (QUEUED, RUNNING, INTERRUPTED):
+                continue
+            if self.settings.resume_jobs:
+                job["state"] = QUEUED
+                self._save(job)
+                self.live[job["id"]] = job
+                self.queue.put(job["id"])
+            else:
+                job["state"] = INTERRUPTED
+                self._save(job)
+
+    def stop(self):
+        self.stopping.set()
+        self.queue.put(None)
+        if self.pool is not None:
+            self.pool.shutdown(wait=False, cancel_futures=True)
+            self.pool = None
+        if self.thread is not None:
+            self.thread.join(timeout=10)
+
+    def _get_pool(self, workers):
+        if self.pool is None:
+            context = multiprocessing.get_context(self.settings.mp_start_method)
+            self.pool = ProcessPoolExecutor(
+                max_workers=workers, mp_context=context, initializer=worker_init
+            )
+        return self.pool
+
+    # ---- API -----------------------------------------------------------
+    def create(self, template_id, files, source, options=None, start=True):
+        job_id = new_id()
+        options = dict(options or {})
+        job = {
+            "id": job_id,
+            "template_id": template_id,
+            "source": source,
+            "state": QUEUED if start else UPLOADING,
+            "options": {
+                "save_images": options.get("save_images") or SAVE_REVIEW,
+                "workers": options.get("workers"),
+            },
+            "name": options.get("name") or "",
+            "total_files": 0,
+            "processed_files": 0,
+            "pages": 0,
+            "counts": {},
+            "errors": [],
+            "created_at": time.time(),
+            "started_at": None,
+            "finished_at": None,
+            "throughput_per_s": None,
+        }
+        self._save(job)
+        self.add_files(job, files)
+        if start:
+            self.enqueue(job)
+        else:
+            self.live[job_id] = job
+        return job
+
+    def inputs_dir(self, job_id):
+        path = self.data.jobs / job_id / "inputs"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def files_path(self, job_id):
+        return self.data.jobs / f"{job_id}.files"
+
+    def add_files(self, job, files):
+        files = [str(Path(f)) for f in files]
+        if not files:
+            return job
+        with self.lock:
+            with open(self.files_path(job["id"]), "a") as handle:
+                for path in files:
+                    handle.write(path.replace("\n", " ") + "\n")
+            job["total_files"] = job.get("total_files", 0) + len(files)
+            self._save(job)
+        return job
+
+    def enqueue(self, job):
+        job["state"] = QUEUED
+        self._save(job)
+        self.live[job["id"]] = job
+        self.queue.put(job["id"])
+
+    def get(self, job_id):
+        if job_id in self.live:
+            return dict(self.live[job_id])
+        if "/" in job_id or not job_id.isalnum():
+            return None
+        return read_json(self.data.job_file(job_id))
+
+    def list(self, limit=50):
+        jobs = []
+        for job_file in sorted(
+            self.data.jobs.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        )[:limit]:
+            job = self.live.get(job_file.stem) or read_json(job_file)
+            if job:
+                jobs.append(job)
+        return jobs
+
+    def cancel(self, job_id):
+        job = self.live.get(job_id)
+        if job is None:
+            return self.get(job_id)
+        self.cancelled.add(job_id)
+        if job["state"] in (QUEUED, UPLOADING):
+            job["state"] = CANCELLED
+            job["finished_at"] = time.time()
+            self._save(job)
+            self.live.pop(job_id, None)
+        return job
+
+    def _save(self, job):
+        write_json_atomic(self.data.job_file(job["id"]), job)
+
+    # ---- runner --------------------------------------------------------
+    def _runner(self):
+        while not self.stopping.is_set():
+            job_id = self.queue.get()
+            if job_id is None:
+                return
+            job = self.live.get(job_id)
+            if job is None or job["state"] != QUEUED:
+                continue
+            try:
+                self._run(job)
+            except Exception as error:  # keep the runner alive
+                logger.error(f"Job {job_id} failed: {error}")
+                job["state"] = FAILED
+                job["errors"].append(str(error))
+            finally:
+                if job["state"] == RUNNING:
+                    job["state"] = INTERRUPTED if self.stopping.is_set() else COMPLETED
+                job["finished_at"] = time.time()
+                self._refresh_counts(job)
+                self._save(job)
+                self.live.pop(job_id, None)
+                self.cancelled.discard(job_id)
+
+    def _refresh_counts(self, job):
+        job["counts"] = self.index.status_counts(job_id=job["id"])
+        job["pages"] = sum(job["counts"].values())
+
+    def _run(self, job):
+        template_id = job["template_id"]
+        template_dir = self.templates.path(template_id)
+        if not (template_dir / "template.json").exists():
+            raise RuntimeError(f"Template '{template_id}' no longer exists")
+        version = template_version(template_dir)
+        paths = Path(self.files_path(job["id"])).read_text().splitlines()
+        done = self.index.job_seqs(job["id"])
+        job["total_files"] = len(paths)
+        job["processed_files"] = len(done)
+        job["state"] = RUNNING
+        job["started_at"] = job.get("started_at") or time.time()
+        self._refresh_counts(job)
+        self._save(job)
+        base = {
+            "template_id": template_id,
+            "template_dir": str(template_dir),
+            "version": version,
+            "job_id": job["id"],
+            "scans_root": str(self.data.scans),
+            "save_images": job["options"]["save_images"],
+        }
+        tasks = (
+            {**base, "seq": seq, "file_path": path, "file_name": Path(path).name}
+            for seq, path in enumerate(paths)
+            if seq not in done
+        )
+        workers = job["options"].get("workers") or self.settings.effective_workers
+        run_started, processed_now = time.time(), 0
+        pending_rows, last_flush = [], time.time()
+
+        def flush(force=False):
+            nonlocal pending_rows, last_flush
+            if pending_rows and (
+                force or len(pending_rows) >= 200 or time.time() - last_flush > 1
+            ):
+                self.index.add_scans(pending_rows)
+                pending_rows = []
+            if force or time.time() - last_flush > 1:
+                elapsed = max(time.time() - run_started, 1e-6)
+                job["throughput_per_s"] = round(processed_now / elapsed, 2)
+                remaining = job["total_files"] - job["processed_files"]
+                rate = job["throughput_per_s"] or 0
+                job["eta_s"] = round(remaining / rate) if rate > 0 else None
+                self._refresh_counts(job)
+                self._save(job)
+                last_flush = time.time()
+
+        def record(summaries, task):
+            nonlocal processed_now
+            pending_rows.extend(summaries)
+            processed_now += 1
+            job["processed_files"] += 1
+            for summary in summaries:
+                if summary.get("status") == "error" and len(job["errors"]) < 100:
+                    job["errors"].append(f"{task['file_name']}: {summary.get('error')}")
+            flush()
+
+        if workers <= 1:
+            engine = get_process_engine(base["template_dir"], version)
+            for task in tasks:
+                if job["id"] in self.cancelled or self.stopping.is_set():
+                    break
+                try:
+                    stored = scan_and_store(
+                        engine,
+                        task["file_path"],
+                        task,
+                        task["scans_root"],
+                        task["save_images"],
+                        copy_input=False,
+                    )
+                    summaries = [summarize(r) for r in stored]
+                except Exception as error:
+                    summaries = []
+                    job["errors"].append(f"{task['file_name']}: {error}")
+                record(summaries, task)
+        else:
+            pool = self._get_pool(workers)
+            in_flight = {}
+            max_in_flight = workers * 4
+            tasks_iter = iter(tasks)
+            exhausted = False
+            while True:
+                stop = job["id"] in self.cancelled or self.stopping.is_set()
+                while not stop and not exhausted and len(in_flight) < max_in_flight:
+                    task = next(tasks_iter, None)
+                    if task is None:
+                        exhausted = True
+                        break
+                    in_flight[pool.submit(job_task, task)] = task
+                if not in_flight:
+                    break
+                finished, _ = wait(
+                    list(in_flight), timeout=1, return_when=FIRST_COMPLETED
+                )
+                for future in finished:
+                    task = in_flight.pop(future)
+                    try:
+                        summaries = future.result()
+                    except Exception as error:
+                        summaries = []
+                        job["errors"].append(f"{task['file_name']}: {error}")
+                    record(summaries, task)
+                if stop:
+                    for future in list(in_flight):
+                        if future.cancel():
+                            in_flight.pop(future)
+        flush(force=True)
+        if job["id"] in self.cancelled:
+            job["state"] = CANCELLED
