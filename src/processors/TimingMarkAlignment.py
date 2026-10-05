@@ -171,7 +171,18 @@ class TimingMarkAlignment(ImagePreprocessor):
         low = expected_area * (1 - self.size_tolerance) ** 2
         high = expected_area * (1 + self.size_tolerance) ** 2
 
-        block = int(max(31, (max(self.mark_w, self.mark_h) * scale * 4) // 2 * 2 + 1))
+        # Detect on a downscaled copy where a mark's short side is ~8 px: blob
+        # centroids stay sub-pixel accurate and the homography averages many marks
+        shrink = min(1.0, 8.0 / max(min(self.mark_w, self.mark_h) * scale, 1e-6))
+        if shrink < 0.9:
+            image = cv2.resize(image, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA)
+        else:
+            shrink = 1.0
+        scale *= shrink
+        expected_area *= shrink * shrink
+        low, high = low * shrink * shrink, high * shrink * shrink
+
+        block = int(max(15, (max(self.mark_w, self.mark_h) * scale * 4) // 2 * 2 + 1))
         binary = cv2.adaptiveThreshold(
             image, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block, 15
         )
@@ -187,7 +198,7 @@ class TimingMarkAlignment(ImagePreprocessor):
             & (solidity > 0.6)
             & (np.maximum(widths, heights) <= long_side * (1 + self.size_tolerance) * 1.5)
         )
-        return centroids[1:][keep].astype(np.float32)
+        return (centroids[1:][keep] / shrink).astype(np.float32)
 
     # --- fitting ---------------------------------------------------------
 
