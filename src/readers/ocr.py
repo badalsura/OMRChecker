@@ -9,6 +9,7 @@ For throughput, the in-process tesserocr binding is used when installed (one
 engine per thread, ~10 ms per zone); otherwise pytesseract runs the tesseract
 executable per call, which is roughly 50x slower.
 """
+
 import glob
 import os
 import shutil

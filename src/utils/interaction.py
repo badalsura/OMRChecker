@@ -7,7 +7,6 @@ from src.logger import logger
 from src.utils.image import ImageUtils
 
 
-
 @dataclass
 class _FallbackMonitor:
     width: int = 1920

@@ -106,4 +106,12 @@ def setup_outputs_for_template(paths, template):
     return ns
 
 
-REVIEW_COLUMNS = ["file_id", "input_path", "kind", "name", "value", "confidence", "flags"]
+REVIEW_COLUMNS = [
+    "file_id",
+    "input_path",
+    "kind",
+    "name",
+    "value",
+    "confidence",
+    "flags",
+]

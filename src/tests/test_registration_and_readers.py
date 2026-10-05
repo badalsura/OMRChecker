@@ -166,7 +166,13 @@ def test_barcode_zone_format_restriction_rejects_other_symbologies():
     code = np.array(zxingcpp.write_barcode_to_image(symbol, scale=4))
     page = np.full((code.shape[0] + 40, code.shape[1] + 40), 255, np.uint8)
     page[20 : 20 + code.shape[0], 20 : 20 + code.shape[1]] = code
-    zone = Zone("id", "barcode", [0, 0], [page.shape[1], page.shape[0]], {"formats": ["Code128"]})
+    zone = Zone(
+        "id",
+        "barcode",
+        [0, 0],
+        [page.shape[1], page.shape[0]],
+        {"formats": ["Code128"]},
+    )
 
     assert barcode.read_barcode_zone(zone, page).flags == ["not_found"]
 

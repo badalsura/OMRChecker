@@ -9,6 +9,7 @@ the ground truth. augment() then simulates scanning or phone capture.
 spec.to_template() produces the matching template.json, so the same spec drives
 both the reader and the evaluation.
 """
+
 import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -145,7 +146,9 @@ def default_spec(questions=40, roll_digits=6, with_zones=True):
     zones = []
     if with_zones:
         zones = [
-            ZoneSpec("sheet_id", "barcode", [700, 110], [460, 120], {"formats": ["Code128"]}),
+            ZoneSpec(
+                "sheet_id", "barcode", [700, 110], [460, 120], {"formats": ["Code128"]}
+            ),
             ZoneSpec("qr", "qrcode", [560, 90], [130, 130]),
             ZoneSpec("exam_code", "ocr", [140, 120], [380, 60]),
             ZoneSpec(
@@ -202,7 +205,15 @@ def _draw_mark(img, cx, cy, w, h, rng, style):
     else:
         jitter = rng.randint(-2, 2)
         cv2.ellipse(
-            img, (cx + jitter, cy - jitter), (rx, ry), 0, 0, 360, darkness, -1, cv2.LINE_AA
+            img,
+            (cx + jitter, cy - jitter),
+            (rx, ry),
+            0,
+            0,
+            360,
+            darkness,
+            -1,
+            cv2.LINE_AA,
         )
 
 
@@ -222,7 +233,12 @@ def render_sheet(
 
     # Corner markers (solid squares) inset from the page edge
     m = spec.corner_marker
-    for cx, cy in [(m, m), (page_w - 2 * m, m), (m, page_h - 2 * m), (page_w - 2 * m, page_h - 2 * m)]:
+    for cx, cy in [
+        (m, m),
+        (page_w - 2 * m, m),
+        (m, page_h - 2 * m),
+        (page_w - 2 * m, page_h - 2 * m),
+    ]:
         cv2.rectangle(img, (cx, cy), (cx + m, cy + m), 0, -1)
 
     tw, th = spec.timing_mark
@@ -240,20 +256,26 @@ def render_sheet(
 
     for block, label, value, x, y in spec.bubble_positions():
         cx, cy = x + bw // 2, y + bh // 2
-        cv2.ellipse(img, (cx, cy), (bw // 2 - 2, bh // 2 - 2), 0, 0, 360, 90, 1, cv2.LINE_AA)
+        cv2.ellipse(
+            img, (cx, cy), (bw // 2 - 2, bh // 2 - 2), 0, 0, 360, 90, 1, cv2.LINE_AA
+        )
         _draw_text(img, value, (cx - bw // 6, cy + bh // 6), max(bh // 3, 6), 1)
     for block in spec.blocks:
         first = block.field_labels[0]
         _draw_text(img, block.name, (block.origin[0], block.origin[1] - 15), 14, 1)
         del first
 
-    positions = {(label, value): (x, y) for _, label, value, x, y in spec.bubble_positions()}
+    positions = {
+        (label, value): (x, y) for _, label, value, x, y in spec.bubble_positions()
+    }
     marked = {}
     for label, answer in answers.items():
         for value in _split_answer(answer, label, spec):
             x, y = positions[(label, value)]
-            style = mark_style if mark_style != "mixed" else rng.choice(
-                ["pen", "pencil", "pen", "partial"]
+            style = (
+                mark_style
+                if mark_style != "mixed"
+                else rng.choice(["pen", "pencil", "pen", "partial"])
             )
             _draw_mark(img, x + bw // 2, y + bh // 2, bw, bh, rng, style)
             marked[(label, value)] = style
@@ -263,7 +285,9 @@ def render_sheet(
     for label, value in rng.sample(candidates, min(erasures, len(candidates))):
         x, y = positions[(label, value)]
         overlay = img.copy()
-        cv2.ellipse(overlay, (x + bw // 2, y + bh // 2), (bw // 3, bh // 3), 0, 0, 360, 170, -1)
+        cv2.ellipse(
+            overlay, (x + bw // 2, y + bh // 2), (bw // 3, bh // 3), 0, 0, 360, 170, -1
+        )
         img = cv2.addWeighted(overlay, 0.5, img, 0.5, 0)
 
     zone_values = dict(zone_values or {})
@@ -271,9 +295,13 @@ def render_sheet(
         value = zone_values.setdefault(zone.name, _default_zone_value(zone, rng))
         _draw_zone(img, zone, value, rng)
 
-    truth = {"answers": dict(answers), "zones": zone_values, "marks": {
-        f"{label}:{value}": style for (label, value), style in marked.items()
-    }}
+    truth = {
+        "answers": dict(answers),
+        "zones": zone_values,
+        "marks": {
+            f"{label}:{value}": style for (label, value), style in marked.items()
+        },
+    }
     return img, truth
 
 
@@ -292,7 +320,10 @@ def _default_zone_value(zone, rng):
     if zone.type in ("barcode", "qrcode"):
         return f"SHEET-{rng.randint(100000, 999999)}"
     if zone.type == "icr":
-        return "".join(rng.choice("0123456789") for _ in range(zone.options.get("characterBoxes", 6)))
+        return "".join(
+            rng.choice("0123456789")
+            for _ in range(zone.options.get("characterBoxes", 6))
+        )
     return f"EXAM {rng.randint(1000, 9999)}"
 
 
@@ -302,13 +333,21 @@ def _draw_zone(img, zone, value, rng):
     if zone.type in ("barcode", "qrcode"):
         import zxingcpp
 
-        fmt = zxingcpp.BarcodeFormat.QRCode if zone.type == "qrcode" else (
-            zxingcpp.barcode_format_from_str(zone.options.get("formats", ["Code128"])[0])
+        fmt = (
+            zxingcpp.BarcodeFormat.QRCode
+            if zone.type == "qrcode"
+            else (
+                zxingcpp.barcode_format_from_str(
+                    zone.options.get("formats", ["Code128"])[0]
+                )
+            )
         )
         symbol = zxingcpp.create_barcode(value, fmt)
         code = np.array(zxingcpp.write_barcode_to_image(symbol, scale=4))
         scale = min((w - 10) / code.shape[1], (h - 10) / code.shape[0])
-        code = cv2.resize(code, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+        code = cv2.resize(
+            code, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST
+        )
         ch, cw = code.shape
         oy, ox = y + (h - ch) // 2, x + (w - cw) // 2
         img[oy : oy + ch, ox : ox + cw] = code
@@ -325,7 +364,9 @@ def _draw_zone(img, zone, value, rng):
                 glyph = np.full((h, int(box_w)), 255, np.uint8)
                 _draw_handwritten_char(glyph, value[i], rng)
                 region = img[y : y + h, x0 : x0 + int(box_w)]
-                np.minimum(region, glyph[: region.shape[0], : region.shape[1]], out=region)
+                np.minimum(
+                    region, glyph[: region.shape[0], : region.shape[1]], out=region
+                )
 
 
 def _draw_handwritten_char(glyph, char, rng):
@@ -334,8 +375,13 @@ def _draw_handwritten_char(glyph, char, rng):
     thickness = rng.randint(2, 3)
     scale = cv2.getFontScaleFromHeight(font, int(h * 0.55), thickness)
     size, _ = cv2.getTextSize(char, font, scale, thickness)
-    org = (max((w - size[0]) // 2 + rng.randint(-2, 2), 0), (h + size[1]) // 2 + rng.randint(-2, 2))
-    cv2.putText(glyph, char, org, font, scale, rng.randint(0, 60), thickness, cv2.LINE_AA)
+    org = (
+        max((w - size[0]) // 2 + rng.randint(-2, 2), 0),
+        (h + size[1]) // 2 + rng.randint(-2, 2),
+    )
+    cv2.putText(
+        glyph, char, org, font, scale, rng.randint(0, 60), thickness, cv2.LINE_AA
+    )
     shear = rng.uniform(-0.15, 0.15)
     matrix = np.float32([[1, shear, -shear * h / 2], [0, 1, 0]])
     glyph[:] = cv2.warpAffine(glyph, matrix, (w, h), borderValue=255)
@@ -360,9 +406,15 @@ def augment(
     canvas_w, canvas_h = w + 2 * pad, h + 2 * pad
     src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
     jitter = perspective * min(w, h)
-    dst = np.float32(
-        [[pad + rng.uniform(-jitter, jitter), pad + rng.uniform(-jitter, jitter)] for _ in range(4)]
-    ) + src
+    dst = (
+        np.float32(
+            [
+                [pad + rng.uniform(-jitter, jitter), pad + rng.uniform(-jitter, jitter)]
+                for _ in range(4)
+            ]
+        )
+        + src
+    )
     centre = (canvas_w / 2, canvas_h / 2)
     angle = rng.uniform(-rotation, rotation) + (180 if flip_180 else 0)
     rot = cv2.getRotationMatrix2D(centre, angle, 1.0)
@@ -370,20 +422,31 @@ def augment(
     homography = cv2.getPerspectiveTransform(src, dst)
     bg_value = rng.randint(40, 120) if background else 255
     out = cv2.warpPerspective(
-        img, homography, (canvas_w, canvas_h), borderValue=bg_value, flags=cv2.INTER_LINEAR
+        img,
+        homography,
+        (canvas_w, canvas_h),
+        borderValue=bg_value,
+        flags=cv2.INTER_LINEAR,
     )
     if shadow > 0:
-        gradient = np.linspace(1.0 - rng.uniform(0, shadow), 1.0, canvas_w, dtype=np.float32)
+        gradient = np.linspace(
+            1.0 - rng.uniform(0, shadow), 1.0, canvas_w, dtype=np.float32
+        )
         if rng.random() < 0.5:
             gradient = gradient[::-1]
-        out = np.clip(out.astype(np.float32) * gradient[None, :], 0, 255).astype(np.uint8)
+        out = np.clip(out.astype(np.float32) * gradient[None, :], 0, 255).astype(
+            np.uint8
+        )
     if blur > 0:
         k = rng.choice([1, 3, 3, 5]) if blur >= 1 else 1
         if k > 1:
             out = cv2.GaussianBlur(out, (k, k), blur)
     if noise > 0:
         out = np.clip(
-            out.astype(np.float32) + np.random.default_rng(rng.randint(0, 1 << 30)).normal(0, noise, out.shape),
+            out.astype(np.float32)
+            + np.random.default_rng(rng.randint(0, 1 << 30)).normal(
+                0, noise, out.shape
+            ),
             0,
             255,
         ).astype(np.uint8)

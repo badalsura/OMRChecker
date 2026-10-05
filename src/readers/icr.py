@@ -11,6 +11,7 @@ No trained ICR weights ship with the repository. Without a model the reader fall
 back to Tesseract per character and flags every result for review, because
 Tesseract is not built for handwriting.
 """
+
 import cv2
 import numpy as np
 
@@ -108,7 +109,9 @@ def read_boxes_without_model(zone, crop, count, whitelist):
     """
     flags = ["no_icr_model"]
     if not ocr.tesseract_available():
-        return ZoneReadResult(zone.name, zone.type, "", 0.0, flags + ["engine_unavailable"])
+        return ZoneReadResult(
+            zone.name, zone.type, "", 0.0, flags + ["engine_unavailable"]
+        )
     cleaned_boxes = []
     for box in split_character_boxes(crop, count):
         cleaned, ink_ratio = clean_box(box)
@@ -120,9 +123,16 @@ def read_boxes_without_model(zone, crop, count, whitelist):
     gap = np.full((height, max(height // 3, 4)), 255, np.uint8)
     strip = []
     for b in cleaned_boxes:
-        strip += [cv2.copyMakeBorder(b, 0, height - b.shape[0], 0, 0, cv2.BORDER_CONSTANT, value=255), gap]
+        strip += [
+            cv2.copyMakeBorder(
+                b, 0, height - b.shape[0], 0, 0, cv2.BORDER_CONSTANT, value=255
+            ),
+            gap,
+        ]
     line = np.hstack(strip[:-1])
-    text, conf = ocr.recognize_text(ocr.prepare_for_ocr(line), psm=7, whitelist=whitelist)
+    text, conf = ocr.recognize_text(
+        ocr.prepare_for_ocr(line), psm=7, whitelist=whitelist
+    )
     return ZoneReadResult(zone.name, zone.type, text.replace(" ", ""), conf, flags)
 
 
@@ -130,6 +140,10 @@ def read_free_text(zone, crop, whitelist):
     """Unboxed handwriting: needs a line-level model; fall back to Tesseract for now."""
     flags = ["no_icr_model"]
     if not ocr.tesseract_available():
-        return ZoneReadResult(zone.name, zone.type, "", 0.0, flags + ["engine_unavailable"])
-    text, conf = ocr.recognize_text(ocr.prepare_for_ocr(crop), psm=7, whitelist=whitelist)
+        return ZoneReadResult(
+            zone.name, zone.type, "", 0.0, flags + ["engine_unavailable"]
+        )
+    text, conf = ocr.recognize_text(
+        ocr.prepare_for_ocr(crop), psm=7, whitelist=whitelist
+    )
     return ZoneReadResult(zone.name, zone.type, text, conf, flags)

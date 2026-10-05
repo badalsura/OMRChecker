@@ -15,6 +15,7 @@ registration feature on machine-read forms. This preprocessor:
    per-mark residuals, which absorbs paper curl and lens distortion;
 6. warps the original-resolution image straight into template coordinates.
 """
+
 import cv2
 import numpy as np
 
@@ -134,12 +135,17 @@ class TimingMarkAlignment(ImagePreprocessor):
         binary = cv2.morphologyEx(
             binary, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
         )
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         full = np.float32([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]])
         if not contours:
             return full
         largest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest) < MIN_PAGE_AREA_FRACTION * small.shape[0] * small.shape[1]:
+        if (
+            cv2.contourArea(largest)
+            < MIN_PAGE_AREA_FRACTION * small.shape[0] * small.shape[1]
+        ):
             return full
         quad = cv2.approxPolyDP(largest, 0.02 * cv2.arcLength(largest, True), True)
         if len(quad) != 4:
@@ -175,7 +181,9 @@ class TimingMarkAlignment(ImagePreprocessor):
         # centroids stay sub-pixel accurate and the homography averages many marks
         shrink = min(1.0, 8.0 / max(min(self.mark_w, self.mark_h) * scale, 1e-6))
         if shrink < 0.9:
-            image = cv2.resize(image, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA)
+            image = cv2.resize(
+                image, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA
+            )
         else:
             shrink = 1.0
         scale *= shrink
@@ -196,7 +204,10 @@ class TimingMarkAlignment(ImagePreprocessor):
             (areas >= low)
             & (areas <= high)
             & (solidity > 0.6)
-            & (np.maximum(widths, heights) <= long_side * (1 + self.size_tolerance) * 1.5)
+            & (
+                np.maximum(widths, heights)
+                <= long_side * (1 + self.size_tolerance) * 1.5
+            )
         )
         return (centroids[1:][keep] / shrink).astype(np.float32)
 
@@ -248,7 +259,9 @@ class TimingMarkAlignment(ImagePreprocessor):
     def match(self, homography, candidates, radius):
         """Mutual nearest-neighbour matches (expected index, candidate index) within radius."""
         projected = cv2.perspectiveTransform(self.expected[None], homography)[0]
-        distances = np.linalg.norm(projected[:, None, :] - candidates[None, :, :], axis=2)
+        distances = np.linalg.norm(
+            projected[:, None, :] - candidates[None, :, :], axis=2
+        )
         nearest_candidate = distances.argmin(axis=1)
         nearest_expected = distances.argmin(axis=0)
         pairs = [
@@ -288,10 +301,14 @@ class TimingMarkAlignment(ImagePreprocessor):
         grid = np.stack([gx.ravel(), gy.ravel()], axis=1)
         displacement = evaluate_thin_plate_spline(weights, targets, grid)
         dx = cv2.resize(
-            displacement[:, 0].reshape(gx.shape), (page_w, page_h), interpolation=cv2.INTER_LINEAR
+            displacement[:, 0].reshape(gx.shape),
+            (page_w, page_h),
+            interpolation=cv2.INTER_LINEAR,
         )
         dy = cv2.resize(
-            displacement[:, 1].reshape(gy.shape), (page_w, page_h), interpolation=cv2.INTER_LINEAR
+            displacement[:, 1].reshape(gy.shape),
+            (page_w, page_h),
+            interpolation=cv2.INTER_LINEAR,
         )
         map_x, map_y = np.meshgrid(
             np.arange(page_w, dtype=np.float32), np.arange(page_h, dtype=np.float32)

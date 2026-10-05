@@ -82,9 +82,7 @@ class ImageInstanceOps:
             morph = CLAHE_HELPER.apply(morph)
             self.append_save_img(3, morph)
             # Remove shadows further, make columns/boxes darker (less gamma)
-            morph = ImageUtils.adjust_gamma(
-                morph, config.threshold_params.GAMMA_LOW
-            )
+            morph = ImageUtils.adjust_gamma(morph, config.threshold_params.GAMMA_LOW)
             # TODO: all numbers should come from either constants or config
             _, morph = cv2.threshold(morph, 220, 220, cv2.THRESH_TRUNC)
             morph = ImageUtils.normalize_util(morph)
@@ -112,16 +110,12 @@ class ImageInstanceOps:
             # print("Begin Alignment")
             # Open : erode then dilate
             v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 10))
-            morph_v = cv2.morphologyEx(
-                morph, cv2.MORPH_OPEN, v_kernel, iterations=3
-            )
+            morph_v = cv2.morphologyEx(morph, cv2.MORPH_OPEN, v_kernel, iterations=3)
             _, morph_v = cv2.threshold(morph_v, 200, 200, cv2.THRESH_TRUNC)
             morph_v = 255 - ImageUtils.normalize_util(morph_v)
 
             if config.outputs.show_image_level >= 3:
-                InteractionUtils.show(
-                    "morphed_vertical", morph_v, 0, 1, config=config
-                )
+                InteractionUtils.show("morphed_vertical", morph_v, 0, 1, config=config)
 
             # InteractionUtils.show("morph1",morph,0,1,config=config)
             # InteractionUtils.show("morphed_vertical",morph_v,0,1,config=config)
@@ -142,9 +136,7 @@ class ImageInstanceOps:
             # _, morph_h = cv2.threshold(morph_h,morph_thr,255,cv2.THRESH_BINARY)
             # morph_h = cv2.erode(morph_h,  np.ones((5,5),np.uint8), iterations = 2)
             if config.outputs.show_image_level >= 3:
-                InteractionUtils.show(
-                    "morph_thr_eroded", morph_v, 0, 1, config=config
-                )
+                InteractionUtils.show("morph_thr_eroded", morph_v, 0, 1, config=config)
 
             self.append_save_img(6, morph_v)
 
@@ -424,9 +416,7 @@ class ImageInstanceOps:
                 if config.outputs.show_image_level >= 5:
                     if key in all_c_box_vals:
                         q_nums[key].append(f"{key[:2]}_c{str(block_q_strip_no)}")
-                        all_c_box_vals[key].append(
-                            all_q_strip_arrs[total_q_strip_no]
-                        )
+                        all_c_box_vals[key].append(all_q_strip_arrs[total_q_strip_no])
 
                 block_q_strip_no += 1
                 total_q_strip_no += 1
@@ -435,9 +425,7 @@ class ImageInstanceOps:
         per_omr_threshold_avg /= total_q_strip_no
         per_omr_threshold_avg = round(per_omr_threshold_avg, 2)
         # Translucent
-        cv2.addWeighted(
-            final_marked, alpha, transp_layer, 1 - alpha, 0, final_marked
-        )
+        cv2.addWeighted(final_marked, alpha, transp_layer, 1 - alpha, 0, final_marked)
         # Box types
         if config.outputs.show_image_level >= 6:
             # plt.draw()
@@ -570,7 +558,6 @@ class ImageInstanceOps:
             "needs_review": any(flag in params.review_flags for flag in flags),
             "bubbles": bubble_details,
         }
-
 
     @staticmethod
     def draw_template_layout(img, template, shifted=True, draw_qvals=False, border=-1):

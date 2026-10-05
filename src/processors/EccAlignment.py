@@ -8,6 +8,7 @@ the blank form to remove the remaining sub-pixel to few-pixel offsets. It runs o
 a downscaled copy for speed and applies the scaled transform at full resolution.
 Use it after CropOnMarkers / TimingMarkAlignment, not as the only step.
 """
+
 import cv2
 import numpy as np
 
@@ -49,7 +50,9 @@ class EccAlignment(ImagePreprocessor):
         ref_h, ref_w = self.reference.shape[:2]
         image = ImageUtils.resize_util(image, ref_w, ref_h)
         small_w, small_h = int(ref_w * self.scale), int(ref_h * self.scale)
-        reference_small = cv2.resize(self.reference, (small_w, small_h)).astype(np.float32)
+        reference_small = cv2.resize(self.reference, (small_w, small_h)).astype(
+            np.float32
+        )
         image_small = cv2.resize(image, (small_w, small_h)).astype(np.float32)
 
         if self.motion == cv2.MOTION_HOMOGRAPHY:

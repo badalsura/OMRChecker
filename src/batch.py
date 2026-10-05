@@ -8,6 +8,7 @@ and the parent process only moves file paths and small result dicts.
     for result in scan_files(paths, "forms/exam/template.json", workers=8):
         ...
 """
+
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -32,7 +33,9 @@ def get_engine(engine_args):
 
     engine = _ENGINES.get(engine_args)
     if engine is None:
-        template_path, config_path, evaluation_path, bubble_model, icr_model = engine_args
+        template_path, config_path, evaluation_path, bubble_model, icr_model = (
+            engine_args
+        )
         engine = OMREngine(
             template_path,
             config_path=config_path,
@@ -52,8 +55,12 @@ def _scan_one(task):
     for result in results:
         if output_dir is not None and result.marked_image is not None:
             stem = Path(result.file_id).stem
-            cv2.imwrite(str(Path(output_dir, f"{stem}_marked.jpg")), result.marked_image)
-            cv2.imwrite(str(Path(output_dir, f"{stem}_aligned.png")), result.aligned_image)
+            cv2.imwrite(
+                str(Path(output_dir, f"{stem}_marked.jpg")), result.marked_image
+            )
+            cv2.imwrite(
+                str(Path(output_dir, f"{stem}_aligned.png")), result.aligned_image
+            )
         data = result.to_dict()
         data["input_path"] = str(file_path)
         payload.append(data)

@@ -9,6 +9,7 @@ An engine is cheap to call repeatedly but not thread-safe: preprocessors and
 the reading code keep per-instance state. Use one engine per worker thread or
 process (see src/batch.py).
 """
+
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,7 +98,10 @@ class OMREngine:
 
         self.template = Template(template_path, self.tuning_config)
         self.evaluation_config = None
-        if evaluation_path is None and template_dir.joinpath("evaluation.json").exists():
+        if (
+            evaluation_path is None
+            and template_dir.joinpath("evaluation.json").exists()
+        ):
             evaluation_path = template_dir.joinpath("evaluation.json")
         if evaluation_path:
             self.evaluation_config = EvaluationConfig(

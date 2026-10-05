@@ -2,6 +2,7 @@
 Image based feature alignment
 Credits: https://www.learnopencv.com/image-alignment-feature-based-using-opencv-c-python/
 """
+
 import cv2
 import numpy as np
 
@@ -33,11 +34,11 @@ class FeatureBasedAlignment(ImagePreprocessor):
         )
         # get options with defaults
         self.max_features = int(options.get("maxFeatures", DEFAULT_MAX_FEATURES))
-        self.good_match_percent = options.get("goodMatchPercent", DEFAULT_GOOD_MATCH_PERCENT)
-        self.transform_2_d = options.get("2d", False)
-        self.min_inliers = int(
-            options.get("minInliers", DEFAULT_MIN_ALIGNMENT_INLIERS)
+        self.good_match_percent = options.get(
+            "goodMatchPercent", DEFAULT_GOOD_MATCH_PERCENT
         )
+        self.transform_2_d = options.get("2d", False)
+        self.min_inliers = int(options.get("minInliers", DEFAULT_MIN_ALIGNMENT_INLIERS))
         self.max_scale_change = float(
             options.get("maxScaleChange", DEFAULT_MAX_TRANSFORM_SCALE_CHANGE)
         )

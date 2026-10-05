@@ -1,11 +1,12 @@
 """
 
- OMRChecker
+OMRChecker
 
- Author: Udayraj Deshmukh
- Github: https://github.com/Udayraj123
+Author: Udayraj Deshmukh
+Github: https://github.com/Udayraj123
 
 """
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -102,7 +103,7 @@ class ImageUtils:
         # obtain a consistent order of the points and unpack them
         # individually
         rect = ImageUtils.order_points(pts)
-        (tl, tr, br, bl) = rect
+        tl, tr, br, bl = rect
 
         # compute the width of the new image, which will be the
         width_a = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
@@ -213,9 +214,7 @@ class ImageUtils:
                     f"Processing PDF '{file_path.name}' "
                     f"(pdf_dpi={pdf_params.pdf_dpi}, pdf_page={pdf_params.pdf_page})"
                 )
-                user_pages = ImageUtils._resolve_pages(
-                    pdf_params.pdf_page, doc_len
-                )
+                user_pages = ImageUtils._resolve_pages(pdf_params.pdf_page, doc_len)
                 # Convert 1-based user pages to 0-based fitz indices,
                 # filter out-of-range pages with warning.
                 pages = []

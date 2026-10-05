@@ -1,11 +1,12 @@
 """
 
- OMRChecker
+OMRChecker
 
- Author: Udayraj Deshmukh
- Github: https://github.com/Udayraj123
+Author: Udayraj Deshmukh
+Github: https://github.com/Udayraj123
 
 """
+
 from src.constants.common import FIELD_TYPES
 from src.core import ImageInstanceOps
 from src.logger import logger

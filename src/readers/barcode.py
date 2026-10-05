@@ -6,6 +6,7 @@ Code 39/93, Codabar, EAN-8/13, UPC-A/E, ITF, GS1 DataBar, PDF417, MicroPDF417,
 QR Code (all versions, Model 1/2), Micro QR, rMQR, Data Matrix, Aztec and
 MaxiCode. A zone can restrict this with options.formats, e.g. ["Code128"].
 """
+
 import cv2
 import numpy as np
 
@@ -61,9 +62,7 @@ def read_barcode_zone(zone, image):
 
     formats = _formats_option(zone)
     if formats is None and zone.type == "qrcode":
-        formats = zxingcpp.barcode_formats_from_str(
-            "QRCode,MicroQRCode,RMQRCode"
-        )
+        formats = zxingcpp.barcode_formats_from_str("QRCode,MicroQRCode,RMQRCode")
     symbols = decode_symbols(crop, formats)
     if not symbols:
         return ZoneReadResult(zone.name, zone.type, "", 0.0, ["not_found"])
