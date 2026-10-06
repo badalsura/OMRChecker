@@ -556,6 +556,13 @@ class ScanIndex:
                 yield from rows
                 last = rows[-1]["rid"]
 
+    def distinct_templates(self, **filters):
+        where, params = self._result_where(**filters)
+        rows = self._query(
+            f"SELECT DISTINCT template_id FROM scans {where} LIMIT 100", params
+        )
+        return [row["template_id"] for row in rows if row["template_id"]]
+
     def count_results(self, **filters):
         where, params = self._result_where(**filters)
         return self._query(f"SELECT COUNT(*) AS n FROM scans {where}", params)[0]["n"]

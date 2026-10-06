@@ -14,6 +14,7 @@ place; every change is also an audit record (result.json "audit" + SQLite).
 
 import json
 import ntpath
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -285,6 +286,7 @@ class ResultsService:
                             empty_values[bubbles[0].field_label] = block.empty_val
                 return {
                     "output_columns": list(template.output_columns),
+                    "zone_names": [zone.name for zone in template.zones],
                     "custom_labels": {
                         k: list(v) for k, v in template.custom_labels.items()
                     },
@@ -295,6 +297,7 @@ class ResultsService:
         except ResultsError:
             return {
                 "output_columns": sorted((result.get("responses") or {}).keys()),
+                "zone_names": sorted((result.get("zones") or {}).keys()),
                 "custom_labels": {},
                 "empty_values": {},
                 "template_version": result.get("template_version"),
@@ -680,7 +683,14 @@ class ResultsService:
                     "total": row["total"] or 0,
                 }
             )
-        fields.sort(key=lambda f: (f["auto_accuracy"] is None, f["auto_accuracy"] or 0))
+        # Worst fields first, then in natural name order (q2 before q10)
+        fields.sort(
+            key=lambda f: (
+                f["auto_accuracy"] is None,
+                f["auto_accuracy"] or 0,
+                [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", f["name"])],
+            )
+        )
         return {
             "verified_sheets": sheets,
             "auto_accepted_fields": totals["auto"],

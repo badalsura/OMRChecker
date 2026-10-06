@@ -37,6 +37,8 @@ class Settings:
     path_remap: List[Dict[str, str]] = field(default_factory=list)
     # Sheets rendered into one PDF export before it is refused (per-sheet pages)
     pdf_sheet_limit: int = 2000
+    # Allow exports straight into a database (format=sql with a SQLAlchemy URL)
+    export_sql: bool = True
 
     @classmethod
     def from_env(cls, data_dir=None, **overrides):
@@ -62,6 +64,7 @@ class Settings:
             ],
             path_remap=parse_path_remap(os.environ.get("OMR_PATH_REMAP", "")),
             pdf_sheet_limit=_env_int("OMR_PDF_SHEET_LIMIT", 2000),
+            export_sql=os.environ.get("OMR_EXPORT_SQL", "1") not in ("0", "false"),
         )
         for key, value in overrides.items():
             if value is not None:

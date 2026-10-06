@@ -34,9 +34,13 @@ def get_engine(engine_args):
 
     engine = _ENGINES.get(engine_args)
     if engine is None:
-        template_path, config_path, evaluation_path, bubble_model, icr_model = (
-            engine_args
-        )
+        (
+            template_path,
+            config_path,
+            evaluation_path,
+            bubble_model,
+            icr_model,
+        ) = engine_args
         engine = OMREngine(
             template_path,
             config_path=config_path,
@@ -64,6 +68,7 @@ def _scan_one(task):
             )
         data = result.to_dict()
         data["input_path"] = str(file_path)
+        data["source_path"] = str(Path(file_path).resolve())
         payload.append(data)
     return payload
 

@@ -46,6 +46,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.api import exports as exports_module
 from src.api import jobs as jobs_module
 from src.api import results_routes
 from src.api.results import DEFAULT_USER, ResultsService
@@ -113,6 +114,7 @@ class Context:
         self.image_cache = OrderedDict()
         self.image_cache_guard = threading.Lock()
         self.results = ResultsService(self)
+        self.exports = exports_module.ExportManager(self)
 
     def scan_lock(self, scan_id):
         with self.scan_locks_guard:
@@ -149,6 +151,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             yield
         finally:
             ctx.jobs.stop()
+            ctx.exports.stop()
 
     app = FastAPI(
         title="OMR Engine API",
@@ -910,6 +913,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     register_tool_routes(app, secured, read_upload, ctx)
     # results screen: render, correct, verify, regrade, accuracy, audit
     results_routes.register(app, ctx, secured)
+    # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
+    exports_module.register(app, ctx, secured)
 
     # ------------------------------------------------------------------
     # GUI
