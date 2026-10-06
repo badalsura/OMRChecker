@@ -986,7 +986,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^(field|zone)$"
+                  "pattern": "^(field|zone|check|custom_label|sheet)$"
                 },
                 {
                   "type": "null"
@@ -1423,6 +1423,126 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/colors": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Sheet Colors",
+        "description": "Main colours of a sheet with dropout suggestions for print colours.",
+        "operationId": "sheet_colors_tools_colors_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_sheet_colors_tools_colors_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/dropout-suggest": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Dropout Suggest",
+        "description": "Dropout settings that remove `target` while keeping `keep` dark.",
+        "operationId": "dropout_suggest_tools_dropout_suggest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/dropout-preview": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Dropout Preview",
+        "description": "The grey image the reader would see with these dropout settings (PNG).",
+        "operationId": "dropout_preview_tools_dropout_preview_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_dropout_preview_tools_dropout_preview_post"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2974,6 +3094,33 @@
         ],
         "title": "Body_create_scans_scans_post"
       },
+      "Body_dropout_preview_tools_dropout_preview_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "settings": {
+            "type": "string",
+            "title": "Settings",
+            "description": "colorDropout JSON, e.g. {\"mode\": \"red\"} or \"grey\"",
+            "default": "{}"
+          },
+          "max_width": {
+            "type": "integer",
+            "maximum": 1600.0,
+            "minimum": 64.0,
+            "title": "Max Width",
+            "default": 1000
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_dropout_preview_tools_dropout_preview_post"
+      },
       "Body_generate_templates_generate_post": {
         "properties": {
           "files": {
@@ -3027,6 +3174,39 @@
           "files"
         ],
         "title": "Body_generate_templates_generate_post"
+      },
+      "Body_sheet_colors_tools_colors_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "description": "A sample sheet (image or PDF)"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "k": {
+            "type": "integer",
+            "maximum": 12.0,
+            "minimum": 2.0,
+            "title": "K",
+            "default": 6
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_sheet_colors_tools_colors_post"
       },
       "Body_upload_reference_templates__template_id__reference_post": {
         "properties": {
@@ -3097,7 +3277,15 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Changes",
-            "description": "{field_or_zone_name: new value}. Bubble field values are concatenated bubble values ('' = blank, 'AB' = multi-mark)."
+            "description": "{name: new value} for fields, zones, custom labels (split over their columns) and cross-field checks (by check name or output column). Bubble field values are concatenated bubble values ('' = blank, 'AB' = multi-mark)."
+          },
+          "accept": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Accept",
+            "description": "Names whose current value is right (settles their review item)"
           },
           "toggle": {
             "items": {
@@ -3384,6 +3572,35 @@
         },
         "type": "object",
         "title": "ReviewBody"
+      },
+      "SuggestBody": {
+        "properties": {
+          "target": {
+            "type": "string",
+            "title": "Target",
+            "description": "Colour to remove, '#RRGGBB'"
+          },
+          "keep": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep",
+            "description": "Colours that must stay dark (default: black, pencil, blue pens)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "target"
+        ],
+        "title": "SuggestBody"
       },
       "ValidationError": {
         "properties": {
