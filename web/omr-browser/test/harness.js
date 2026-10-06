@@ -9,6 +9,7 @@ const OMR = require("../omr.js");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
+// Binary PGM (gray) or PPM (RGB -> {width, height, data, channels: 3})
 function readPgm(file) {
   const buf = fs.readFileSync(file);
   let i = 0;
@@ -24,10 +25,17 @@ function readPgm(file) {
     fields.push(buf.toString("latin1", start, i));
   }
   i++;
-  if (fields[0] !== "P5") throw new Error(`${file}: not a binary PGM`);
+  if (fields[0] !== "P5" && fields[0] !== "P6") throw new Error(`${file}: not a binary PGM/PPM`);
   const width = Number(fields[1]);
   const height = Number(fields[2]);
-  return { width, height, data: new Uint8Array(buf.subarray(i, i + width * height)) };
+  const channels = fields[0] === "P6" ? 3 : 1;
+  const data = new Uint8Array(buf.subarray(i, i + width * height * channels));
+  return channels === 3 ? { width, height, data, channels } : { width, height, data };
+}
+
+function sheetImage(dir, fileId) {
+  const ppm = path.join(dir, `${fileId}.ppm`);
+  return readPgm(fs.existsSync(ppm) ? ppm : path.join(dir, `${fileId}.pgm`));
 }
 
 function findPython() {
@@ -80,13 +88,20 @@ async function runScenario(dir, options = {}) {
   const labels = fieldLabels(templateJson);
   const sheets = [];
   for (const fileId of Object.keys(expected)) {
-    const image = readPgm(path.join(dir, `${fileId}.pgm`));
+    const image = sheetImage(dir, fileId);
     const t0 = process.hrtime.bigint();
     const js = await engine.scan(image, { fileId });
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     sheets.push({ fileId, js, py: expected[fileId].python, truth: expected[fileId].truth, ms });
   }
   return { dir, labels, templateJson, sheets };
+}
+
+// JSON with object keys sorted
+function canonical(value) {
+  return JSON.stringify(value, (key, v) =>
+    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, v[k]])) : v
+  );
 }
 
 function compare(run) {
@@ -109,6 +124,15 @@ function compare(run) {
     msMax: 0,
     disagreements: [],
     truthErrors: [],
+    zones: 0,
+    zoneAgree: 0,
+    zoneDisagreements: [],
+    rulesAgree: 0,
+    rulesDisagreements: [],
+    reviewListAgree: 0,
+    thresholdsAgree: 0,
+    reviewListDisagreements: [],
+    sheetItems: 0,
   };
   for (const s of run.sheets) {
     stats.msTotal += s.ms;
@@ -118,6 +142,26 @@ function compare(run) {
     if (s.js.status === s.py.status) stats.statusAgree++;
     if (s.js.status === "error" || s.py.status === "error") continue;
     stats.bothRead++;
+    // Zones: value, flags, review and the engine that decoded
+    for (const name of Object.keys(s.py.zones)) {
+      const j = s.js.zones[name] || {};
+      const p = s.py.zones[name];
+      stats.zones++;
+      const same = j.value === p.value && j.needs_review === p.needs_review && j.engine === p.engine && JSON.stringify(j.flags) === JSON.stringify(p.flags);
+      if (same) stats.zoneAgree++;
+      else stats.zoneDisagreements.push({ file: s.fileId, name, js: [j.value, j.engine, j.flags], py: [p.value, p.engine, p.flags] });
+    }
+    // Rules: checks, validation and the output row must match exactly
+    // (key order is not compared: Python builds responses from a set)
+    const rulesJs = canonical([s.js.checks, s.js.validation, s.js.responses]);
+    const rulesPy = canonical([s.py.checks, s.py.validation, s.py.responses]);
+    if (rulesJs === rulesPy) stats.rulesAgree++;
+    else stats.rulesDisagreements.push({ file: s.fileId, js: rulesJs, py: rulesPy });
+    if (canonical(s.js.thresholds) === canonical(s.py.thresholds)) stats.thresholdsAgree++;
+    // The whole review list (field, zone, rule and sheet items) in order
+    if (canonical(s.js.review) === canonical(s.py.review)) stats.reviewListAgree++;
+    else stats.reviewListDisagreements.push({ file: s.fileId, js: canonical(s.js.review), py: canonical(s.py.review) });
+    stats.sheetItems += s.py.review.filter((item) => item.kind === "sheet").length;
     for (const label of run.labels) {
       const j = s.js.fields[label];
       const p = s.py.fields[label];
@@ -145,6 +189,7 @@ function compare(run) {
   stats.valueAgreement = stats.fields ? stats.valueAgree / stats.fields : 1;
   stats.reviewAgreement = stats.fields ? stats.reviewAgree / stats.fields : 1;
   stats.msMean = stats.sheets ? stats.msTotal / stats.sheets : 0;
+  stats.zoneAgreement = stats.zones ? stats.zoneAgree / stats.zones : 1;
   return stats;
 }
 
@@ -153,8 +198,11 @@ function summary(name, st) {
     `${name}: sheets=${st.sheets} jsErr=${st.jsErrors} pyErr=${st.pyErrors} fields=${st.fields} ` +
     `value-agree=${(100 * st.valueAgreement).toFixed(2)}% review-agree=${(100 * st.reviewAgreement).toFixed(2)}% ` +
     `status-agree=${st.statusAgree}/${st.sheets} unflagged-wrong js=${st.unflaggedJsWrong}/${st.unflaggedJs} py=${st.unflaggedPyWrong}/${st.unflaggedPy} ` +
-    `acc js=${st.jsCorrect} py=${st.pyCorrect} ms/sheet mean=${st.msMean.toFixed(1)} max=${st.msMax.toFixed(1)}`
+    `acc js=${st.jsCorrect} py=${st.pyCorrect} ` +
+    (st.zones ? `zones=${st.zoneAgree}/${st.zones} ` : "") +
+    `rules=${st.rulesAgree}/${st.bothRead} review-lists=${st.reviewListAgree}/${st.bothRead} ` +
+    `ms/sheet mean=${st.msMean.toFixed(1)} max=${st.msMax.toFixed(1)}`
   );
 }
 
-module.exports = { readPgm, ensureFixtures, runScenario, compare, summary, REPO_ROOT, OMR };
+module.exports = { readPgm, sheetImage, canonical, ensureFixtures, runScenario, compare, summary, REPO_ROOT, OMR };
