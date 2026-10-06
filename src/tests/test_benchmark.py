@@ -246,3 +246,31 @@ def test_file_benchmark_and_cli(tmp_path):
     saved = json.loads(report.read_text())
     assert saved["fields"]["correct"] == 3 * 15 - 1
     assert saved["config"]["mode"] == "files"
+
+
+def test_multi_mark_truth_and_review_list_count_as_flagged():
+    from src.benchmark.metrics import evaluate_record
+
+    result = {
+        "fields": {
+            "q1": {"value": "AC", "needs_review": True, "flags": ["multi_marked"]},
+            "q2": {"value": "C", "needs_review": False},
+            "roll1": {"value": "1", "needs_review": False},
+            "roll2": {"value": "", "needs_review": False},
+        },
+        "zones": {},
+        "responses": {"q1": "AC", "q2": "C", "roll": "1"},
+        # A validation rule, not a field flag, sends the roll number to review
+        "review": [
+            {"kind": "custom_label", "name": "roll", "fields": ["roll1", "roll2"]}
+        ],
+    }
+    items = {
+        item["column"]: item
+        for item in evaluate_record(
+            result, {"q1": "*", "q2": "*", "roll": "12"}, {"roll": ["roll1", "roll2"]}
+        )
+    }
+    assert items["q1"]["correct"] and items["q1"]["flagged"]
+    assert not items["q2"]["correct"] and not items["q2"]["flagged"]
+    assert items["roll"]["flagged"] and not items["roll"]["correct"]

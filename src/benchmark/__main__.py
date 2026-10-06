@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.benchmark.metrics import format_summary
 from src.benchmark.runner import PRESETS, run_files, run_synthetic
+from src.ml.dataset import load_truth
 
 
 def build_parser():
@@ -21,7 +22,15 @@ def build_parser():
     )
     source.add_argument(
         "--truth",
-        help="truth CSV (file_name + one column per output/field/zone) or JSON",
+        help="truth CSV/XLSX (file name + one column per output/field/zone) or JSON",
+    )
+    source.add_argument(
+        "--answers-column",
+        action="append",
+        default=[],
+        metavar="COLUMN[=PREFIX[:COUNT]]",
+        help="a truth column holding one character per question (space = blank, "
+        "* = multi-marked), e.g. ANS=q:120; repeatable",
     )
     source.add_argument("--config", help="config.json (default: next to the template)")
     synth = parser.add_argument_group("synthetic sheets (no files needed)")
@@ -67,6 +76,16 @@ def parse_dropout(value):
     return json.loads(value) if value.startswith("{") else {"mode": value}
 
 
+def parse_answer_columns(specs):
+    """["ANS", "ANS2=r:60"] -> {"ANS": ("q", None), "ANS2": ("r", 60)}."""
+    columns = {}
+    for spec in specs or []:
+        column, _, rest = spec.partition("=")
+        prefix, _, count = (rest or "q").partition(":")
+        columns[column] = (prefix or "q", int(count) if count else None)
+    return columns
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -92,10 +111,13 @@ def main(argv=None):
     else:
         if not (args.template and args.images and args.truth):
             parser.error("give --template, --images and --truth, or --synthetic N")
+        truth = args.truth
+        if args.answers_column:
+            truth = load_truth(truth, parse_answer_columns(args.answers_column))
         metrics = run_files(
             args.template,
             args.images,
-            args.truth,
+            truth,
             bubble_model_path=args.bubble_model,
             icr_model_path=args.icr_model,
             config_path=args.config,

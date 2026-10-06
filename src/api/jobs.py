@@ -60,6 +60,7 @@ class JobManager:
         self.live = {}  # job_id -> job dict while queued/running
         self.cancelled = set()
         self.pool = None
+        self.pool_workers = None
         self.thread = None
         self.stopping = threading.Event()
 
@@ -92,7 +93,13 @@ class JobManager:
             self.thread.join(timeout=10)
 
     def _get_pool(self, workers):
+        # Jobs run one at a time, so a job asking for a different worker count
+        # gets a fresh pool once the previous job's pool has drained
+        if self.pool is not None and self.pool_workers != workers:
+            self.pool.shutdown(wait=True)
+            self.pool = None
         if self.pool is None:
+            self.pool_workers = workers
             context = multiprocessing.get_context(self.settings.mp_start_method)
             self.pool = ProcessPoolExecutor(
                 max_workers=workers, mp_context=context, initializer=worker_init

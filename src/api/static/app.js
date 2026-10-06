@@ -64,6 +64,9 @@ async function init() {
 async function boot() {
   try {
     state.caps = await api("/capabilities");
+    // Show what "auto" means for the job worker count on this machine
+    const workers = document.getElementById("job-workers");
+    if (workers && state.caps.workers) workers.placeholder = `auto (${state.caps.workers})`;
     await loadTemplates();
     refreshBadge();
   } catch (error) {

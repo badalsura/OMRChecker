@@ -440,3 +440,19 @@ def test_browser_engine_cors_and_template_files(tmp_path, spec):
         assert preflight.headers["access-control-allow-origin"] == origin
         other = client.get("/health", headers={"Origin": "https://evil.example"})
         assert "access-control-allow-origin" not in other.headers
+
+
+def test_job_pool_follows_each_jobs_worker_count():
+    from types import SimpleNamespace
+
+    from src.api.jobs import JobManager
+
+    manager = JobManager(None, None, None, SimpleNamespace(mp_start_method="spawn"))
+    try:
+        first = manager._get_pool(2)
+        assert manager._get_pool(2) is first
+        second = manager._get_pool(3)
+        assert second is not first
+        assert second._max_workers == 3
+    finally:
+        manager.pool.shutdown(wait=True)
