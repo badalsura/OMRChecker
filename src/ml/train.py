@@ -365,6 +365,26 @@ def measure_inference_speed(model_path, input_size, crop_shape=(30, 30), n=8192)
 # --------------------------------------------------------------------------- training
 
 
+# Below this many crops (e.g. a few hundred handwritten digits) the default
+# schedule stops before the network has learnt anything: train longer, slower
+SMALL_DATASET = 5000
+
+
+def training_schedule(n_samples, epochs=None, lr=None, patience=None):
+    """(epochs, lr, patience), filling unset values for the dataset size.
+
+    On 40 real sheets (~600 digits) the large-data schedule (30 epochs, lr 3e-3,
+    patience 5) stopped at chance level; 150 epochs, lr 1e-3, patience 40 reached
+    91% digit accuracy on held-out sheets.
+    """
+    small = n_samples < SMALL_DATASET
+    return (
+        epochs if epochs is not None else (150 if small else 30),
+        lr if lr is not None else (1e-3 if small else 3e-3),
+        patience if patience is not None else (40 if small else 5),
+    )
+
+
 def train_from_arrays(
     images: np.ndarray,
     labels: Sequence[str],
@@ -372,12 +392,12 @@ def train_from_arrays(
     kind=KIND_BUBBLE,
     groups: Optional[Sequence[str]] = None,
     input_size=(32, 32),
-    epochs=30,
+    epochs=None,
     batch_size=256,
-    lr=3e-3,
+    lr=None,
     weight_decay=1e-4,
     val_fraction=0.15,
-    patience=5,
+    patience=None,
     balance="weights",
     augment=True,
     seed=0,
@@ -389,6 +409,7 @@ def train_from_arrays(
 
     Returns the metadata written to the JSON sidecar.
     """
+    epochs, lr, patience = training_schedule(len(labels), epochs, lr, patience)
     torch = _torch()
     torch.manual_seed(seed)
     if threads:
@@ -588,11 +609,17 @@ def main(argv=None):
     parser.add_argument(
         "--input-size", type=int, nargs=2, default=[32, 32], metavar=("W", "H")
     )
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument(
+        "--epochs", type=int, default=None, help="default: 30, or 150 below 5000 crops"
+    )
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=3e-3)
+    parser.add_argument(
+        "--lr", type=float, default=None, help="default: 3e-3, or 1e-3 below 5000 crops"
+    )
     parser.add_argument("--val-fraction", type=float, default=0.15)
-    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument(
+        "--patience", type=int, default=None, help="default: 5, or 40 below 5000 crops"
+    )
     parser.add_argument("--balance", choices=["weights", "none"], default="weights")
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--seed", type=int, default=0)

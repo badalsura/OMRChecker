@@ -361,3 +361,11 @@ def test_load_truth_xlsx_with_answer_string(tmp_path):
     assert row["pcode"] == "01051"
     assert [row[f"q{i}"] for i in range(1, 9)] == ["C", "B", "", "A", "*", "D", "", ""]
     assert "ANS" not in row
+
+
+def test_training_schedule_adapts_to_small_datasets():
+    from src.ml.train import training_schedule
+
+    assert training_schedule(600) == (150, 1e-3, 40)
+    assert training_schedule(20000) == (30, 3e-3, 5)
+    assert training_schedule(600, epochs=10, lr=0.01, patience=2) == (10, 0.01, 2)
