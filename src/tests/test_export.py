@@ -540,3 +540,39 @@ def test_decimal_and_bool_options():
         "b", "field", "b", type="bool", options={"true": ["A"], "false": ["B"]}
     )
     assert cast_value("a", column) is True and cast_value("B", column) is False
+
+
+def test_server_caps_per_sheet_pdf_pages(tmp_path):
+    spec = default_spec(questions=4, roll_digits=2, with_zones=False)
+    rng = random.Random(3)
+    with make_client(tmp_path, pdf_sheet_limit=2) as client:
+        template_id = client.post(
+            "/templates",
+            files=[
+                (
+                    "files",
+                    (
+                        "template.json",
+                        json.dumps(spec.to_template(pre_processors=[])),
+                        "application/json",
+                    ),
+                )
+            ],
+            data={"name": "Cap"},
+        ).json()["id"]
+        files = []
+        for i in range(3):
+            image, _ = render_sheet(spec, random_answers(spec, rng), rng=rng)
+            files.append(("files", (f"s{i}.png", png_bytes(image), "image/png")))
+        client.post("/scans", data={"template_id": template_id}, files=files)
+        body = {
+            "format": "pdf",
+            "filters": {"template_id": template_id},
+            "wait": True,
+            "profile": {"pdf": {"mode": "sheets", "maxSheets": 100}},
+        }
+        record = client.post("/exports", json=body).json()
+        assert record["state"] == "failed"
+        assert "limited to 2" in record["error"]
+        body["profile"]["pdf"]["mode"] = "table"
+        assert client.post("/exports", json=body).json()["state"] == "completed"

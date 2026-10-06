@@ -468,9 +468,198 @@ Open `http://host:8000/` for the GUI and `/docs` for the OpenAPI reference.
 | Scans | read synchronously; get crops for review |
 | Jobs | run bulk work from uploads or a server folder, with progress, ETA and CSV results |
 | Review | work the review queue; corrections rescore the sheet and are saved as training data |
+| Results | browse graded sheets with their overlay, toggle bubbles, edit values, verify, regrade, measure accuracy ([below](#results-screen)) |
+| Exports | CSV, XLSX, PDF, SQLite or any SQL database, with export profiles ([below](#exports)) |
 
 Set `OMR_API_KEY` to require an `X-API-Key` header. Set `OMR_ALLOWED_DIRS`
-before exposing folder jobs beyond localhost.
+before exposing folder jobs beyond localhost. Send `X-User: <name>` to record
+who made a correction; the GUI sets it from **User** in the header, and
+otherwise corrections are recorded as `local`.
+
+## Results screen
+
+The **Results** tab is for looking at graded sheets after a job. The **Review**
+tab is a queue of single flagged items; the Results tab shows one whole sheet
+at a time.
+
+- **Finding sheets.** Use the list on the left. Filter by view, job, template,
+  field (a name that was flagged) and flag, or search by file name.
+  - Views: all, flagged, reviewed, not reviewed, verified, corrected and errors.
+  - The list pages through the SQLite index, so it stays fast with millions of
+    sheets.
+  - Keys: `j`/`k` (or the arrow keys) move to the next/previous sheet, `n` jumps
+    to the next flagged item, `f` fits the image, `o` toggles the overlay, and
+    `v` or `Enter` marks the sheet verified.
+- **The canvas.** It shows the aligned sheet with the overlay the sheet was
+  graded with. Scroll to zoom and drag to pan.
+  - Click a bubble to toggle it. The server recomputes the field value
+    (multi-marks stay in sheet order), the custom labels, the template's
+    rules, the score and the status.
+  - Click a zone to edit its value.
+- **The sidebar.** It lists every output, flagged first. Each value is editable
+  inline:
+  - a custom label such as a roll number can be typed whole; it is split over
+    its bubble columns, and a space means a blank column;
+  - cross-field check outputs and their validation reasons are shown, and so are
+    sheet-level items such as `too_few_marks`;
+  - pending items have an **Accept** button;
+  - the panel also lists all of `result.checks` and the sheet's change history.
+- **What a correction keeps.** The machine read survives as `original_value`,
+  and the items flagged at read time are kept in `read_review`.
+  - Every change is an audit record: who (`X-User` header, or `local`), when,
+    the old value and the new value. See `GET /scans/{id}/audit` and `GET /audit`.
+  - Verifying a sheet sends its corrected fields to the training data in
+    `omr_data/training`.
+  - Exports always write the corrected values.
+- **Accuracy.** **Accuracy** reports the share of auto-accepted fields
+  (not flagged when read) that needed no correction on verified sheets. It is
+  broken down per field, so a field that is often wrong without being flagged
+  stands out.
+
+Corrections re-run the template's `validate` and `checks` rules. A value a person
+set or accepted stays settled while it keeps that value. An edit that breaks a
+rule again puts the item back in the review queue. A value typed for a check
+output is kept when the rules re-run and when the sheet is regraded.
+
+### How a sheet is re-rendered
+
+No aligned image is stored per sheet by default, which keeps bulk jobs fast.
+Instead, every scan records two things:
+- the absolute path of its source file (`source_path`);
+- the template version it was read with (`template_version`, a hash of
+  template.json, config.json and evaluation.json).
+
+Each version is archived under `omr_data/template_versions/`. To show a sheet,
+`GET /scans/{id}/render` re-reads the source with an engine for that exact
+version. Engines are cached per version, and recent images are cached in memory.
+The endpoint returns the overlay JSON, plus the image (`/render/image`, or
+inline with `?inline=true`).
+
+- Templates with `colorDropout` are decoded in colour, as in the original read.
+- If the source file is gone, a stored `aligned.png` is used (jobs with
+  `save_images=all`, or `review` for flagged sheets).
+- If neither exists, the endpoint answers 404 and lists every path it tried.
+- If a fresh read differs from the stored values, the differences are listed as
+  `drift`.
+
+### Path remap (moved input folders)
+
+When the input folder has moved, add a remap rule `old=new`. Rules are tried in
+this order:
+
+1. the job's own rules: `PATCH /jobs/{id}` with `{"path_remap": [...]}`;
+2. the server's global rules: `PUT /settings/path-remap`, or **Path remap** in
+   the Results tab;
+3. the `OMR_PATH_REMAP` environment variable, with rules separated by `;` or
+   newlines.
+
+```bash
+OMR_PATH_REMAP='D:\scans\2024=\\nas\archive\scans\2024;/mnt/old=/mnt/new' python -m src.api
+```
+
+Matching is on whole path components. It ignores case and accepts either slash
+for Windows-style paths, so `D:\Scans` also matches `d:/scans/day1/a.png`.
+
+### Regrade
+
+`POST /scans/{id}/regrade` re-reads one sheet with changed settings without
+editing the template. The GUI has the same thing under **Regrade**.
+
+```json
+{
+  "template_overrides": {"fieldBlocks": {"MCQ_1": {"bubbleValues": ["D", "C", "B", "A"]}}},
+  "config_overrides": {"threshold_params": {"MIN_JUMP": 40}},
+  "apply": false,
+  "keep_corrections": true
+}
+```
+
+- `template_overrides` is deep-merged into the sheet's template version and
+  validated like the file. For example, `{"colorDropout": "grey"}` swaps the
+  dropout, and `null` removes a key.
+- `config_overrides` is merged into config.json.
+- `apply: false` returns a preview: the new values and a list of the fields
+  that would change. The preview image can be viewed side by side in the GUI.
+- `apply: true` stores the new read, and the previous read goes to `history`.
+- `keep_corrections` re-applies manual corrections on top of the new read.
+- `use_current_template: true` regrades with the template as it is now instead
+  of the sheet's version.
+
+## Exports
+
+Exports stream results from the index, so memory stays flat, and they always
+write corrected values. You can start one from:
+- the GUI: **Export…** on a job, or in the Results tab, which uses the current
+  filters;
+- the API;
+- the command line:
+
+```bash
+python -m src.export --data-dir omr_data --job JOB_ID --format xlsx --out day1.xlsx --profile profile.json
+python -m src.export --jsonl out/results.jsonl --template exam/template.json --format csv
+python -m src.export --data-dir omr_data --template-id exam --view verified --format sql \
+    --sql-url postgresql+psycopg://user:pw@db/omr
+```
+
+| Format | What you get |
+|---|---|
+| `csv` | UTF-8 with a BOM, so Excel opens it correctly. Leading zeros are kept as text; `csv.leadingZeros: "formula"` writes `="0123"` for Excel. |
+| `xlsx` | Write-only openpyxl, so it streams. Values are text cells, so `0123` stays `0123`. Flagged cells are yellow and corrected cells are green. A new sheet starts every `maxRowsPerSheet` rows (Excel's limit is 1,048,576). |
+| `pdf` | `mode: "table"` is a results table. `"sheets"` gives one page per sheet: the aligned image with the overlay, plus its values. `"both"` gives both. Per-sheet pages are refused above `pdf.maxSheets` (500), and the server caps that with `OMR_PDF_SHEET_LIMIT` (2000). |
+| `sqlite` | A `.sqlite` file, built in (no extra package). |
+| `sql` | Any SQLAlchemy URL, for example PostgreSQL with `psycopg`. Rows are upserted in batches on `scan_id`, so re-exporting updates rows instead of duplicating them. `OMR_EXPORT_SQL=0` disables it on a shared server. |
+
+### Export profile
+
+A profile says which columns to write, under which names, in which order and
+with which types. Profiles can be saved by name (`PUT /export-profiles/{name}`,
+or **Save profile** in the GUI).
+
+```json
+{
+  "fields": [
+    {"field": "RollNumber", "header": "Roll number"},
+    {"field": "q1"},
+    {"field": "marks", "type": "int"},
+    {"field": "dob", "type": "date", "format": "%d%m%Y", "outputFormat": "%Y-%m-%d"},
+    {"field": "consent", "type": "bool", "true": ["A"], "false": ["B"]},
+    {"field": "notes", "include": false}
+  ],
+  "includeOtherFields": true,
+  "meta": ["file_name", "page", "scan_id", "status", "score"],
+  "includeConfidence": false,
+  "includeFlags": false,
+  "includeReviewStatus": true,
+  "includeCorrected": true,
+  "includeFieldCorrected": false,
+  "allowLossyCast": false,
+  "strictCast": false,
+  "csv": {"leadingZeros": "none", "delimiter": ","},
+  "xlsx": {"maxRowsPerSheet": 1048575, "highlight": true},
+  "pdf": {"mode": "table", "maxSheets": 500},
+  "sql": {"table": "omr_results", "batchSize": 1000}
+}
+```
+
+- **Types.** Fields are text unless typed. The types are `text`, `int`,
+  `decimal`, `date` and `bool`.
+- **Leading zeros.** Casting a value with a leading zero (a roll number `0123`)
+  to `int` or `decimal` would lose the zero, so the export is refused unless
+  `allowLossyCast` is true.
+- **Values that can't be cast.** A value such as `AB` as `int` becomes empty and
+  is counted in the export's warnings. Set `strictCast` to fail the export
+  instead.
+- **Extra columns.** `meta` adds per-sheet columns. You can also add a
+  confidence, flags and corrected column per field.
+- **Rule outputs.** Cross-field check outputs are ordinary columns.
+
+API:
+- `POST /exports` takes `{format, filters, profile | profile_name, sql_url, wait}`
+  and runs in the background unless `wait` is set;
+- `GET /exports/{id}` gives progress;
+- `GET /exports/{id}/download` gives the file;
+- `POST /exports/preview` shows the first rows and the warnings before you
+  export.
 
 ## Automatic template generation
 
@@ -578,8 +767,13 @@ See [web/omr-browser/README.md](../web/omr-browser/README.md) for the full API.
 | Java | `clients/java`, a Maven project | Java 11+ |
 | Go | `clients/go/omrclient` | Go 1.18+ |
 
-All three cover templates, synchronous scans, bulk jobs, CSV results and the
-review queue. `clients/openapi.json` is the spec; regenerate it with
+All three cover:
+- templates, synchronous scans and bulk jobs;
+- CSV results and the review queue;
+- the Results screen calls: list, render, correct, verify and accuracy;
+- exports.
+
+The Python client also covers regrade, audit, path remap and export profiles. `clients/openapi.json` is the spec; regenerate it with
 `python clients/export_openapi.py` and use it to generate clients in other
 languages.
 

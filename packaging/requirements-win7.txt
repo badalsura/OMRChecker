@@ -41,6 +41,16 @@ idna==3.10
 click==8.1.8
 colorama==0.4.6
 
+# --- exports (src/export: XLSX, PDF, SQL) -------------------------------------
+openpyxl==3.1.5                  # pure Python
+et-xmlfile==2.0.0
+reportlab==4.4.2                 # 4.4.3+ calls md5(usedforsecurity=...), which needs 3.9
+charset-normalizer==3.5.2        # reportlab dependency (cp37-abi3-win_amd64)
+SQLAlchemy==2.0.54               # cp38-win_amd64; SQLite works with no driver
+greenlet==3.1.1                  # cp38-win_amd64 (SQLAlchemy dependency)
+# Optional: PostgreSQL exports; not bundled (install next to a source checkout)
+# psycopg[binary]==3.2.x
+
 # --- optional: learned bubble / ICR models -----------------------------------
 # ONNX Runtime states "supports Windows 10 and above, only". 1.19.2 is its last
 # cp38 wheel; on Windows 7 it may import only after KB3068708/KB3080149 (and the

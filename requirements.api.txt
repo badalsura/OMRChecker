@@ -2,3 +2,10 @@
 fastapi>=0.110.0
 uvicorn>=0.27.0
 python-multipart>=0.0.9
+# Exports (src/export): XLSX, PDF, SQL databases
+openpyxl>=3.1
+reportlab>=4.0,<4.4.3 ; python_version < "3.9"   # 4.4.3+ calls md5(usedforsecurity=) (3.9+)
+reportlab>=4.0 ; python_version >= "3.9"
+SQLAlchemy>=2.0
+# Optional: PostgreSQL exports (sql_url postgresql+psycopg://...)
+# psycopg[binary]>=3.1

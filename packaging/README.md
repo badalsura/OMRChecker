@@ -144,6 +144,28 @@ Differences from the Python 3.10+ build (zxing-cpp 3.x):
 * Newer-only symbologies (DX Film Edge, Telepen, Code 32, ...) are not available.
 * Micro QR cannot be *generated* for synthetic test sheets (reading works).
 
+## Exports and the Results screen
+
+The build bundles everything that exports need:
+- openpyxl for XLSX;
+- reportlab 4.4.2 for PDF (4.4.3 and later need Python 3.9);
+- SQLAlchemy with its SQLite dialect for SQL.
+
+PostgreSQL exports need `psycopg[binary]`, which is not bundled. Use a source
+install for that, or export to `.sqlite` or CSV and load the file.
+
+```
+OMRChecker.exe --host 0.0.0.0                 # Results tab: http://<pc>:8765/#results
+set OMR_PATH_REMAP=D:\scans=E:\archive\scans   # sheets whose input folder moved
+set OMR_PDF_SHEET_LIMIT=2000                  # cap on per-sheet PDF pages
+```
+
+The Results tab re-reads each sheet from its original file to draw the overlay,
+so no image is stored per sheet. If you move or archive the input folders, add a
+path remap: **Results > Path remap**, per job, or with `OMR_PATH_REMAP`. Only
+sheets whose file is gone and that have no stored image (`save_images=all`)
+cannot be shown.
+
 ## Notes for high-volume use
 
 * Use the onedir build for bulk work: worker processes of a onefile exe each
@@ -156,3 +178,6 @@ Differences from the Python 3.10+ build (zxing-cpp 3.x):
   on an 8-core PC. Measure yours with `clients/python/api_benchmark.py`.
 * Exclude `omr_data\` and the exe folder from real-time antivirus scanning;
   scanning every written result file is the usual bottleneck on Windows.
+* Exports stream from the index, so even millions of rows use little memory.
+  XLSX starts a new sheet every 1,048,575 rows, and SQL exports upsert in
+  batches of 1,000 rows.

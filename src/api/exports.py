@@ -183,6 +183,11 @@ class ExportManager:
             raise ExportError(
                 "Database exports are disabled on this server (OMR_EXPORT_SQL=0)"
             )
+        if body.format == "pdf":
+            # Server ceiling for per-sheet PDF pages (OMR_PDF_SHEET_LIMIT)
+            limit = self.ctx.settings.pdf_sheet_limit
+            asked = int(profile.pdf.get("maxSheets") or 500)
+            profile.pdf["maxSheets"] = min(asked, limit) if limit > 0 else asked
         export_id = new_id()
         record = {
             "id": export_id,
