@@ -440,6 +440,14 @@ TEMPLATE_SCHEMA = {
                             "type": "string",
                             "enum": list(FIELD_TYPES.keys()),
                         },
+                        # Fit the block onto its printed rectangular border after
+                        # page alignment (overrides alignment_params.rectify_on_border)
+                        "rectifyOnBorder": {"type": "boolean"},
+                        # Gap between the bubbles' bounding box and the printed
+                        # border, [x, y] or one number; default: estimated per sheet
+                        "borderPadding": {
+                            "anyOf": [positive_number, two_positive_numbers]
+                        },
                     },
                 }
             },

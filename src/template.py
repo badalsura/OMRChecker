@@ -314,6 +314,10 @@ class Template:
 
 
 class FieldBlock:
+    # True while the current sheet's bubbles carry rectification offsets
+    rectified = False
+    last_rectification = None
+
     def __init__(self, block_name, field_block_object):
         self.name = block_name
         self.shift = 0
@@ -349,6 +353,9 @@ class FieldBlock:
         self.parsed_field_labels = parse_fields(
             f"Field Block Labels: {self.name}", field_labels
         )
+        # Border rectification: None inherits alignment_params.rectify_on_border
+        self.rectify_on_border = field_block_object.get("rectifyOnBorder")
+        self.border_padding = field_block_object.get("borderPadding")
         self.origin = origin
         self.bubble_dimensions = bubble_dimensions
         self.calculate_block_dimensions(
@@ -443,6 +450,10 @@ class Bubble:
     It can be used as a roll number column as well. (eg roll1)
     It can also correspond to a single digit of integer type Q (eg q5d1)
     """
+
+    # Per-sheet position correction (border rectification); 0 unless rectified
+    dx = 0
+    dy = 0
 
     def __init__(self, pt, field_label, field_type, field_value):
         self.x = round(pt[0])

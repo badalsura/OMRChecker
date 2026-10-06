@@ -249,6 +249,7 @@ class ImageInstanceOps:
                 field_block.shift, field_block.shift_y = self.snap_field_block(
                     img, field_block, snap_radius
                 )
+        rectify_failed = self.rectify_field_blocks(img, template)
 
         final_align = None
         if config.outputs.show_image_level >= 2:
@@ -274,7 +275,8 @@ class ImageInstanceOps:
                 q_strip_vals = []
                 for pt in field_block_bubbles:
                     # shifted
-                    x, y = (pt.x + field_block.shift, pt.y + field_block.shift_y)
+                    x = pt.x + field_block.shift + pt.dx
+                    y = pt.y + field_block.shift_y + pt.dy
                     rect = [y, y + box_h, x, x + box_w]
                     q_strip_vals.append(
                         cv2.mean(img[rect[0] : rect[1], rect[2] : rect[3]])[0]
@@ -364,8 +366,8 @@ class ImageInstanceOps:
                     )
                     total_q_box_no += 1
                     x, y, field_value = (
-                        bubble.x + field_block.shift,
-                        bubble.y + field_block.shift_y,
+                        bubble.x + field_block.shift + bubble.dx,
+                        bubble.y + field_block.shift_y + bubble.dy,
                         bubble.field_value,
                     )
                     if fixed_mode:
@@ -483,6 +485,7 @@ class ImageInstanceOps:
                     len(detected_bubbles),
                     strip_low_confidence,
                     review_params,
+                    ["rectify_failed"] if field_block.name in rectify_failed else None,
                 )
 
                 if config.outputs.show_image_level >= 5:
@@ -557,6 +560,37 @@ class ImageInstanceOps:
             },
         }
 
+    def rectify_field_blocks(self, img, template):
+        """
+        Fit blocks with rectifyOnBorder onto their printed borders (src/rectify.py).
+        Returns the names of blocks where that failed (their fields get flagged).
+        """
+        alignment = self.tuning_config.alignment_params
+        default = alignment.get("rectify_on_border", False)
+        failed = set()
+        for field_block in template.field_blocks:
+            if field_block.rectified:
+                from src.rectify import reset_offsets
+
+                reset_offsets(field_block)
+            enabled = field_block.rectify_on_border
+            if not (default if enabled is None else enabled):
+                continue
+            from src.rectify import apply_offsets, rectify_field_block
+
+            result = rectify_field_block(
+                img, field_block, alignment.get("rectify_search_px", 20)
+            )
+            field_block.last_rectification = result.to_dict()
+            if result.ok:
+                apply_offsets(field_block, result.offsets)
+            else:
+                logger.info(
+                    f"Block '{field_block.name}' not rectified: {result.reason}"
+                )
+                failed.add(field_block.name)
+        return failed
+
     @staticmethod
     def snap_field_block(img, field_block, radius):
         """Find the (dx, dy) within radius that best fits the block's printed bubbles.
@@ -609,8 +643,8 @@ class ImageInstanceOps:
             box_w, box_h = field_block.bubble_dimensions
             for field_block_bubbles in field_block.traverse_bubbles:
                 for bubble in field_block_bubbles:
-                    x = bubble.x + field_block.shift
-                    y = bubble.y + field_block.shift_y
+                    x = bubble.x + field_block.shift + bubble.dx
+                    y = bubble.y + field_block.shift_y + bubble.dy
                     crops.append(img[max(y, 0) : y + box_h, max(x, 0) : x + box_w])
         probabilities = self.bubble_classifier.predict_proba(crops)
         return probabilities[:, self.bubble_classifier.label_index("marked")]
@@ -644,9 +678,15 @@ class ImageInstanceOps:
 
     @staticmethod
     def summarize_field(
-        field_label, value, bubble_details, marked_count, low_confidence, params
+        field_label,
+        value,
+        bubble_details,
+        marked_count,
+        low_confidence,
+        params,
+        extra_flags=None,
     ):
-        flags = []
+        flags = list(extra_flags or [])
         if marked_count > 1:
             flags.append("multi_marked")
         if marked_count == 0:
@@ -706,8 +746,8 @@ class ImageInstanceOps:
                 for pt in field_block_bubbles:
                     x, y = (
                         (
-                            pt.x + field_block.shift,
-                            pt.y + getattr(field_block, "shift_y", 0),
+                            pt.x + field_block.shift + pt.dx,
+                            pt.y + getattr(field_block, "shift_y", 0) + pt.dy,
                         )
                         if shifted
                         else (pt.x, pt.y)

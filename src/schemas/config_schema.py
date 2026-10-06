@@ -49,6 +49,8 @@ CONFIG_SCHEMA = {
                 "stride": {"type": "integer", "minimum": 1, "maximum": 10},
                 "thickness": {"type": "integer", "minimum": 1, "maximum": 10},
                 "block_snap_radius": {"type": "integer", "minimum": 0, "maximum": 50},
+                "rectify_on_border": {"type": "boolean"},
+                "rectify_search_px": {"type": "integer", "minimum": 2, "maximum": 100},
             },
         },
         "review_params": {
@@ -77,6 +79,7 @@ CONFIG_SCHEMA = {
                             "weak_mark",
                             "possible_missed_mark",
                             "model_disagrees",
+                            "rectify_failed",
                         ],
                     },
                 },

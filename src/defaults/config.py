@@ -32,6 +32,11 @@ CONFIG_DEFAULTS = DotMap(
             # Search radius (px) for snapping each field block onto its printed
             # bubbles in both directions after registration; 0 disables it
             "block_snap_radius": 0,
+            # Fit each field block onto its printed rectangular border after page
+            # alignment (a block's "rectifyOnBorder" overrides this)
+            "rectify_on_border": False,
+            # How far (px) the border may sit from where the template expects it
+            "rectify_search_px": 20,
         },
         "review_params": {
             # Intensity distance from the threshold that counts as fully confident
