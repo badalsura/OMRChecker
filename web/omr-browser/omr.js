@@ -58,6 +58,8 @@
     var REGISTRATION_ERROR = "Sheet registration failed (page, markers or timing marks not found)";
     // TimingMarkAlignment
     var TM_DEFAULT_SIZE_TOLERANCE = 0.5, TM_DEFAULT_MIN_MATCHED = 8, TM_DEFAULT_MAX_RESIDUAL = 3.0, TM_MIN_PAGE_AREA_FRACTION = 0.3, TPS_GRID_STEP = 16;
+    // A fit matching this share of marks with none past the track ends is final
+    var TM_GOOD_FIT_FRACTION = 0.95, TM_MIN_TILT_DEGREES = 0.3;
     // CropPage
     var MIN_PAGE_AREA_THRESHOLD = 80000, MAX_COSINE_THRESHOLD = 0.35, APPROX_POLY_EPSILON_FACTOR = 0.025;
 
@@ -1832,8 +1834,12 @@
       this.trackNames = Object.keys(tracks);
       this.expected = [];
       var spacings = [];
+      this.tracks = [];
       this.trackNames.forEach(function (n) {
         var marks = tracks[n].marks;
+        self.tracks.push(marks.map(function (m) {
+          return [Number(m[0]), Number(m[1])];
+        }));
         marks.forEach(function (m) {
           self.expected.push([Number(m[0]), Number(m[1])]);
         });
@@ -1851,6 +1857,7 @@
       this.markH = options.markDimensions[1];
       this.sizeTolerance = options.sizeTolerance !== undefined ? options.sizeTolerance : TM_DEFAULT_SIZE_TOLERANCE;
       var minSpacing = spacings.length ? Math.min.apply(null, spacings) : 50.0;
+      this.minSpacing = minSpacing;
       this.searchRadius = options.searchRadius !== undefined ? options.searchRadius : 0.45 * minSpacing;
       this.minMatched = options.minMatchedMarks !== undefined ? options.minMatchedMarks : Math.min(TM_DEFAULT_MIN_MATCHED, this.expected.length);
       this.maxResidual = options.maxResidual !== undefined ? options.maxResidual : TM_DEFAULT_MAX_RESIDUAL;
@@ -1991,11 +1998,122 @@
       var e0 = tr / 2 - disc, e1 = tr / 2 + disc;
       return e0 > 1e-3 * e1 && e0 > 25;
     }
+    // Best fit for one orientation over a few shifted starting guesses: tracks are
+    // periodic, so a coarse guess about one pitch off (a page scanned flush and
+    // tilted) can lock a track onto its neighbouring mark (fit_orientation)
     TimingMarkAlignment.prototype.fitOrientation = function (corners, candidates, rotation) {
+      var coarse = this.coarseHomography(corners, rotation);
+      if (!coarse) return null;
+      var radius = this.searchRadius * this.pixelsPerUnit(coarse);
+      var guesses = this.startingGuesses(coarse, candidates);
+      var best = null, seen = [];
+      for (var g = 0; g < guesses.length; g++) {
+        var fit = this.refine(guesses[g], candidates, radius, 1234 + rotation * 7 + g * 13);
+        if (!fit) continue;
+        var duplicate = seen.some(function (h) {
+          for (var k = 0; k < 9; k++) if (Math.abs(h[k] - fit.homography[k]) > 1e-3) return false;
+          return true;
+        });
+        if (duplicate) continue;
+        seen.push(fit.homography);
+        fit.rotation = rotation;
+        fit.beyondEnds = this.marksBeyondTrackEnds(fit.homography, candidates, radius * 0.5);
+        if (!best || fitKeyGreater(fit, best)) best = fit;
+        if (fit.beyondEnds === 0 && fit.matched >= TM_GOOD_FIT_FRACTION * this.expected.length) break;
+      }
+      return best;
+    };
+    function fitKeyGreater(a, b) {
+      var ka = a.matched - 2 * a.beyondEnds, kb = b.matched - 2 * b.beyondEnds;
+      return ka > kb || (ka === kb && a.residual < b.residual);
+    }
+    // The coarse mapping turned by the tracks' measured tilt, then shifted by half
+    // and one mark pitch (_starting_guesses)
+    TimingMarkAlignment.prototype.startingGuesses = function (coarse, candidates) {
+      var cx = this.page[0] / 2, cy = this.page[1] / 2, pitch = this.minSpacing;
+      var tilt = this.estimateTilt(coarse, candidates, pitch);
+      var angles = Math.abs(tilt) > TM_MIN_TILT_DEGREES ? [tilt, 0.0] : [0.0];
+      var guesses = [];
+      angles.forEach(function (angle) {
+        // cv2.getRotationMatrix2D(centre, angle, 1)
+        var t = (angle * Math.PI) / 180, al = Math.cos(t), be = Math.sin(t);
+        var rotate = [al, be, (1 - al) * cx - be * cy, -be, al, be * cx + (1 - al) * cy, 0, 0, 1];
+        [0.0, -0.5, 0.5, -1.0, 1.0].forEach(function (dy) {
+          [0.0, -0.5, 0.5].forEach(function (dx) {
+            var shift = [1, 0, dx * pitch, 0, 1, dy * pitch, 0, 0, 1];
+            guesses.push(mul3x3(mul3x3(coarse, shift), rotate));
+          });
+        });
+      });
+      return guesses;
+    };
+    // Degrees the marks are turned from the template, from neighbour directions (_estimate_tilt)
+    TimingMarkAlignment.prototype.estimateTilt = function (coarse, candidates, pitch) {
+      if (candidates.length < 6) return 0.0;
+      var inv = invert3x3(coarse);
+      if (!inv) return 0.0;
+      var pts = projectPoints(inv, candidates), steps = [];
+      for (var i = 0; i < pts.length; i++) {
+        var bd = Infinity, bj = -1;
+        for (var j = 0; j < pts.length; j++) {
+          if (j === i) continue;
+          var dx = pts[j][0] - pts[i][0], dy = pts[j][1] - pts[i][1], d = dx * dx + dy * dy;
+          if (d < bd) {
+            bd = d;
+            bj = j;
+          }
+        }
+        var step = [pts[bj][0] - pts[i][0], pts[bj][1] - pts[i][1]];
+        if (Math.abs(Math.hypot(step[0], step[1]) - pitch) < 0.25 * pitch) steps.push(step);
+      }
+      if (steps.length < 6) return 0.0;
+      var templateSteps = [];
+      for (var k = 1; k < this.expected.length; k++) {
+        var s = [this.expected[k][0] - this.expected[k - 1][0], this.expected[k][1] - this.expected[k - 1][1]];
+        if (Math.abs(Math.hypot(s[0], s[1]) - pitch) < 0.25 * pitch) templateSteps.push(s);
+      }
+      var expected = templateSteps.length ? angleMod90(templateSteps) : 0.0;
+      // Template -> image rotation; getRotationMatrix2D turns the other way
+      return -(pyMod(angleMod90(steps) - expected + 45, 90) - 45);
+    };
+    function pyMod(a, n) {
+      return ((a % n) + n) % n;
+    }
+    // Median direction of step vectors, folded into [-45, 45) degrees
+    function angleMod90(steps) {
+      var angles = steps
+        .map(function (s) {
+          return pyMod((Math.atan2(s[1], s[0]) * 180) / Math.PI + 45, 90) - 45;
+        })
+        .sort(function (a, b) {
+          return a - b;
+        });
+      var m = angles.length >> 1;
+      return angles.length % 2 ? angles[m] : (angles[m - 1] + angles[m]) / 2;
+    }
+    // Blobs one pitch past either end of a track: the fit slid along it
+    TimingMarkAlignment.prototype.marksBeyondTrackEnds = function (H, candidates, radius) {
+      var beyond = [];
+      this.tracks.forEach(function (m) {
+        if (m.length < 2) return;
+        var n = m.length;
+        beyond.push([2 * m[0][0] - m[1][0], 2 * m[0][1] - m[1][1]]);
+        beyond.push([2 * m[n - 1][0] - m[n - 2][0], 2 * m[n - 1][1] - m[n - 2][1]]);
+      });
+      if (!beyond.length || !candidates.length) return 0;
+      var count = 0;
+      projectPoints(H, beyond).forEach(function (p) {
+        for (var j = 0; j < candidates.length; j++) {
+          if (Math.hypot(p[0] - candidates[j][0], p[1] - candidates[j][1]) <= radius) {
+            count++;
+            break;
+          }
+        }
+      });
+      return count;
+    };
+    TimingMarkAlignment.prototype.refine = function (H, candidates, radius, seed) {
       var self = this;
-      var H = this.coarseHomography(corners, rotation);
-      if (!H) return null;
-      var radius = this.searchRadius * this.pixelsPerUnit(H);
       var attempts = [radius * 2.0, radius, radius * 0.5];
       function pts(pairs) {
         return {
@@ -2012,7 +2130,7 @@
         if (pairs.length < Math.max(4, Math.floor(this.minMatched / 2))) return null;
         var p = pts(pairs);
         if (!spansTwoDimensions(p.t)) return null;
-        var fit = findHomographyRansac(p.t, p.i, Math.max(2.0, 0.5 * radius), 1234 + a + rotation * 7);
+        var fit = findHomographyRansac(p.t, p.i, Math.max(2.0, 0.5 * radius), seed + a);
         if (!fit) return null;
         H = fit.H;
       }
@@ -2029,7 +2147,7 @@
         res += Math.hypot(b[0] - fp.t[k][0], b[1] - fp.t[k][1]);
       }
       res /= fp.i.length;
-      return { rotation: rotation, homography: Hf, matched: finalPairs.length, residual: res, templatePts: fp.t, imagePts: fp.i };
+      return { homography: Hf, matched: finalPairs.length, residual: res, templatePts: fp.t, imagePts: fp.i };
     };
 
     // Register a pure geometric image -> image step to replay on companion images
