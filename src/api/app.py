@@ -47,6 +47,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.api import jobs as jobs_module
+from src.api import results_routes
+from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
     ReviewError,
     apply_review,
@@ -66,7 +68,13 @@ from src.api.storage import (
 )
 from src.api.templates import EnginePool, TemplateError, TemplateStore, draw_layout
 from src.api.tools import register_tool_routes
-from src.api.worker import SAVE_ALL, SAVE_NONE, SAVE_REVIEW, scan_and_store
+from src.api.worker import (
+    SAVE_ALL,
+    SAVE_NONE,
+    SAVE_REVIEW,
+    archive_template_version,
+    scan_and_store,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 # Older Pythons (3.8, the Windows 7 build) do not know these types
@@ -104,6 +112,7 @@ class Context:
         self.scan_locks_guard = threading.Lock()
         self.image_cache = OrderedDict()
         self.image_cache_guard = threading.Lock()
+        self.results = ResultsService(self)
 
     def scan_lock(self, scan_id):
         with self.scan_locks_guard:
@@ -534,6 +543,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(400, "save_images must be all, review or none")
         upload_dir = ctx.data.uploads / new_id()
         stored = []
+        version = archive_template_version(
+            ctx.templates.path(template_id), ctx.data.template_versions, template_id
+        )
         try:
             paths = [save_upload(upload, upload_dir) for upload in files]
             with ctx.engines.engine(template_id) as engine:
@@ -543,6 +555,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                         "job_id": None,
                         "seq": 0,
                         "file_name": safe_filename(upload.filename, path.name),
+                        "template_version": version,
                     }
                     stored.extend(
                         scan_and_store(
@@ -628,15 +641,17 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         return png_response(crop)
 
     @app.post("/scans/{scan_id}/review", tags=["review"], dependencies=secured)
-    def review_scan(scan_id: str, body: ReviewBody):
+    def review_scan(scan_id: str, body: ReviewBody, request: Request):
+        reviewer = request.headers.get("x-user") or body.reviewer or DEFAULT_USER
         with ctx.scan_lock(scan_id):
             result = load_result(scan_id)
             try:
                 resolved, events = apply_review(
-                    result, body.corrections, body.accept, body.reviewer
+                    result, body.corrections, body.accept, reviewer
                 )
             except ReviewError as error:
                 raise HTTPException(422, str(error)) from None
+            audit = ctx.results.audit_rows(result, events, reviewer, "queue")
             template_id = result.get("template_id")
             if template_id and ctx.templates.exists(template_id):
                 with ctx.engines.engine(template_id) as engine:
@@ -645,6 +660,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 result["status"] = "needs_review" if result.get("review") else "ok"
             write_json_atomic(ctx.data.scan_dir(scan_id) / "result.json", result)
             ctx.index.update_after_review(result, resolved)
+            ctx.index.add_corrections(audit)
         records = write_training_records(
             ctx.data.training, result, events, ctx.aligned_image(scan_id)
         )
@@ -892,6 +908,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         return []
 
     register_tool_routes(app, secured, read_upload, ctx)
+    # results screen: render, correct, verify, regrade, accuracy, audit
+    results_routes.register(app, ctx, secured)
 
     # ------------------------------------------------------------------
     # GUI

@@ -107,19 +107,48 @@ def recompute(result, engine):
         result["status"] = "error"
 
 
-def apply_review(result, corrections, accept, reviewer=None):
+def normalize_label(label):
+    if isinstance(label, list):
+        label = "".join(str(v) for v in label)
+    return "" if label is None else str(label)
+
+
+def validate_field_value(name, field, label, empty_value=None):
+    """Raise ReviewError unless label is blank/empty or a combination of bubble values."""
+    if empty_value is not None and label == empty_value:
+        return
+    values = [b["value"] for b in field.get("bubbles") or []]
+    if split_value(label, values) is None:
+        raise ReviewError(
+            f"'{label}' is not a combination of the bubble values {values} of '{name}'"
+        )
+
+
+def apply_review(result, corrections, accept, reviewer=None, empty_values=None):
     """
     Update the result in place. Returns the list of resolved item names and a
     list of training events: (kind, name, predicted, label, action, item).
+
+    The first machine read of every item survives as "original_value" and the
+    items flagged when the sheet was read as "read_review", so later accuracy
+    statistics compare against what the engine actually produced.
+    empty_values: {field: value written for an unmarked field} (template emptyValue).
     """
-    corrections = dict(corrections or {})
+    corrections = {k: normalize_label(v) for k, v in dict(corrections or {}).items()}
     accept = list(accept or [])
+    empty_values = empty_values or {}
     fields = result.get("fields") or {}
     zones = result.get("zones") or {}
     unknown = [n for n in [*corrections, *accept] if n not in fields and n not in zones]
     if unknown:
         raise ReviewError(f"Unknown field or zone: {', '.join(sorted(unknown))}")
+    # Validate everything before changing anything
+    for name, label in corrections.items():
+        if name in fields:
+            validate_field_value(name, fields[name], label, empty_values.get(name))
 
+    if "read_review" not in result:
+        result["read_review"] = [dict(item) for item in result.get("review") or []]
     events, resolved = [], []
     now = time.time()
     for name in [*corrections.keys(), *[a for a in accept if a not in corrections]]:
@@ -128,16 +157,6 @@ def apply_review(result, corrections, accept, reviewer=None):
         kind = "field" if name in fields else "zone"
         predicted = target.get("value", "")
         label = corrections[name] if corrected else predicted
-        if isinstance(label, list):
-            label = "".join(str(v) for v in label)
-        label = "" if label is None else str(label)
-        if kind == "field":
-            values = [b["value"] for b in target.get("bubbles") or []]
-            marks = split_value(label, values)
-            if marks is None:
-                raise ReviewError(
-                    f"'{label}' is not a combination of the bubble values {values} of '{name}'"
-                )
         events.append(
             (
                 kind,
@@ -151,7 +170,7 @@ def apply_review(result, corrections, accept, reviewer=None):
         target["value"] = label
         target["needs_review"] = False
         target["reviewed"] = True
-        if corrected and label != predicted:
+        if corrected and label != predicted and "original_value" not in target:
             target["original_value"] = predicted
         result.setdefault("review_log", {})[name] = {
             "predicted": predicted,
