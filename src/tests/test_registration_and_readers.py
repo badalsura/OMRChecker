@@ -54,6 +54,32 @@ def test_timing_marks_register_skewed_and_flipped_sheets(
     assert field_errors(result, answers) == {}
 
 
+@pytest.mark.parametrize("angle,shift_pitches", [(3.0, 1.0), (-2.5, -0.8), (0.8, 1.0)])
+def test_timing_marks_do_not_slip_a_mark_on_flush_tilted_scans(
+    tmp_path, spec, angle, shift_pitches
+):
+    # A page filling the whole scan gives no outline, so the coarse guess
+    # misses the tilt and offset; a track could lock onto its neighbour mark
+    template = spec.to_template()
+    engine = make_engine(tmp_path, template)
+    rng = random.Random(7)
+    answers = random_answers(spec, rng)
+    image, _ = render_sheet(spec, answers, rng=rng)
+    h, w = image.shape[:2]
+    marks = np.array(template["preProcessors"][0]["options"]["tracks"]["left"]["marks"])
+    pitch = float(np.linalg.norm(marks[1] - marks[0]))
+    move = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+    move[1, 2] += shift_pitches * pitch
+    captured = cv2.warpAffine(image, move, (w, h), borderValue=255)
+
+    result = engine.scan(captured, "sheet")
+
+    registration = engine.template.pre_processors[0].last_registration
+    assert result.status != STATUS_ERROR
+    assert registration["matched_marks"] >= registration["expected_marks"] - 2
+    assert field_errors(result, answers) == {}
+
+
 def test_timing_marks_non_rigid_refinement(tmp_path, spec):
     template = spec.to_template()
     template["preProcessors"][0]["options"]["nonRigid"] = True

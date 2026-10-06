@@ -133,6 +133,8 @@ def render_synthetic(
     multi_rate=0.02,
     erasures=4,
     questions=40,
+    print_color=None,
+    ink_color=None,
 ):
     """Return (spec, [(file_id, image, truth_values)]) for n synthetic sheets."""
     from src.synth import augment, default_spec, random_answers, render_sheet
@@ -148,7 +150,13 @@ def render_synthetic(
             spec, rng, blank_rate=blank_rate, multi_rate=multi_rate
         )
         image, truth = render_sheet(
-            spec, answers, rng=rng, mark_style=mark_style, erasures=erasures
+            spec,
+            answers,
+            rng=rng,
+            mark_style=mark_style,
+            erasures=erasures,
+            print_color=print_color,
+            ink_color=ink_color,
         )
         if options:
             image, _ = augment(image, rng, **options)
@@ -192,6 +200,7 @@ def run_synthetic(
     mark_style="mixed",
     with_zones=False,
     worst=50,
+    color_dropout=None,
     **render_options,
 ):
     """Render n synthetic sheets in memory, scan them and compute the metrics."""
@@ -208,9 +217,10 @@ def run_synthetic(
     pre_processors = None if PRESETS[preset]["register"] else []
     with tempfile.TemporaryDirectory(prefix="omr_bench_") as tmp:
         template_path = Path(tmp, "template.json")
-        template_path.write_text(
-            json.dumps(spec.to_template(pre_processors=pre_processors))
-        )
+        template = spec.to_template(pre_processors=pre_processors)
+        if color_dropout:
+            template["colorDropout"] = color_dropout
+        template_path.write_text(json.dumps(template))
         engine_args = tuple(
             str(p) if p else None
             for p in (template_path, None, None, bubble_model_path, icr_model_path)
@@ -248,6 +258,9 @@ def run_synthetic(
         "seed": seed,
         "mark_style": mark_style,
         "with_zones": with_zones,
+        "color_dropout": color_dropout,
+        "print_color": render_options.get("print_color"),
+        "ink_color": render_options.get("ink_color"),
         "render_seconds": round(render_seconds, 2),
         "bubble_model": str(bubble_model_path) if bubble_model_path else None,
         "icr_model": str(icr_model_path) if icr_model_path else None,

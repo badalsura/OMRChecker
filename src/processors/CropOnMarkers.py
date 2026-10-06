@@ -23,6 +23,8 @@ from src.utils.interaction import InteractionUtils
 
 
 class CropOnMarkers(ImagePreprocessor):
+    geometry = "recorded"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         config = self.tuning_config
@@ -167,7 +169,9 @@ class CropOnMarkers(ImagePreprocessor):
             )
             return None
 
-        image = ImageUtils.four_point_transform(image, np.array(centres))
+        corners = np.array(centres)
+        image = ImageUtils.four_point_transform(image, corners)
+        self.record_geometry(lambda im: ImageUtils.four_point_transform(im, corners))
         # appendSaveImg(1,image_eroded_sub)
         # appendSaveImg(1,image_norm)
 

@@ -195,8 +195,13 @@ class ImageUtils:
         return max(dpis) if dpis else 72
 
     @staticmethod
-    def load_omr_image(file_path, tuning_config):
-        """Load OMR image from file. Returns list of (display_name, image_array) tuples."""
+    def load_omr_image(file_path, tuning_config, color=False):
+        """
+        Load OMR image from file. Returns list of (display_name, image_array) tuples.
+
+        color=True decodes BGR images (for a template colorDropout); the default
+        grayscale decode is faster.
+        """
         suffix = file_path.suffix.lower()
         if suffix == ".pdf":
             import fitz
@@ -237,10 +242,17 @@ class ImageUtils:
                 for p in pages:
                     page = doc[p]
                     mat = fitz.Matrix(dpi / 72, dpi / 72)
-                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
-                    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-                        pix.height, pix.width
-                    )
+                    if color:
+                        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                            pix.height, pix.width, pix.n
+                        )
+                        img = cv2.cvtColor(img[:, :, :3], cv2.COLOR_RGB2BGR)
+                    else:
+                        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+                        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                            pix.height, pix.width
+                        )
                     name = (
                         f"{file_path.stem}_p{p + 1}.png"
                         if len(doc) > 1
@@ -254,7 +266,9 @@ class ImageUtils:
                 doc.close()
             return images
         else:
-            img = cv2.imread(str(file_path), cv2.IMREAD_GRAYSCALE)
+            img = cv2.imread(
+                str(file_path), cv2.IMREAD_COLOR if color else cv2.IMREAD_GRAYSCALE
+            )
             if img is None:
                 logger.error(f"Failed to read image: '{file_path}'")
                 return []

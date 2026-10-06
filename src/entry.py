@@ -12,7 +12,6 @@ from csv import QUOTE_NONNUMERIC
 from pathlib import Path
 from time import time
 
-import cv2
 import pandas as pd
 from rich.table import Table
 
@@ -25,7 +24,7 @@ from src.constants.common import (
 from src.defaults import CONFIG_DEFAULTS
 from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import console, logger
-from src.readers import read_zones
+from src.readers import read_zone, read_zones
 from src.template import Template
 from src.utils.file import Paths, setup_dirs_for_paths, setup_outputs_for_template
 from src.utils.image import ImageUtils
@@ -136,9 +135,11 @@ def process_dir(
 
     if omr_files:
         if not template:
-            logger.error(f"Found images, but no template in the directory tree \
+            logger.error(
+                f"Found images, but no template in the directory tree \
                 of '{curr_dir}'. \nPlace {TEMPLATE_FILENAME} in the \
-                appropriate directory.")
+                appropriate directory."
+            )
             raise Exception(
                 f"No template file found in the directory tree of {curr_dir}"
             )
@@ -168,8 +169,10 @@ def process_dir(
 
     elif not subdirs:
         # Each subdirectory should have images or should be non-leaf
-        logger.info(f"No valid images or sub-folders found in {curr_dir}.\
-            Empty directories not allowed.")
+        logger.info(
+            f"No valid images or sub-folders found in {curr_dir}.\
+            Empty directories not allowed."
+        )
 
     # recursively process sub-folders
     for d in subdirs:
@@ -185,8 +188,11 @@ def process_dir(
 
 def show_template_layouts(omr_files, template, tuning_config, outputs_namespace):
     for file_path in omr_files:
-        images = ImageUtils.load_omr_image(file_path, tuning_config)
+        images = ImageUtils.load_omr_image(
+            file_path, tuning_config, color=template.needs_color
+        )
         for img_name, in_omr in images:
+            in_omr, _ = template.prepare_image(in_omr)
             in_omr = template.image_instance_ops.apply_preprocessors(
                 str(file_path), in_omr, template
             )
@@ -239,9 +245,13 @@ def _process_single_image(
 
     template.image_instance_ops.reset_all_save_img()
 
+    # Colour dropout (no-op for grey images); variants feed zones with their own
+    in_omr, variants = template.prepare_image(in_omr)
     template.image_instance_ops.append_save_img(1, in_omr)
 
-    in_omr = template.image_instance_ops.apply_preprocessors(img_name, in_omr, template)
+    in_omr = template.image_instance_ops.apply_preprocessors(
+        img_name, in_omr, template, variants or None
+    )
 
     if in_omr is None:
         # Error OMR case
@@ -271,16 +281,43 @@ def _process_single_image(
     )
     response_dict = detailed["omr_response"]
     final_marked, multi_marked = detailed["final_marked"], detailed["multi_marked"]
-    zone_results = read_zones(template.zones, detailed["aligned_image"])
+    zone_engines = {"barcode_params": tuning_config.barcode_params.toDict()}
+    if variants:
+        zone_results = template.read_zones_with_variants(
+            detailed["aligned_image"], variants, zone_engines
+        )
+    else:
+        zone_results = read_zones(
+            template.zones, detailed["aligned_image"], zone_engines
+        )
     for zone_name, zone_result in zone_results.items():
         response_dict[zone_name] = zone_result.value
-    write_review_rows(
-        outputs_namespace, img_name, file_path, detailed["field_details"], zone_results
-    )
 
     # TODO: move inner try catch here
     # concatenate roll nos, set unmarked responses, etc
     omr_response = get_concatenated_response(response_dict, template)
+    zones = {name: zone.to_dict() for name, zone in zone_results.items()}
+    checks, rule_review = {}, []
+    if template.rules:
+        zone_by_name = {zone.name: zone for zone in template.zones}
+        checks, _, rule_review = template.rules.apply(
+            response_dict,
+            omr_response,
+            detailed["field_details"],
+            zones,
+            read_lazy=lambda name: read_zone(
+                zone_by_name[name], detailed["aligned_image"], zone_engines
+            ).to_dict(),
+        )
+    write_review_rows(
+        outputs_namespace,
+        img_name,
+        file_path,
+        detailed["field_details"],
+        zones,
+        rule_review,
+        {**omr_response, **{name: c["value"] for name, c in checks.items()}},
+    )
 
     if evaluation_config is None or not evaluation_config.get_should_explain_scoring():
         logger.info(f"Read Response: \n{omr_response}")
@@ -346,7 +383,15 @@ def _process_single_image(
     return multi_marked
 
 
-def write_review_rows(outputs_namespace, img_name, file_path, field_details, zones):
+def write_review_rows(
+    outputs_namespace,
+    img_name,
+    file_path,
+    field_details,
+    zones,
+    rule_review=(),
+    responses=None,
+):
     rows = [
         [
             img_name,
@@ -363,15 +408,29 @@ def write_review_rows(outputs_namespace, img_name, file_path, field_details, zon
         [
             img_name,
             file_path,
-            zone.type,
+            zone["type"],
             name,
-            zone.value,
-            round(zone.confidence, 3),
-            "|".join(zone.flags),
+            zone["value"],
+            round(zone["confidence"], 3),
+            "|".join(zone["flags"]),
         ]
         for name, zone in zones.items()
-        if zone.needs_review
+        if zone["needs_review"]
     ]
+    # Check and custom-label validation items (template "checks"/"validate")
+    for item in rule_review:
+        value = (responses or {}).get(item["name"], "")
+        rows.append(
+            [
+                img_name,
+                file_path,
+                item["kind"],
+                item["name"],
+                value,
+                "",
+                "|".join(item["flags"]),
+            ]
+        )
     if rows:
         pd.DataFrame(rows, dtype=str).to_csv(
             outputs_namespace.files_obj["NeedsReview"],
@@ -397,7 +456,9 @@ def process_files(
     image_file_names = {f.name for f in omr_files if f.suffix.lower() != ".pdf"}
 
     for file_path in omr_files:
-        images = ImageUtils.load_omr_image(file_path, tuning_config)
+        images = ImageUtils.load_omr_image(
+            file_path, tuning_config, color=template.needs_color
+        )
         for img_name, in_omr in images:
             if file_path.suffix.lower() == ".pdf" and img_name in image_file_names:
                 logger.warning(

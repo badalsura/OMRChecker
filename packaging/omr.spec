@@ -72,10 +72,14 @@ datas += optional(collect_data_files, "zxingcpp")
 datas += optional(collect_data_files, "onnxruntime")
 datas += optional(collect_data_files, "pymupdf")
 datas += optional(collect_data_files, "fitz")
+# PDF exports: reportlab's standard fonts and encodings
+datas += optional(collect_data_files, "reportlab")
 
 binaries = []
 binaries += optional(collect_dynamic_libs, "onnxruntime")
 binaries += optional(collect_dynamic_libs, "zxingcpp")
+# Optional ZBar engine: pyzbar's Windows wheel ships libzbar-64.dll/libiconv.dll
+binaries += optional(collect_dynamic_libs, "pyzbar")
 
 hiddenimports = []
 # Processors and readers are discovered at run time with pkgutil. Walk the file
@@ -99,6 +103,11 @@ hiddenimports += [
 if WITH_TK:
     hiddenimports.append("tkinter")
 hiddenimports += optional(collect_submodules, "onnxruntime.capi")
+# Exports: SQLAlchemy loads dialects by URL at run time; reportlab imports
+# its font/encoding modules lazily
+hiddenimports += optional(collect_submodules, "sqlalchemy.dialects")
+hiddenimports += optional(collect_submodules, "reportlab.pdfbase")
+hiddenimports += ["openpyxl", "et_xmlfile", "greenlet"]
 
 excludes = [
     "torch",

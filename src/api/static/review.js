@@ -194,8 +194,30 @@ function show() {
           (item.flags || []).map((f) => chip(f, "flag"))
         ),
         el("div", { class: "rv-meta" }, "Read as: ", el("code", {}, item.value === "" ? "(blank)" : item.value), item.decided !== undefined ? el("span", {}, " · you saved: ", el("code", {}, item.decided === "" ? "(blank)" : item.decided)) : null),
+        (item.reasons || []).length ? el("div", { class: "rv-meta rv-reasons" }, item.reasons.join("; ")) : null,
+        item.fields ? el("div", { class: "rv-meta" }, "Columns: ", el("code", {}, item.fields.join(", ")), " (space = blank column)") : null,
         input,
         item.options ? optionsBox : null,
+        (item.candidates || []).length
+          ? el(
+              "div",
+              { class: "rv-options" },
+              item.candidates.map((c) =>
+                el(
+                  "button",
+                  {
+                    title: `use the value read from ${c.source}`,
+                    onclick: () => {
+                      input.value = c.value;
+                      input.focus();
+                    },
+                  },
+                  el("span", { class: "v" }, c.value),
+                  el("span", { class: "k" }, c.source)
+                )
+              )
+            )
+          : null,
         el(
           "div",
           { class: "row gap" },

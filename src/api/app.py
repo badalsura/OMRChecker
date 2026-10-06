@@ -46,7 +46,10 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.api import exports as exports_module
 from src.api import jobs as jobs_module
+from src.api import results_routes
+from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
     ReviewError,
     apply_review,
@@ -65,7 +68,14 @@ from src.api.storage import (
     write_json_atomic,
 )
 from src.api.templates import EnginePool, TemplateError, TemplateStore, draw_layout
-from src.api.worker import SAVE_ALL, SAVE_NONE, SAVE_REVIEW, scan_and_store
+from src.api.tools import register_tool_routes
+from src.api.worker import (
+    SAVE_ALL,
+    SAVE_NONE,
+    SAVE_REVIEW,
+    archive_template_version,
+    scan_and_store,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 # Older Pythons (3.8, the Windows 7 build) do not know these types
@@ -103,6 +113,8 @@ class Context:
         self.scan_locks_guard = threading.Lock()
         self.image_cache = OrderedDict()
         self.image_cache_guard = threading.Lock()
+        self.results = ResultsService(self)
+        self.exports = exports_module.ExportManager(self)
 
     def scan_lock(self, scan_id):
         with self.scan_locks_guard:
@@ -139,6 +151,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             yield
         finally:
             ctx.jobs.stop()
+            ctx.exports.stop()
 
     app = FastAPI(
         title="OMR Engine API",
@@ -253,7 +266,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     @app.get("/capabilities", tags=["meta"], dependencies=secured)
     def capabilities():
         from src.constants.common import FIELD_TYPES
-        from src.readers.barcode import supported_formats
+        from src.readers.barcode import available_engines, supported_formats
         from src.readers.ocr import tesseract_available
         from src.schemas.template_schema import ZONE_SCHEMA
 
@@ -265,6 +278,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             onnx = False
         return {
             "barcode_formats": supported_formats(),
+            "barcode_engines": available_engines(),
             "tesseract": tesseract_available(),
             "onnxruntime": onnx,
             "models": {
@@ -532,6 +546,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(400, "save_images must be all, review or none")
         upload_dir = ctx.data.uploads / new_id()
         stored = []
+        version = archive_template_version(
+            ctx.templates.path(template_id), ctx.data.template_versions, template_id
+        )
         try:
             paths = [save_upload(upload, upload_dir) for upload in files]
             with ctx.engines.engine(template_id) as engine:
@@ -541,6 +558,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                         "job_id": None,
                         "seq": 0,
                         "file_name": safe_filename(upload.filename, path.name),
+                        "template_version": version,
                     }
                     stored.extend(
                         scan_and_store(
@@ -626,23 +644,34 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         return png_response(crop)
 
     @app.post("/scans/{scan_id}/review", tags=["review"], dependencies=secured)
-    def review_scan(scan_id: str, body: ReviewBody):
+    def review_scan(scan_id: str, body: ReviewBody, request: Request):
+        reviewer = request.headers.get("x-user") or body.reviewer or DEFAULT_USER
         with ctx.scan_lock(scan_id):
             result = load_result(scan_id)
+            info = ctx.results.template_info(result)
             try:
                 resolved, events = apply_review(
-                    result, body.corrections, body.accept, body.reviewer
+                    result,
+                    body.corrections,
+                    body.accept,
+                    reviewer,
+                    info["empty_values"],
+                    info["custom_labels"],
                 )
             except ReviewError as error:
                 raise HTTPException(422, str(error)) from None
+            audit = ctx.results.audit_rows(result, events, reviewer, "queue")
             template_id = result.get("template_id")
             if template_id and ctx.templates.exists(template_id):
+                # Responses, rule outputs (checks/validation), score and status
                 with ctx.engines.engine(template_id) as engine:
                     recompute(result, engine)
             else:
                 result["status"] = "needs_review" if result.get("review") else "ok"
             write_json_atomic(ctx.data.scan_dir(scan_id) / "result.json", result)
             ctx.index.update_after_review(result, resolved)
+            ctx.index.sync_review_items(result)
+            ctx.index.add_corrections(audit)
         records = write_training_records(
             ctx.data.training, result, events, ctx.aligned_image(scan_id)
         )
@@ -659,7 +688,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         job_id: Optional[str] = None,
         scan_id: Optional[str] = None,
         name: Optional[str] = Query(None, description="Only this field/zone name"),
-        kind: Optional[str] = Query(None, pattern="^(field|zone)$"),
+        kind: Optional[str] = Query(
+            None, pattern="^(field|zone|check|custom_label|sheet)$"
+        ),
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
@@ -690,7 +721,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         zone = (result.get("zones") or {}).get(name)
         target = field if field is not None else zone
         if target is None:
-            return None
+            return rule_review_item(result, name)
         has_images = result.get("has_images")
         item = {
             "scan_id": scan_id,
@@ -721,6 +752,67 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         if zone is not None and zone.get("details"):
             item["details"] = zone.get("details")
         return item
+
+    def sheet_reasons(entry):
+        if not entry or entry.get("kind") != "sheet":
+            return []
+        if "marked_bubbles" in entry:
+            return [
+                f"{entry['marked_bubbles']} marked bubbles, fewer than "
+                f"{entry.get('min_marked_bubbles')}: blank or misread sheet? "
+                "Accept to dismiss"
+            ]
+        return ["Sheet-level check; accept to dismiss"]
+
+    def rule_review_item(result, name):
+        """A cross-field check or custom-label validation waiting for a person."""
+        scan_id = result["scan_id"]
+        entry = next(
+            (i for i in result.get("review") or [] if i.get("name") == name), None
+        )
+        check = (result.get("checks") or {}).get(name)
+        if entry is None and not isinstance(check, dict):
+            return None
+        kind = (entry or {}).get("kind") or "check"
+        validation = (result.get("validation") or {}).get(
+            (check or {}).get("output") or name
+        ) or {}
+        if isinstance(check, dict):
+            value = check.get("value", "")
+            candidates = [
+                {"source": source, "value": raw}
+                for source, raw in (check.get("sources") or {}).items()
+                if raw not in (None, "")
+            ]
+            flags = check.get("flags") or []
+        else:
+            value = (result.get("responses") or {}).get(name, "")
+            candidates = []
+            flags = (entry or {}).get("flags") or []
+        _, box = item_box(result, name)
+        return {
+            "scan_id": scan_id,
+            "file_id": result.get("file_id"),
+            "template_id": result.get("template_id"),
+            "job_id": result.get("job_id"),
+            "kind": kind,
+            "name": name,
+            "type": kind,
+            "value": value,
+            "confidence": None,
+            "flags": flags,
+            "reasons": (entry or {}).get("reasons")
+            or validation.get("reasons")
+            or sheet_reasons(entry),
+            "fields": (entry or {}).get("fields"),
+            "candidates": candidates,
+            "crop_url": (
+                f"/scans/{scan_id}/crop?name={quote(name)}"
+                if result.get("has_images") and box
+                else None
+            ),
+            "options": None,
+        }
 
     @app.get("/review/summary", tags=["review"], dependencies=secured)
     def review_summary(template_id: Optional[str] = None, job_id: Optional[str] = None):
@@ -888,6 +980,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             if result.get("responses"):
                 return sorted(result["responses"])
         return []
+
+    register_tool_routes(app, secured, read_upload, ctx)
+    # results screen: render, correct, verify, regrade, accuracy, audit
+    results_routes.register(app, ctx, secured)
+    # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
+    exports_module.register(app, ctx, secured)
 
     # ------------------------------------------------------------------
     # GUI

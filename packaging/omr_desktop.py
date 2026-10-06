@@ -304,7 +304,16 @@ def selftest(workers=2):
         symbols = decode_symbols(code)
         assert symbols and symbols[0].text == "OMR-12345", f"{name} round trip failed"
         decoded[name] = symbols[0].text
+        if name == "Code128":
+            from src.readers import linear
+
+            found = linear.decode(code)
+            assert found and found["text"] == "OMR-12345", "built-in decoder failed"
+            decoded["builtin"] = found["text"]
     report["barcode_roundtrip"] = decoded
+    from src.readers.barcode import available_engines
+
+    report["barcode_engines"] = available_engines()
     try:
         import onnxruntime
 

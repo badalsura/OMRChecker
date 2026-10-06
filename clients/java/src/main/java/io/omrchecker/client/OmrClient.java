@@ -218,7 +218,85 @@ public class OmrClient {
                 HttpRequest.BodyPublishers.ofString(Json.write(body)), "application/json");
     }
 
+    // ------------------------------------------------------------ results
+
+    /** Graded sheets. params: template_id, job_id, status, view (all, flagged, reviewed, not_reviewed,
+     *  verified, corrected, errors), name, flag, file, order, limit, offset. */
+    public String listResults(Map<String, String> params) throws IOException, InterruptedException {
+        return get("/results", params);
+    }
+
+    /** Re-render a sheet: overlay geometry (bubbles, zones, values) plus image_url. */
+    public String render(String scanId) throws IOException, InterruptedException {
+        return get("/scans/" + enc(scanId) + "/render", null);
+    }
+
+    /** Change values ({name: value}) and/or toggle bubbles (each {field, value}); recomputed server-side. */
+    public String correct(String scanId, Map<String, String> changes, List<Map<String, String>> toggles)
+            throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("changes", changes != null ? changes : Map.of());
+        body.put("toggle", toggles != null ? toggles : List.of());
+        return postJson("/scans/" + enc(scanId) + "/corrections", body);
+    }
+
+    /** Every value of the sheet was checked by a person (feeds the accuracy readout). */
+    public String verify(String scanId) throws IOException, InterruptedException {
+        return postJson("/scans/" + enc(scanId) + "/verify", Map.of());
+    }
+
+    /** Re-read with template/config overrides; apply=false returns a preview. */
+    public String regrade(String scanId, Map<String, Object> templateOverrides, Map<String, Object> configOverrides,
+                          boolean apply) throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("template_overrides", templateOverrides != null ? templateOverrides : Map.of());
+        body.put("config_overrides", configOverrides != null ? configOverrides : Map.of());
+        body.put("apply", apply);
+        return postJson("/scans/" + enc(scanId) + "/regrade", body);
+    }
+
+    /** params: template_id, job_id. */
+    public String accuracy(Map<String, String> params) throws IOException, InterruptedException {
+        return get("/results/accuracy", params);
+    }
+
+    // ------------------------------------------------------------ exports
+
+    /** format: csv, xlsx, pdf, sqlite or sql; filters: job_id, template_id, view, ...; profile may be null. */
+    public String createExport(String format, Map<String, Object> filters, Map<String, Object> profile, boolean waitForIt)
+            throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("format", format);
+        body.put("filters", filters != null ? filters : Map.of());
+        if (profile != null) body.put("profile", profile);
+        body.put("wait", waitForIt);
+        return postJson("/exports", body);
+    }
+
+    public String exportStatus(String exportId) throws IOException, InterruptedException {
+        return get("/exports/" + enc(exportId), null);
+    }
+
+    /** Save a completed export to outPath. */
+    public Path downloadExport(String exportId, Path outPath) throws IOException, InterruptedException {
+        HttpResponse<InputStream> response = http.send(
+                request("/exports/" + enc(exportId) + "/download", null).GET().build(),
+                HttpResponse.BodyHandlers.ofInputStream());
+        try (InputStream body = response.body()) {
+            if (response.statusCode() >= 300) {
+                String text = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                throw apiError(response.statusCode(), text);
+            }
+            Files.copy(body, outPath, StandardCopyOption.REPLACE_EXISTING);
+        }
+        return outPath;
+    }
+
     // ------------------------------------------------------------ transport
+
+    private String postJson(String path, Object body) throws IOException, InterruptedException {
+        return send("POST", path, null, HttpRequest.BodyPublishers.ofString(Json.write(body)), "application/json");
+    }
 
     private String get(String path, Map<String, String> params) throws IOException, InterruptedException {
         return send("GET", path, params, null, null);

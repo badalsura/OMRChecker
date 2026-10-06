@@ -149,6 +149,40 @@ func TestAgainstServer(t *testing.T) {
 	if err != nil || !reviewed.Reviewed {
 		t.Fatalf("review: %+v %v", reviewed, err)
 	}
+
+	// Results screen and exports
+	sheet, err := c.Render(ctx, scan.ScanID)
+	if err != nil || sheet["image_url"] == nil {
+		t.Fatalf("render: %v %v", sheet, err)
+	}
+	if _, err := c.Correct(ctx, scan.ScanID, nil, []Toggle{{Field: "q2", Value: "A"}}); err != nil {
+		t.Fatalf("correct: %v", err)
+	}
+	if _, err := c.Verify(ctx, scan.ScanID); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if acc, err := c.Accuracy(ctx, tpl.ID, ""); err != nil || acc["verified_sheets"].(float64) < 1 {
+		t.Fatalf("accuracy: %v %v", acc, err)
+	}
+	page, err := c.ListResults(ctx, ResultsQuery{TemplateID: tpl.ID, View: "verified"})
+	if err != nil || page.Total != 1 || page.Items[0].ID != scan.ScanID {
+		t.Fatalf("results: %+v %v", page, err)
+	}
+	export, err := c.CreateExport(ctx, ExportRequest{Format: "csv", Filters: map[string]interface{}{"job_id": job.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if export, err = c.WaitForExport(ctx, export.ID, 200*time.Millisecond); err != nil || export.Rows != 3 {
+		t.Fatalf("export: %+v %v", export, err)
+	}
+	out := filepath.Join(t.TempDir(), "export.csv")
+	if err := c.DownloadExport(ctx, export.ID, out); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(out); !strings.Contains(string(data), "sheet") {
+		t.Fatalf("export content: %q", data)
+	}
+
 	if _, err := c.JobStatus(ctx, "doesnotexist"); err == nil {
 		t.Fatal("expected 404")
 	} else if e, ok := err.(*APIError); !ok || e.Status != 404 {

@@ -13,6 +13,12 @@ Zero-dependency Python client for the OMR Engine REST API (Python 3.8+).
     job = client.wait_for_job(job["id"], callback=lambda j: print(j["progress"]))
     client.job_results_csv(job["id"], "day1.csv")
 
+    # Results review and exports
+    sheet = client.render(result["scan_id"])            # overlay geometry + image URL
+    client.correct(result["scan_id"], toggle=[("q1", "B")])
+    client.verify(result["scan_id"])
+    client.export({"job_id": job["id"]}, "xlsx", "day1.xlsx", profile={...})
+
 Only the standard library is used (urllib + a small multipart encoder), so the
 file can be copied into any project. Errors raise OMRApiError with the HTTP
 status and the server's JSON detail.
@@ -102,10 +108,13 @@ class OMRClient:
         base_url: str = "http://127.0.0.1:8000",
         api_key: Optional[str] = None,
         timeout: float = 300.0,
+        user: Optional[str] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        # Recorded with corrections in the audit trail (X-User header)
+        self.user = user
 
     # ------------------------------------------------------------ transport
     def _url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:
@@ -131,6 +140,8 @@ class OMRClient:
         headers = {"Accept": "application/json"}
         if self.api_key:
             headers["X-API-Key"] = self.api_key
+        if self.user:
+            headers["X-User"] = self.user
         if content_type:
             headers["Content-Type"] = content_type
         req = request.Request(
@@ -160,9 +171,16 @@ class OMRClient:
         body, content_type = encode_multipart(fields or {}, list(files))
         return self._json("POST", path, params, body, content_type)
 
-    def _post_json(self, path, payload):
+    def _post_json(self, path, payload, method="POST"):
         body = json.dumps(payload).encode("utf-8")
-        return self._json("POST", path, body=body, content_type="application/json")
+        return self._json(method, path, body=body, content_type="application/json")
+
+    def _download(self, path, out_path, params=None):
+        out_path = Path(out_path)
+        with self._open("GET", path, params) as response:
+            with open(out_path, "wb") as handle:
+                shutil.copyfileobj(response, handle, 1024 * 1024)
+        return out_path
 
     # ------------------------------------------------------------ meta
     def health(self) -> Dict[str, Any]:
@@ -377,3 +395,173 @@ class OMRClient:
                 "reviewer": reviewer,
             },
         )
+
+    # ------------------------------------------------------------ results
+    def list_results(
+        self, view: str = "all", limit: int = 100, offset: int = 0, **filters
+    ) -> Dict[str, Any]:
+        """Graded sheets. view: all, flagged, unflagged, reviewed, not_reviewed,
+        verified, corrected, errors; filters: template_id, job_id, status, name,
+        flag, file, order."""
+        return self._json(
+            "GET",
+            "/results",
+            {**filters, "view": view, "limit": limit, "offset": offset},
+        )
+
+    def iter_results(self, page_size: int = 500, **filters):
+        """Every matching index row, page by page."""
+        offset = 0
+        while True:
+            page = self.list_results(limit=page_size, offset=offset, **filters)
+            yield from page["items"]
+            offset += len(page["items"])
+            if not page["items"] or offset >= page["total"]:
+                return
+
+    def result_facets(self, template_id=None, job_id=None) -> Dict[str, Any]:
+        return self._json(
+            "GET", "/results/facets", {"template_id": template_id, "job_id": job_id}
+        )
+
+    def accuracy(self, template_id=None, job_id=None) -> Dict[str, Any]:
+        """% of auto-accepted fields that needed no correction, over verified sheets."""
+        return self._json(
+            "GET", "/results/accuracy", {"template_id": template_id, "job_id": job_id}
+        )
+
+    def render(self, scan_id: str, inline: bool = False) -> Dict[str, Any]:
+        """Re-render a sheet: overlay geometry (bubbles, zones, values) + image_url."""
+        return self._json(
+            "GET", f"/scans/{parse.quote(scan_id)}/render", {"inline": inline}
+        )
+
+    def render_image(self, scan_id: str, fmt: str = "jpg") -> bytes:
+        with self._open(
+            "GET", f"/scans/{parse.quote(scan_id)}/render/image", {"format": fmt}
+        ) as response:
+            return response.read()
+
+    def overlay(self, scan_id: str) -> Dict[str, Any]:
+        return self._json("GET", f"/scans/{parse.quote(scan_id)}/overlay")
+
+    def correct(
+        self,
+        scan_id: str,
+        changes: Optional[Dict[str, str]] = None,
+        toggle: Optional[Iterable[Tuple[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Change values ({name: value}) and/or flip bubbles ([(field, value)])."""
+        return self._post_json(
+            f"/scans/{parse.quote(scan_id)}/corrections",
+            {
+                "changes": dict(changes or {}),
+                "toggle": [{"field": f, "value": v} for f, v in toggle or []],
+            },
+        )
+
+    def verify(self, scan_id: str, verified: bool = True) -> Dict[str, Any]:
+        path = f"/scans/{parse.quote(scan_id)}/verify"
+        if verified:
+            return self._post_json(path, {})
+        return self._json("DELETE", path)
+
+    def regrade(
+        self,
+        scan_id: str,
+        template_overrides: Optional[Dict[str, Any]] = None,
+        config_overrides: Optional[Dict[str, Any]] = None,
+        apply: bool = False,
+        keep_corrections: bool = True,
+        use_current_template: bool = False,
+    ) -> Dict[str, Any]:
+        """Re-read with overrides; apply=False is a preview with the changed values."""
+        return self._post_json(
+            f"/scans/{parse.quote(scan_id)}/regrade",
+            {
+                "template_overrides": template_overrides or {},
+                "config_overrides": config_overrides or {},
+                "apply": apply,
+                "keep_corrections": keep_corrections,
+                "use_current_template": use_current_template,
+            },
+        )
+
+    def audit(self, scan_id: Optional[str] = None, **filters) -> Dict[str, Any]:
+        if scan_id:
+            return self._json("GET", f"/scans/{parse.quote(scan_id)}/audit")
+        return self._json("GET", "/audit", filters)
+
+    def path_remap(self) -> Dict[str, Any]:
+        return self._json("GET", "/settings/path-remap")
+
+    def set_path_remap(self, rules: Sequence[Any]) -> Dict[str, Any]:
+        """rules: ["D:\\old=E:\\new"] or [{"from": ..., "to": ...}]."""
+        return self._post_json("/settings/path-remap", {"rules": list(rules)}, "PUT")
+
+    def update_job(self, job_id: str, **changes) -> Dict[str, Any]:
+        """Edit a job's name or path_remap."""
+        return self._post_json(f"/jobs/{parse.quote(job_id)}", changes, "PATCH")
+
+    # ------------------------------------------------------------ exports
+    def create_export(
+        self,
+        filters: Dict[str, Any],
+        fmt: str,
+        profile: Optional[Dict[str, Any]] = None,
+        profile_name: Optional[str] = None,
+        sql_url: Optional[str] = None,
+        wait: bool = False,
+    ) -> Dict[str, Any]:
+        """fmt: csv, xlsx, pdf, sqlite or sql. filters: job_id, template_id, view, ..."""
+        return self._post_json(
+            "/exports",
+            {
+                "format": fmt,
+                "filters": dict(filters or {}),
+                "profile": profile,
+                "profile_name": profile_name,
+                "sql_url": sql_url,
+                "wait": wait,
+            },
+        )
+
+    def export_status(self, export_id: str) -> Dict[str, Any]:
+        return self._json("GET", f"/exports/{parse.quote(export_id)}")
+
+    def download_export(
+        self, export_id: str, out_path: Union[str, os.PathLike]
+    ) -> Path:
+        return self._download(f"/exports/{parse.quote(export_id)}/download", out_path)
+
+    def export(
+        self,
+        filters: Dict[str, Any],
+        fmt: str,
+        out_path: Union[str, os.PathLike, None] = None,
+        profile: Optional[Dict[str, Any]] = None,
+        poll: float = 1.0,
+        timeout: Optional[float] = None,
+        **options,
+    ) -> Dict[str, Any]:
+        """Run an export, wait for it and download the file (unless fmt is sql)."""
+        record = self.create_export(filters, fmt, profile, **options)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while record.get("state") not in ("completed", "failed"):
+            if deadline is not None and time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Export {record['id']} is still {record.get('state')}"
+                )
+            time.sleep(poll)
+            record = self.export_status(record["id"])
+        if record["state"] == "failed":
+            raise OMRApiError(422, record.get("error") or "Export failed", record)
+        if out_path is not None and fmt != "sql":
+            record["path"] = str(self.download_export(record["id"], out_path))
+        return record
+
+    def export_profiles(self) -> List[Dict[str, Any]]:
+        return self._json("GET", "/export-profiles")["profiles"]
+
+    def save_export_profile(self, name: str, profile: Dict[str, Any]) -> Dict[str, Any]:
+        return self._post_json(f"/export-profiles/{parse.quote(name)}", profile, "PUT")

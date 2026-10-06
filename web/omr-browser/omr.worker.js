@@ -3,9 +3,11 @@
  *
  * Created by OMR.createWorkerEngine(template, {workerUrl: "omr.worker.js"}); you do
  * not post messages to it yourself. The page decodes the photo (canvas access is
- * main-thread only on older Safari) and transfers the gray pixels here.
+ * main-thread only on older Safari) and transfers the gray pixels here, or the
+ * RGBA pixels when the template has a colour dropout (info.needsColor).
  *
- * Messages: {id, type: "init" | "scan", payload} -> {id, result} or {id, error}
+ * Messages: {id, type: "init" | "scan" | "setColorDropout", payload}
+ *   -> {id, result} or {id, error}
  */
 /* global importScripts, OMR */
 (function () {
@@ -37,6 +39,7 @@
           assets: options.assets,
           assetsBaseUrl: options.assetsBaseUrl,
           maxDimension: options.maxDimension,
+          templateOverrides: options.templateOverrides,
         });
       })
       .then(function (created) {
@@ -56,6 +59,7 @@
           }),
           barcodes: OMR.barcodesAvailable(),
           bubbleModel: !!engine.bubbleModel,
+          needsColor: engine.needsColor,
         };
       });
   }
@@ -63,6 +67,7 @@
   function scan(payload) {
     if (!engine) return Promise.reject(new Error("Worker engine is not initialised"));
     var image = { width: payload.width, height: payload.height, data: new Uint8Array(payload.data) };
+    if (payload.channels > 1) image.channels = payload.channels;
     return engine.scan(image, { fileId: payload.fileId }).then(function (result) {
       var out = { result: result, registration: result.registration || null };
       var transfer = [];
@@ -84,6 +89,11 @@
         return { value: v };
       });
       else if (message.type === "scan") work = scan(message.payload);
+      else if (message.type === "setColorDropout") {
+        if (!engine) throw new Error("Worker engine is not initialised");
+        engine.setColorDropout(message.payload.spec);
+        work = Promise.resolve({ value: engine.needsColor });
+      }
       else throw new Error("Unknown message type: " + message.type);
     } catch (error) {
       fail(message.id, error);

@@ -3,8 +3,11 @@ On-disk storage for the API.
 
     <data_dir>/
         templates/<template_id>/template.json (+ assets, config.json, evaluation.json)
+        template_versions/<template_id>/<hash>/  every template version scans were read with
         scans/<id[:2]>/<scan_id>/result.json, aligned.png, marked.jpg, input.<ext>
         jobs/<job_id>.json, jobs/<job_id>.files, jobs/<job_id>/inputs/...
+        exports/<export_id>.json + the exported file
+        settings.json                      runtime settings edited from the GUI
         training/labels.jsonl, training/crops/..., training/bubbles/...
         index.sqlite3
 
@@ -79,12 +82,17 @@ class DataDir:
         self.jobs = self.root / "jobs"
         self.training = self.root / "training"
         self.uploads = self.root / "uploads"
+        self.template_versions = self.root / "template_versions"
+        self.exports = self.root / "exports"
+        self.settings_file = self.root / "settings.json"
         for path in (
             self.templates,
             self.scans,
             self.jobs,
             self.training,
             self.uploads,
+            self.template_versions,
+            self.exports,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -133,6 +141,58 @@ CREATE TABLE IF NOT EXISTS review_items (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ix_review_pending ON review_items(state, template_id, job_id);
 CREATE INDEX IF NOT EXISTS ix_review_name ON review_items(state, name);
+-- One row per flag of a field/zone/check as originally read (flagged items only)
+CREATE TABLE IF NOT EXISTS scan_flags (
+    scan_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    flag TEXT NOT NULL,
+    template_id TEXT,
+    job_id TEXT,
+    PRIMARY KEY (scan_id, name, flag)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_flags_flag ON scan_flags(flag, template_id, job_id);
+CREATE INDEX IF NOT EXISTS ix_flags_name ON scan_flags(name, template_id, job_id);
+-- Every manual change of a value (audit trail; result.json keeps a copy)
+CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT,
+    template_id TEXT,
+    job_id TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    original_value TEXT,
+    user TEXT,
+    source TEXT,
+    at REAL
+);
+CREATE INDEX IF NOT EXISTS ix_corrections_scan ON corrections(scan_id, id);
+CREATE INDEX IF NOT EXISTS ix_corrections_at ON corrections(at);
+-- Per field outcome of fully verified sheets: drives the accuracy readout
+CREATE TABLE IF NOT EXISTS field_outcomes (
+    scan_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT,
+    template_id TEXT,
+    job_id TEXT,
+    flagged INTEGER,
+    corrected INTEGER,
+    PRIMARY KEY (scan_id, name)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ix_outcomes_template ON field_outcomes(template_id, job_id, name);
+"""
+
+# Columns added after the first release; created on open when missing
+_MIGRATIONS = {
+    "flag_count": "INTEGER DEFAULT 0",
+    "verified": "INTEGER DEFAULT 0",
+    "corrected": "INTEGER DEFAULT 0",
+    "template_version": "TEXT",
+}
+_LATE_INDEXES = """
+CREATE INDEX IF NOT EXISTS ix_scans_flagged ON scans(template_id, job_id, flag_count);
+CREATE INDEX IF NOT EXISTS ix_scans_verified ON scans(template_id, job_id, verified);
 """
 
 SCAN_COLUMNS = [
@@ -148,7 +208,38 @@ SCAN_COLUMNS = [
     "has_images",
     "error",
     "created_at",
+    "flag_count",
+    "verified",
+    "corrected",
+    "template_version",
 ]
+
+
+def flag_rows(record):
+    """(name, flag) pairs of everything flagged when the sheet was read."""
+    pairs = set()
+    review = record.get("read_review")
+    if review is None:
+        review = record.get("review") or []
+    for item in review:
+        for flag in item.get("flags") or ["needs_review"]:
+            pairs.add((item["name"], flag))
+    for name, flags in (record.get("check_flags") or {}).items():
+        for flag in flags or []:
+            pairs.add((name, flag))
+    for name, check in (record.get("checks") or {}).items():
+        if isinstance(check, dict):
+            for flag in check.get("flags") or []:
+                pairs.add((name, flag))
+    return sorted(pairs)
+
+
+def is_corrected(record):
+    for group in ("fields", "zones"):
+        for item in (record.get(group) or {}).values():
+            if "original_value" in item and item["original_value"] != item.get("value"):
+                return True
+    return bool(record.get("manual_values"))
 
 
 class ScanIndex:
@@ -163,6 +254,11 @@ class ScanIndex:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.executescript(_SCHEMA)
+            existing = {row[1] for row in self.conn.execute("PRAGMA table_info(scans)")}
+            for column, kind in _MIGRATIONS.items():
+                if column not in existing:
+                    self.conn.execute(f"ALTER TABLE scans ADD COLUMN {column} {kind}")
+            self.conn.executescript(_LATE_INDEXES)
             self.conn.commit()
 
     def close(self):
@@ -172,10 +268,21 @@ class ScanIndex:
     # ---- writes ---------------------------------------------------------
     def add_scans(self, records):
         """records: iterable of result dicts as written to result.json."""
-        rows, review_rows, scan_ids = [], [], []
+        rows, review_rows, scan_ids, flags = [], [], [], []
         now = time.time()
         for record in records:
             scan_ids.append(record["scan_id"])
+            record_flags = flag_rows(record)
+            flags.extend(
+                (
+                    record["scan_id"],
+                    name,
+                    flag,
+                    record.get("template_id"),
+                    record.get("job_id"),
+                )
+                for name, flag in record_flags
+            )
             rows.append(
                 (
                     record["scan_id"],
@@ -190,6 +297,10 @@ class ScanIndex:
                     1 if record.get("has_images") else 0,
                     record.get("error"),
                     record.get("created_at", now),
+                    len({name for name, _ in record_flags}),
+                    1 if record.get("verified") else 0,
+                    1 if record.get("corrected") or is_corrected(record) else 0,
+                    record.get("template_version"),
                 )
             )
             for item in record.get("review") or []:
@@ -220,30 +331,32 @@ class ScanIndex:
                 "INSERT OR REPLACE INTO review_items VALUES (?,?,?,?,?,?,?)",
                 review_rows,
             )
+            self.conn.executemany(
+                "DELETE FROM scan_flags WHERE scan_id = ?",
+                [(scan_id,) for scan_id in scan_ids],
+            )
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO scan_flags VALUES (?,?,?,?,?)", flags
+            )
             self.conn.commit()
 
     def update_after_review(self, result, resolved_names):
         with self.lock:
             self.conn.execute(
-                "UPDATE scans SET status=?, score=?, review_count=?, reviewed=1 WHERE id=?",
+                "UPDATE scans SET status=?, score=?, review_count=?, reviewed=1, "
+                "verified=?, corrected=? WHERE id=?",
                 (
                     result.get("status"),
                     result.get("score"),
                     len(result.get("review") or []),
+                    1 if result.get("verified") else 0,
+                    1 if is_corrected(result) else 0,
                     result["scan_id"],
                 ),
             )
             self.conn.executemany(
                 "UPDATE review_items SET state='done' WHERE scan_id=? AND name=?",
                 [(result["scan_id"], name) for name in resolved_names],
-            )
-            self.conn.commit()
-
-    def delete_template_rows(self, template_id):
-        with self.lock:
-            self.conn.execute("DELETE FROM scans WHERE template_id=?", (template_id,))
-            self.conn.execute(
-                "DELETE FROM review_items WHERE template_id=?", (template_id,)
             )
             self.conn.commit()
 
@@ -353,12 +466,313 @@ class ScanIndex:
             params,
         )
 
+    # ---- results screen -------------------------------------------------
+    RESULT_VIEWS = {
+        "all": "",
+        "flagged": "flag_count > 0",
+        "unflagged": "flag_count = 0",
+        "reviewed": "(verified = 1 OR (flag_count > 0 AND review_count = 0))",
+        "not_reviewed": "(verified = 0 AND NOT (flag_count > 0 AND review_count = 0))",
+        "verified": "verified = 1",
+        "corrected": "corrected = 1",
+        "errors": "status = 'error'",
+    }
+
+    def _result_where(
+        self,
+        template_id=None,
+        job_id=None,
+        status=None,
+        view="all",
+        name=None,
+        flag=None,
+        file=None,
+        scan_ids=None,
+    ):
+        if view and view not in self.RESULT_VIEWS:
+            raise ValueError(f"Unknown view '{view}'")
+        where, params = self._filters(
+            template_id=template_id, job_id=job_id, status=status
+        )
+        clauses = [where[len("WHERE ") :]] if where else []
+        if view and self.RESULT_VIEWS[view]:
+            clauses.append(self.RESULT_VIEWS[view])
+        if name or flag:
+            sub, sub_params = self._filters(name=name, flag=flag)
+            clauses.append(f"id IN (SELECT scan_id FROM scan_flags {sub})")
+            params.extend(sub_params)
+        if file:
+            escaped = file.replace("\\", "\\\\").replace("%", "\\%")
+            clauses.append("file_name LIKE ? ESCAPE '\\'")
+            params.append("%" + escaped.replace("_", "\\_") + "%")
+        if scan_ids:
+            clauses.append(f"id IN ({','.join('?' * len(scan_ids))})")
+            params.extend(scan_ids)
+        return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
+
+    @staticmethod
+    def _by_seq(job_id, order):
+        return order == "seq" or bool(job_id and order in (None, "", "auto"))
+
+    def list_results(self, limit=50, offset=0, order=None, **filters):
+        where, params = self._result_where(**filters)
+        if self._by_seq(filters.get("job_id"), order):
+            order_by = "seq ASC, rowid ASC"
+        else:
+            order_by = "rowid ASC" if order == "asc" else "rowid DESC"
+        items = self._query(
+            f"SELECT * FROM scans {where} ORDER BY {order_by} LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        total = self._query(f"SELECT COUNT(*) AS n FROM scans {where}", params)[0]["n"]
+        return items, total
+
+    def iter_results(self, batch=2000, **filters):
+        """Every matching scan row in a stable order, fetched in keyset batches."""
+        where, params = self._result_where(**filters)
+        prefix = f"{where} AND" if where else "WHERE"
+        if filters.get("job_id"):
+            last = (-1, -1)
+            while True:
+                rows = self._query(
+                    f"SELECT rowid AS rid, * FROM scans {prefix} "
+                    "(seq > ? OR (seq = ? AND rowid > ?)) ORDER BY seq, rowid LIMIT ?",
+                    (*params, last[0], last[0], last[1], batch),
+                )
+                if not rows:
+                    return
+                yield from rows
+                last = (rows[-1]["seq"], rows[-1]["rid"])
+        else:
+            last = -1
+            while True:
+                rows = self._query(
+                    f"SELECT rowid AS rid, * FROM scans {prefix} rowid > ? "
+                    "ORDER BY rowid LIMIT ?",
+                    (*params, last, batch),
+                )
+                if not rows:
+                    return
+                yield from rows
+                last = rows[-1]["rid"]
+
+    def distinct_templates(self, **filters):
+        where, params = self._result_where(**filters)
+        rows = self._query(
+            f"SELECT DISTINCT template_id FROM scans {where} LIMIT 100", params
+        )
+        return [row["template_id"] for row in rows if row["template_id"]]
+
+    def count_results(self, **filters):
+        where, params = self._result_where(**filters)
+        return self._query(f"SELECT COUNT(*) AS n FROM scans {where}", params)[0]["n"]
+
+    def neighbours(self, scan_id, order=None, **filters):
+        """(previous, next) scan ids around scan_id within a filtered listing."""
+        row = self._query("SELECT rowid AS rid, seq FROM scans WHERE id=?", (scan_id,))
+        if not row:
+            return None, None
+        rid, seq = row[0]["rid"], row[0]["seq"] or 0
+        where, params = self._result_where(**filters)
+        prefix = f"{where} AND" if where else "WHERE"
+        if self._by_seq(filters.get("job_id"), order):
+            after = ("(seq > ? OR (seq = ? AND rowid > ?))", (seq, seq, rid))
+            before = ("(seq < ? OR (seq = ? AND rowid < ?))", (seq, seq, rid))
+            asc, desc = "seq ASC, rowid ASC", "seq DESC, rowid DESC"
+        else:
+            after, before = ("rowid > ?", (rid,)), ("rowid < ?", (rid,))
+            asc, desc = "rowid ASC", "rowid DESC"
+            if order != "asc":
+                # Newest first: "next" is the older sheet
+                after, before = before, after
+                asc, desc = desc, asc
+
+        def pick(condition, order_by):
+            rows = self._query(
+                f"SELECT id FROM scans {prefix} {condition[0]} "
+                f"ORDER BY {order_by} LIMIT 1",
+                (*params, *condition[1]),
+            )
+            return rows[0]["id"] if rows else None
+
+        return pick(before, desc), pick(after, asc)
+
+    def facets(self, template_id=None, job_id=None):
+        where, params = self._filters(template_id=template_id, job_id=job_id)
+        names = self._query(
+            f"SELECT name, COUNT(DISTINCT scan_id) AS n FROM scan_flags {where} "
+            "GROUP BY name ORDER BY n DESC LIMIT 500",
+            params,
+        )
+        flags = self._query(
+            f"SELECT flag, COUNT(DISTINCT scan_id) AS n FROM scan_flags {where} "
+            "GROUP BY flag ORDER BY n DESC LIMIT 200",
+            params,
+        )
+        views = {
+            view: self.count_results(template_id=template_id, job_id=job_id, view=view)
+            for view in ("all", "flagged", "reviewed", "not_reviewed", "corrected")
+        }
+        return {"names": names, "flags": flags, "views": views}
+
+    def set_scan_state(self, result):
+        with self.lock:
+            self.conn.execute(
+                "UPDATE scans SET status=?, score=?, review_count=?, verified=?, "
+                "corrected=?, reviewed=? WHERE id=?",
+                (
+                    result.get("status"),
+                    result.get("score"),
+                    len(result.get("review") or []),
+                    1 if result.get("verified") else 0,
+                    1 if is_corrected(result) else 0,
+                    1 if result.get("reviewed") else 0,
+                    result["scan_id"],
+                ),
+            )
+            self.conn.commit()
+
+    def sync_review_items(self, result):
+        """Make the scan's queue rows match result["review"]: listed items are
+        pending (added if new), other pending rows are done."""
+        scan_id = result["scan_id"]
+        pending = {
+            item["name"]: item.get("kind") for item in result.get("review") or []
+        }
+        now = time.time()
+        with self.lock:
+            existing = {
+                row[0]: row[1]
+                for row in self.conn.execute(
+                    "SELECT name, state FROM review_items WHERE scan_id=?", (scan_id,)
+                )
+            }
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO review_items VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        scan_id,
+                        name,
+                        kind,
+                        result.get("template_id"),
+                        result.get("job_id"),
+                        "pending",
+                        now,
+                    )
+                    for name, kind in pending.items()
+                    if existing.get(name) != "pending"
+                ],
+            )
+            self.conn.executemany(
+                "UPDATE review_items SET state='done' WHERE scan_id=? AND name=?",
+                [
+                    (scan_id, name)
+                    for name, state in existing.items()
+                    if state == "pending" and name not in pending
+                ],
+            )
+            self.conn.commit()
+
+    def resolve_review_items(self, scan_id, names):
+        with self.lock:
+            self.conn.executemany(
+                "UPDATE review_items SET state='done' WHERE scan_id=? AND name=?",
+                [(scan_id, name) for name in names],
+            )
+            self.conn.commit()
+
+    def add_corrections(self, rows):
+        """rows: dicts with scan_id, name, kind, template_id, job_id, old, new, original, user, source, at."""
+        if not rows:
+            return
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO corrections (scan_id, name, kind, template_id, job_id, "
+                "old_value, new_value, original_value, user, source, at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        r["scan_id"],
+                        r["name"],
+                        r.get("kind"),
+                        r.get("template_id"),
+                        r.get("job_id"),
+                        r.get("old"),
+                        r.get("new"),
+                        r.get("original"),
+                        r.get("user"),
+                        r.get("source"),
+                        r.get("at"),
+                    )
+                    for r in rows
+                ],
+            )
+            self.conn.commit()
+
+    def list_corrections(
+        self,
+        scan_id=None,
+        template_id=None,
+        job_id=None,
+        user=None,
+        limit=100,
+        offset=0,
+    ):
+        where, params = self._filters(
+            scan_id=scan_id, template_id=template_id, job_id=job_id, user=user
+        )
+        items = self._query(
+            "SELECT id, scan_id, name, kind, template_id, job_id, old_value AS old, "
+            "new_value AS new, original_value AS original, user, source, at "
+            f"FROM corrections {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        total = self._query(f"SELECT COUNT(*) AS n FROM corrections {where}", params)[
+            0
+        ]["n"]
+        return items, total
+
+    def set_outcomes(self, scan_id, rows):
+        """rows: (name, kind, template_id, job_id, flagged, corrected) of a verified sheet."""
+        with self.lock:
+            self.conn.execute("DELETE FROM field_outcomes WHERE scan_id=?", (scan_id,))
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO field_outcomes VALUES (?,?,?,?,?,?,?)",
+                [(scan_id, *row) for row in rows],
+            )
+            self.conn.commit()
+
+    def accuracy(self, template_id=None, job_id=None):
+        where, params = self._filters(template_id=template_id, job_id=job_id)
+        per_field = self._query(
+            "SELECT name, kind, "
+            "SUM(flagged = 0) AS auto, "
+            "SUM(flagged = 0 AND corrected = 0) AS auto_ok, "
+            "SUM(flagged = 1) AS flagged, "
+            "SUM(flagged = 1 AND corrected = 1) AS flagged_corrected, "
+            "COUNT(*) AS total, SUM(corrected) AS corrected "
+            f"FROM field_outcomes {where} GROUP BY name, kind ORDER BY name",
+            params,
+        )
+        sheets = self._query(
+            f"SELECT COUNT(DISTINCT scan_id) AS n FROM field_outcomes {where}", params
+        )[0]["n"]
+        return sheets, per_field
+
+    def delete_template_rows(self, template_id):
+        with self.lock:
+            for table in ("scans", "review_items", "scan_flags", "field_outcomes"):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE template_id=?", (template_id,)
+                )
+            self.conn.commit()
+
     # ---- maintenance ----------------------------------------------------
     def rebuild(self, scans_root):
         """Re-create the index from the result.json files on disk."""
         with self.lock:
-            self.conn.execute("DELETE FROM scans")
-            self.conn.execute("DELETE FROM review_items")
+            for table in ("scans", "review_items", "scan_flags", "field_outcomes"):
+                self.conn.execute(f"DELETE FROM {table}")
             self.conn.commit()
         batch, count = [], 0
         for result_path in Path(scans_root).glob("*/*/result.json"):
@@ -389,3 +803,29 @@ class ScanIndex:
                     resolved,
                 )
                 self.conn.commit()
+        for record in records:
+            if record.get("verified"):
+                self.set_outcomes(record["scan_id"], outcome_rows(record))
+
+
+def original_value(item):
+    return item.get("original_value", item.get("value"))
+
+
+def outcome_rows(record):
+    """(name, kind, template, job, flagged when read, corrected since) per field/zone."""
+    flagged = {name for name, _ in flag_rows(record)}
+    rows = []
+    for kind, group in (("field", "fields"), ("zone", "zones")):
+        for name, item in (record.get(group) or {}).items():
+            rows.append(
+                (
+                    name,
+                    kind,
+                    record.get("template_id"),
+                    record.get("job_id"),
+                    1 if name in flagged else 0,
+                    1 if original_value(item) != item.get("value") else 0,
+                )
+            )
+    return rows

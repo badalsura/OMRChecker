@@ -1,6 +1,7 @@
 // Template editor: draws the template over a reference image and lets the user
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
 import { api, el, errorList, state, toast, url } from "./api.js";
+import { ColourPanel } from "./colors.js";
 
 const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc" };
 const BLOCK_COLOR = "#2f6fdf";
@@ -123,6 +124,7 @@ export class TemplateEditor {
       el("label", { class: "small muted", title: "Snap to other blocks' edges" }, edgeChk, " edges"),
       el("span", { class: "sep" }),
       this.bgSel,
+      btn("Colours…", "Sheet colours and colour removal (colorDropout)", () => new ColourPanel(this).open()),
       btn("Test read…", "Save, read a sample sheet with this template and overlay the result", () => this.testInput.click()),
       this.testInput,
       this.bgInput
@@ -972,7 +974,16 @@ export class TemplateEditor {
         this.num("Bubble height", raw.bubbleDimensions?.[1], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [raw.bubbleDimensions?.[0] ?? o.bw, v]))), { optional: true, placeholder: `page: ${o.bh}` })
       ),
       this.input("Empty value", raw.emptyValue ?? "", (v) => set(() => (v === "" ? delete raw.emptyValue : (raw.emptyValue = v))), { placeholder: "inherit" }),
-      el("div", { class: "muted small" }, `Size ${Math.round(o.w)} × ${Math.round(o.h)} px`)
+      el("div", { class: "muted small" }, `Size ${Math.round(o.w)} × ${Math.round(o.h)} px`),
+      this.dropdown(
+        "Fit to printed border (rectifyOnBorder)",
+        raw.rectifyOnBorder === undefined ? "" : String(raw.rectifyOnBorder),
+        [["", "config default (alignment_params.rectify_on_border)"], ["true", "on: snap bubbles onto the box printed around the block"], ["false", "off"]],
+        (v) => set(() => (v === "" ? delete raw.rectifyOnBorder : (raw.rectifyOnBorder = v === "true")))
+      ),
+      raw.rectifyOnBorder
+        ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })
+        : null
     );
     return box;
   }
@@ -1051,6 +1062,12 @@ export class TemplateEditor {
         { class: "two" },
         this.num("Min confidence", opts.minConfidence, (v) => setOpt("minConfidence", v === null ? null : Math.min(1, v)), { optional: true, step: "0.05", placeholder: "0.6" }),
         this.input("Empty value", opts.emptyValue ?? "", (v) => setOpt("emptyValue", v))
+      ),
+      this.dropdown(
+        "Colour removal for this zone",
+        typeof opts.colorDropout === "object" && opts.colorDropout ? "page-json" : opts.colorDropout || "",
+        [["", "same as the page"], ["grey", "none (plain grey)"], ["red", "red channel"], ["green", "green channel"], ["blue", "blue channel"], ["max", "brightest channel"], ...(typeof opts.colorDropout === "object" && opts.colorDropout ? [["page-json", JSON.stringify(opts.colorDropout)]] : [])],
+        (v) => v !== "page-json" && setOpt("colorDropout", v === "" ? null : v === "grey" ? "grey" : { mode: v })
       )
     );
     return box;
@@ -1092,6 +1109,18 @@ export class TemplateEditor {
         this.num("Bubble height", doc.bubbleDimensions?.[1], (v) => set(() => (doc.bubbleDimensions = [doc.bubbleDimensions[0], Math.round(v)])))
       ),
       this.input("Empty value", doc.emptyValue ?? "", (v) => set(() => (doc.emptyValue = v))),
+      el(
+        "div",
+        { class: "field" },
+        "Colour removal (colorDropout)",
+        el(
+          "div",
+          { class: "row gap" },
+          el("code", {}, doc.colorDropout ? JSON.stringify(doc.colorDropout) : "grey (off)"),
+          el("button", { class: "small", onclick: () => new ColourPanel(this).open() }, "Colours…")
+        )
+      ),
+      this.renderThreshold(),
       el("div", { class: "muted small" }, `${Object.keys(doc.fieldBlocks).length} blocks · ${this.allLabels().size} fields · ${Object.keys(doc.zones).length} zones`),
       el("h3", {}, "Advanced"),
       this.jsonArea("preProcessors (alignment / cleanup)", JSON.stringify(doc.preProcessors || [], null, 1), jsonSetter("preProcessors", [])),
@@ -1107,6 +1136,56 @@ export class TemplateEditor {
         this.dirty = true;
         this.updateButtons();
       }, 4)
+    );
+  }
+
+  // config.json values edited through the form (the JSON box stays the source)
+  configObject() {
+    if (!this.configText.trim()) return {};
+    try {
+      return JSON.parse(this.configText);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  setConfig(section, values) {
+    const config = this.configObject();
+    if (config === null) return toast("config.json below is not valid JSON; fix it first", "error");
+    const next = { ...(config[section] || {}) };
+    for (const [k, v] of Object.entries(values)) {
+      if (v === null || v === undefined) delete next[k];
+      else next[k] = v;
+    }
+    if (Object.keys(next).length) config[section] = next;
+    else delete config[section];
+    this.configText = Object.keys(config).length ? JSON.stringify(config, null, 2) : "";
+    this.dirty = true;
+    this.updateButtons();
+    this.renderSide();
+  }
+
+  renderThreshold() {
+    const config = this.configObject() || {};
+    const t = config.threshold_params || {};
+    const fixed = t.mode === "fixed";
+    return el(
+      "div",
+      {},
+      this.dropdown(
+        "Bubble threshold",
+        fixed ? "fixed" : "adaptive",
+        [["adaptive", "adaptive (per sheet and per row)"], ["fixed", "fixed intensity line"]],
+        (v) => this.setConfig("threshold_params", v === "fixed" ? { mode: "fixed", fixed_threshold: t.fixed_threshold ?? 120, fixed_min_fill_ratio: t.fixed_min_fill_ratio ?? 0.12 } : { mode: null, fixed_threshold: null, fixed_min_fill_ratio: null })
+      ),
+      fixed
+        ? el(
+            "div",
+            { class: "two" },
+            this.num("Dark below (0–255)", t.fixed_threshold ?? 120, (v) => this.setConfig("threshold_params", { fixed_threshold: Math.min(255, v) })),
+            this.num("Min filled share (0–1)", t.fixed_min_fill_ratio ?? 0.12, (v) => this.setConfig("threshold_params", { fixed_min_fill_ratio: Math.min(1, v) }), { step: "0.01" })
+          )
+        : null
     );
   }
 

@@ -29,6 +29,14 @@ CONFIG_SCHEMA = {
                     "enum": ["white", "black"],
                     "type": "string",
                 },
+                # "fixed": skip adaptive thresholds and use the values below
+                "mode": {"enum": ["adaptive", "fixed"], "type": "string"},
+                "fixed_threshold": {"type": "number", "minimum": 0, "maximum": 255},
+                "fixed_min_fill_ratio": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                },
             },
         },
         "alignment_params": {
@@ -41,6 +49,8 @@ CONFIG_SCHEMA = {
                 "stride": {"type": "integer", "minimum": 1, "maximum": 10},
                 "thickness": {"type": "integer", "minimum": 1, "maximum": 10},
                 "block_snap_radius": {"type": "integer", "minimum": 0, "maximum": 50},
+                "rectify_on_border": {"type": "boolean"},
+                "rectify_search_px": {"type": "integer", "minimum": 2, "maximum": 100},
             },
         },
         "review_params": {
@@ -55,6 +65,8 @@ CONFIG_SCHEMA = {
                     "minimum": 0,
                     "maximum": 1,
                 },
+                # Sheet-level too_few_marks when fewer bubbles are marked; 0 = off
+                "min_marked_bubbles": {"type": "integer", "minimum": 0},
                 "review_flags": {
                     "type": "array",
                     "items": {
@@ -67,6 +79,7 @@ CONFIG_SCHEMA = {
                             "weak_mark",
                             "possible_missed_mark",
                             "model_disagrees",
+                            "rectify_failed",
                         ],
                     },
                 },
@@ -107,6 +120,23 @@ CONFIG_SCHEMA = {
                         },
                     ],
                 },
+            },
+        },
+        "barcode_params": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "engines": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["zxing", "builtin", "opencv", "pyzbar"],
+                    },
+                    "minItems": 1,
+                    "uniqueItems": True,
+                },
+                "pyzbar": {"type": "boolean"},
+                "review_fallback_decodes": {"type": "boolean"},
             },
         },
         "outputs": {

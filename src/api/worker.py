@@ -7,9 +7,11 @@ and reused, and writes its results straight to disk so only small summaries
 travel back to the parent process.
 """
 
+import hashlib
 import logging
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -48,10 +50,100 @@ def template_version(template_dir):
     return tuple(stamps)
 
 
-def build_engine(template_dir):
+VERSIONED_FILES = ("template.json", "config.json", "evaluation.json")
+_HASHES = {}
+_HASHES_LOCK = threading.Lock()
+
+
+def template_hash(template_dir):
+    """
+    Content hash of the files that affect reading, recorded with every scan so
+    a result can later be re-rendered with exactly the template it was read with.
+    Cached by modification times, so calling it per request is cheap.
+    """
+    template_dir = Path(template_dir)
+    key = (str(template_dir), template_version(template_dir))
+    with _HASHES_LOCK:
+        if key in _HASHES:
+            return _HASHES[key]
+    digest = hashlib.sha1()
+    for name in VERSIONED_FILES:
+        path = template_dir / name
+        digest.update(name.encode() + b"\0")
+        if path.exists():
+            digest.update(path.read_bytes())
+        digest.update(b"\0")
+    value = digest.hexdigest()[:16]
+    with _HASHES_LOCK:
+        if len(_HASHES) > 1000:
+            _HASHES.clear()
+        _HASHES[key] = value
+    return value
+
+
+def archive_template_version(template_dir, versions_root, template_id):
+    """
+    Keep a copy of the template folder per content hash (small JSON files and
+    marker images) under <versions_root>/<template_id>/<hash>/, so editing a
+    template never changes how older results re-render. Returns the hash.
+    """
+    template_dir = Path(template_dir)
+    version = template_hash(template_dir)
+    target = Path(versions_root) / template_id / version
+    if (target / "template.json").exists():
+        return version
+    staging = target.with_name(f".{version}.{os.getpid()}.{threading.get_ident()}")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    for path in template_dir.rglob("*"):
+        relative = path.relative_to(template_dir)
+        if path.is_dir() or relative.parts[0].startswith((".", "_")):
+            continue
+        destination = staging / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+    try:
+        os.replace(staging, target)
+    except OSError:  # another thread archived it first
+        shutil.rmtree(staging, ignore_errors=True)
+    return version
+
+
+def merged_template_overrides(template_path, overrides):
+    """
+    Regrade overrides are deep-merged into template.json (so
+    {"fieldBlocks": {"MCQ": {"bubbleValues": [...]}}} changes one block);
+    OMREngine's template_overrides replaces whole top-level keys, so hand it
+    the merged top-level values. None still removes a key.
+    """
+    if not overrides:
+        return None
+    import json
+    from copy import deepcopy
+
+    from src.utils.parsing import OVERRIDE_MERGER
+
+    with open(template_path, encoding="utf-8") as handle:
+        original = json.load(handle)
+    merged = {}
+    for key, value in overrides.items():
+        current = original.get(key)
+        if isinstance(value, dict) and isinstance(current, dict):
+            merged[key] = OVERRIDE_MERGER.merge(deepcopy(current), deepcopy(value))
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def build_engine(template_dir, template_overrides=None, config_overrides=None):
     from src.pipeline import OMREngine
 
-    return OMREngine(Path(template_dir) / "template.json")
+    template_path = Path(template_dir) / "template.json"
+    return OMREngine(
+        template_path,
+        config_overrides=config_overrides,
+        template_overrides=merged_template_overrides(template_path, template_overrides),
+    )
 
 
 def get_process_engine(template_dir, version):
@@ -97,10 +189,11 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
                     str(scan_dir / "marked.jpg"), result.marked_image, JPEG_MARKED
                 )
         input_path = str(file_path)
+        source_path = str(file_path.resolve())
         if copy_input:
             target = scan_dir / f"input{file_path.suffix.lower()}"
             _link_or_copy(file_path, target)
-            input_path = str(target)
+            input_path = source_path = str(target.resolve())
         data.update(
             {
                 "scan_id": scan_id,
@@ -110,6 +203,9 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
                 "page": page,
                 "file_name": meta.get("file_name") or file_path.name,
                 "input_path": input_path,
+                # Absolute path of the original file; re-rendering reads it again
+                "source_path": source_path,
+                "template_version": meta.get("template_version"),
                 "has_images": keep,
                 "reviewed": False,
                 "review_log": {},
@@ -160,5 +256,15 @@ def summarize(record):
         "has_images",
         "error",
         "created_at",
+        "template_version",
     )
-    return {key: record.get(key) for key in keys}
+    summary = {key: record.get(key) for key in keys}
+    # Only the names and flags of failed checks travel to the index
+    check_flags = {
+        name: check.get("flags")
+        for name, check in (record.get("checks") or {}).items()
+        if isinstance(check, dict) and check.get("flags")
+    }
+    if check_flags:
+        summary["check_flags"] = check_flags
+    return summary

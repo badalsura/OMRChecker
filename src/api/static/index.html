@@ -13,10 +13,12 @@
     <nav class="tabs" role="tablist">
       <button data-tab="scan" class="active">Scan</button>
       <button data-tab="review">Review queue <span id="review-badge" class="badge hidden"></span></button>
+      <button data-tab="results">Results</button>
       <button data-tab="jobs">Jobs</button>
       <button data-tab="templates">Templates</button>
     </nav>
     <div class="topbar-right">
+      <button id="user-btn" class="ghost small" title="Your name, recorded with every correction">User</button>
       <button id="api-key-btn" class="ghost small" title="Set the API key">API key</button>
       <a href="/docs" target="_blank" class="ghost small">API docs</a>
     </div>
@@ -54,7 +56,7 @@
         <label class="field inline">Template <select id="rv-template" class="template-select" data-allow-all="1"></select></label>
         <label class="field inline">Field / zone <select id="rv-name"><option value="">All</option></select></label>
         <label class="field inline">Kind
-          <select id="rv-kind"><option value="">All</option><option value="field">Bubble fields</option><option value="zone">Zones</option></select>
+          <select id="rv-kind"><option value="">All</option><option value="field">Bubble fields</option><option value="zone">Zones</option><option value="check">Cross-field checks</option><option value="custom_label">Custom labels</option><option value="sheet">Whole sheet</option></select>
         </label>
         <label class="field inline">Job <input id="rv-job" placeholder="any" size="12"></label>
         <label class="field inline">Scan <input id="rv-scan" placeholder="any" size="12"></label>
@@ -73,6 +75,63 @@
         <kbd>Shift</kbd>+<kbd>Tab</kbd> previous ·
         <kbd>Esc</kbd> reset ·
         <kbd>Alt</kbd>+<kbd>1-9</kbd> toggle option
+      </div>
+    </section>
+
+    <!-- RESULTS -->
+    <section id="tab-results" class="tab tab-full">
+      <div class="res-layout">
+        <aside class="panel res-list">
+          <label class="field">Template <select id="res-template" class="template-select" data-allow-all="1"></select></label>
+          <label class="field">Job <select id="res-job"><option value="">All jobs</option></select></label>
+          <label class="field">Show
+            <select id="res-view">
+              <option value="all" data-label="All sheets">All sheets</option>
+              <option value="flagged" data-label="Flagged">Flagged</option>
+              <option value="not_reviewed" data-label="Not reviewed">Not reviewed</option>
+              <option value="reviewed" data-label="Reviewed">Reviewed</option>
+              <option value="corrected" data-label="Corrected">Corrected</option>
+              <option value="errors" data-label="Errors">Errors</option>
+            </select>
+          </label>
+          <div class="two">
+            <label class="field">Flagged field <select id="res-name"><option value="">Any field</option></select></label>
+            <label class="field">Flag <select id="res-flag"><option value="">Any flag</option></select></label>
+          </div>
+          <label class="field">File name <input id="res-file" placeholder="contains…"></label>
+          <div class="row gap res-pager">
+            <button id="res-prev-page" class="small ghost" title="Previous page">‹</button>
+            <span id="res-count" class="muted small"></span>
+            <button id="res-next-page" class="small ghost" title="Next page">›</button>
+          </div>
+          <ul id="res-items" class="sheet-list res-items"></ul>
+        </aside>
+        <div class="res-main">
+          <div class="res-toolbar">
+            <button id="res-prev" class="small" title="Previous sheet (K / ↑)">◀</button>
+            <button id="res-next" class="small" title="Next sheet (J / ↓)">▶</button>
+            <button id="res-verify" class="small primary" title="Every value on this sheet is right (V)">Verify ✓</button>
+            <label class="small muted" title="Open the next sheet after verifying"><input type="checkbox" id="res-advance"> then next</label>
+            <span class="sep"></span>
+            <button id="res-zoom-out" class="small ghost" title="Zoom out (-)">−</button>
+            <button id="res-fit" class="small ghost" title="Fit (F)">Fit</button>
+            <button id="res-zoom-in" class="small ghost" title="Zoom in (+)">+</button>
+            <label class="small muted"><input type="checkbox" id="res-overlay" checked> overlay (O)</label>
+            <span class="sep"></span>
+            <button id="res-regrade" class="small" title="Re-read with different settings (R)">Regrade…</button>
+            <span class="spacer"></span>
+            <button id="res-accuracy" class="small ghost">Accuracy</button>
+            <button id="res-remap" class="small ghost" title="Input folders moved?">Path remap</button>
+            <button id="res-export" class="small ghost">Export…</button>
+          </div>
+          <div class="res-canvas-wrap"><canvas id="res-canvas"></canvas><div id="res-status" class="ed-status"></div></div>
+        </div>
+        <aside class="panel res-side" id="res-side"><div class="empty-state">No sheet selected</div></aside>
+      </div>
+      <div class="keys muted">
+        Click a bubble to mark/unmark it · click a zone or a field to edit its value ·
+        <kbd>J</kbd>/<kbd>K</kbd> next/previous sheet · <kbd>V</kbd> verify ·
+        <kbd>N</kbd> next flagged field · <kbd>E</kbd> edit selected · <kbd>F</kbd> fit · wheel zoom, drag to pan
       </div>
     </section>
 

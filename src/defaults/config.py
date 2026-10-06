@@ -15,6 +15,12 @@ CONFIG_DEFAULTS = DotMap(
             "CONFIDENT_SURPLUS": 5,
             "JUMP_DELTA": 30,
             "PAGE_TYPE_FOR_THRESHOLD": "white",
+            # "adaptive" (page and strip thresholds per sheet) or "fixed": a bubble
+            # is marked when at least fixed_min_fill_ratio of its interior is
+            # darker than fixed_threshold
+            "mode": "adaptive",
+            "fixed_threshold": 120,
+            "fixed_min_fill_ratio": 0.12,
         },
         "alignment_params": {
             # Note: 'auto_align' enables automatic template alignment, use if the scans show slight misalignments.
@@ -26,6 +32,11 @@ CONFIG_DEFAULTS = DotMap(
             # Search radius (px) for snapping each field block onto its printed
             # bubbles in both directions after registration; 0 disables it
             "block_snap_radius": 0,
+            # Fit each field block onto its printed rectangular border after page
+            # alignment (a block's "rectifyOnBorder" overrides this)
+            "rectify_on_border": False,
+            # How far (px) the border may sit from where the template expects it
+            "rectify_search_px": 20,
         },
         "review_params": {
             # Intensity distance from the threshold that counts as fully confident
@@ -36,6 +47,9 @@ CONFIG_DEFAULTS = DotMap(
             "min_marked_fill_ratio": 0.25,
             # An unmarked bubble with more of its interior filled than this is suspicious
             "max_unmarked_fill_ratio": 0.6,
+            # Flag the sheet (too_few_marks) when fewer bubbles are marked; 0 = off.
+            # Catches pens the colour dropout removed along with the print
+            "min_marked_bubbles": 0,
             # Flags that send a field to the manual review queue
             "review_flags": [
                 "multi_marked",
@@ -54,6 +68,14 @@ CONFIG_DEFAULTS = DotMap(
         "pdf_params": {
             "pdf_dpi": "auto",
             "pdf_page": 1,
+        },
+        "barcode_params": {
+            # Barcode/QR decoders, tried in order until one reads (src/readers/barcode.py)
+            "engines": ["zxing", "builtin", "opencv", "pyzbar"],
+            # pyzbar (ZBar) is optional: used only when installed and switched on
+            "pyzbar": False,
+            # Send zones read by an engine other than zxing to review
+            "review_fallback_decodes": False,
         },
         "outputs": {
             "show_image_level": 0,

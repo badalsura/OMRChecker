@@ -79,7 +79,7 @@ test("a blank image fails registration with the Python error message", async () 
   const r = await engine.scan({ width: 400, height: 400, data: new Uint8Array(400 * 400).fill(255) });
   assert.equal(r.status, "error");
   assert.match(r.error, /registration failed/);
-  assert.deepEqual(Object.keys(r), ["file_id", "status", "responses", "fields", "zones", "review", "score", "error", "thresholds", "timings_ms"]);
+  assert.deepEqual(Object.keys(r), ["file_id", "status", "responses", "fields", "zones", "review", "score", "error", "thresholds", "timings_ms", "checks", "validation"]);
 });
 
 test("OCR/ICR zones without a reader are flagged engine_unavailable; a hook is used when registered", async () => {
@@ -99,4 +99,72 @@ test("OCR/ICR zones without a reader are flagged engine_unavailable; a hook is u
   assert.equal(r.zones.name.value, "ABC");
   assert.deepEqual(r.zones.name.flags, []);
   assert.equal(r.responses.name, "ABC");
+});
+
+const SMALL = {
+  pageDimensions: [200, 120], bubbleDimensions: [16, 16],
+  fieldBlocks: { A: { fieldType: "QTYPE_MCQ4", origin: [20, 40], bubblesGap: 30, labelsGap: 30, fieldLabels: ["q1", "q2"] } },
+};
+
+test("colour dropout API: needsColor, setColorDropout, templateOverrides and per-zone settings", async () => {
+  const grey = await OMR.loadTemplate(SMALL);
+  assert.equal(grey.needsColor, false);
+  grey.setColorDropout({ mode: "red", strength: 0.5 });
+  assert.equal(grey.needsColor, true);
+  grey.setColorDropout(null);
+  assert.equal(grey.needsColor, false);
+  const red = await OMR.loadTemplate(Object.assign({ colorDropout: "red" }, SMALL));
+  assert.equal(red.needsColor, true);
+  const overridden = await OMR.loadTemplate(Object.assign({ colorDropout: "red" }, SMALL), { templateOverrides: { colorDropout: null } });
+  assert.equal(overridden.needsColor, false);
+  const zoneOnly = await OMR.loadTemplate(
+    Object.assign({ zones: { id: { type: "barcode", origin: [10, 5], dimensions: [150, 30], options: { formats: ["Code128"], colorDropout: "max" } } } }, SMALL)
+  );
+  assert.equal(zoneOnly.needsColor, true);
+  assert.throws(() => I.normalizeDropout({ mode: "purple" }), /Unknown colorDropout mode/);
+
+  // Pink print is dropped by the red channel
+  const w = 200, h = 120, rgb = new Uint8Array(w * h * 3).fill(255);
+  for (let y = 40; y < 56; y++) for (let x = 20; x < 140; x++) rgb.set([0xe8, 0x61, 0x8c], (y * w + x) * 3);
+  const out = I.applyDropout({ width: w, height: h, data: rgb, channels: 3 }, "red");
+  assert.equal(out.data[45 * w + 30], 0xe8);
+  const r = await red.scan({ width: w, height: h, data: rgb, channels: 3 }, { fileId: "pink" });
+  assert.ok("dropout" in r.timings_ms);
+});
+
+test("checkTemplate: built-in decoder formats need no zxing-wasm; QR codes do", () => {
+  if (OMR.barcodesAvailable()) return;
+  const zones = {
+    a: { type: "barcode", origin: [0, 0], dimensions: [100, 40], options: { formats: ["Code128"] } },
+    b: { type: "qrcode", origin: [0, 50], dimensions: [40, 40] },
+  };
+  assert.deepEqual(OMR.checkTemplate(Object.assign({ zones }, SMALL)).issues, ["Zone 'b' needs OMR.enableBarcodes()"]);
+});
+
+test("rules: Python's errors for bad specs, and results on a blank sheet", async () => {
+  const withRules = (extra) => OMR.loadTemplate(Object.assign({}, SMALL, extra));
+  await assert.rejects(withRules({ checks: [{ name: "c", sources: ["q1", "nope"] }] }), /check 'c': unknown source 'nope' \(not a field, custom label, zone or check\)/);
+  await assert.rejects(withRules({ validate: { q1: { onFail: "explode" } } }), /onFail must be one of/);
+  const engine = await withRules({
+    validate: { q1: { required: true, onFail: "both" }, q2: { pattern: "[A-B]", onFail: "flag" } },
+    checks: [{ name: "pair", sources: ["q1", "q2"] }],
+  });
+  assert.deepEqual(engine.template.outputColumns, ["pair", "q1", "q2"]); // natural sort, as Python
+  const r = await engine.scan({ width: 200, height: 120, data: new Uint8Array(200 * 120).fill(255) });
+  assert.deepEqual(r.validation.q1, { ok: false, kind: "field", value: "", reasons: ["empty"], action: "both" });
+  assert.equal(r.checks.pair.flags[0], "all_sources_missing");
+  assert.equal(r.status, "needs_review");
+  assert.ok(r.review.some((item) => item.name === "q1" && item.flags.includes("validation_failed")));
+});
+
+test("fixed threshold mode, and Python repr() in validation reasons", async () => {
+  const engine = await OMR.loadTemplate(Object.assign({ validate: { q1: { pattern: "it's\\d" } } }, SMALL), {
+    config: { threshold_params: { mode: "fixed", fixed_threshold: 140 } },
+  });
+  const img = new Uint8Array(200 * 120).fill(255);
+  for (let y = 42; y < 54; y++) for (let x = 22; x < 34; x++) img[y * 200 + x] = 20; // q1 = A
+  const r = await engine.scan({ width: 200, height: 120, data: img });
+  assert.equal(r.thresholds.mode, "fixed");
+  assert.equal(r.responses.q1, "A");
+  assert.deepEqual(r.validation.q1.reasons, ["does not match \"it's\\\\d\""]);
 });

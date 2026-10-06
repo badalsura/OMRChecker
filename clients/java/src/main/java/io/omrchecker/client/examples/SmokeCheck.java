@@ -56,6 +56,19 @@ public final class SmokeCheck {
         c.reviewQueue(Map.of("job_id", job.id(), "limit", "10"));
         String reviewed = c.submitReview(scan.scanId(), Map.of("q1", (String) expect.get("q1")), List.of(), "java");
         check(Boolean.TRUE.equals(Json.parseObject(reviewed).get("reviewed")), "review");
+
+        // Results screen and exports
+        check(Json.parseObject(c.render(scan.scanId())).get("image_url") != null, "render");
+        c.correct(scan.scanId(), null, List.of(Map.of("field", "q2", "value", "A")));
+        check(Json.parseObject(c.verify(scan.scanId())).get("verified") != null, "verify");
+        check(c.listResults(Map.of("view", "verified", "template_id", templateId)).contains(scan.scanId()), "results");
+        check(c.accuracy(Map.of("template_id", templateId)).contains("auto_accuracy"), "accuracy");
+        Map<String, Object> export = Json.parseObject(
+                c.createExport("csv", Map.of("job_id", job.id()), null, true));
+        check("completed".equals(export.get("state")), "export " + export);
+        Path exported = c.downloadExport((String) export.get("id"), Path.of(a[4] + ".export.csv"));
+        check(Files.readAllLines(exported).size() == 4, "export lines");
+
         try {
             c.jobStatus("doesnotexist");
             check(false, "expected 404");

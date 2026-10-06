@@ -66,6 +66,101 @@ TIMING_MARK_OPTIONS_SCHEMA = {
     },
 }
 
+BARCODE_ENGINES = ["zxing", "builtin", "opencv", "pyzbar"]
+
+# Length or range bounds: a number, or [min, max] where either may be null
+BOUNDS_SCHEMA = {
+    "anyOf": [
+        {"type": "number"},
+        {
+            "type": "array",
+            "items": {"type": ["number", "null"]},
+            "minItems": 1,
+            "maxItems": 2,
+        },
+    ]
+}
+
+NORMALIZE_SCHEMA = {
+    "anyOf": [
+        {"type": "string", "enum": ["none", "strip", "digits", "upper", "alnum"]},
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["regex"],
+            "properties": {
+                "regex": {"type": "string"},
+                "group": {"type": ["integer", "string"]},
+            },
+        },
+    ]
+}
+
+# Colour dropout: how a colour scan becomes the grey image that is read
+COLOR_DROPOUT_SCHEMA = {
+    "anyOf": [
+        # Shorthand for {"mode": ...}
+        {"type": "string", "enum": ["grey", "gray", "red", "green", "blue", "max"]},
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["grey", "gray", "red", "green", "blue", "max", "color"],
+                },
+                # Colour to remove in "color" mode, e.g. "#E8618C"
+                "color": {"type": "string", "pattern": "^#?([0-9a-fA-F]{3}){1,2}$"},
+                # Lab colour distance treated as a full match (soft falloff to 1.5x)
+                "tolerance": {"type": "number", "minimum": 0, "maximum": 200},
+                # 0 = plain grey, 1 = full dropout
+                "strength": zero_to_one_number,
+            },
+            "if": {"properties": {"mode": {"const": "color"}}},
+            "then": {"required": ["color"]},
+        },
+    ]
+}
+
+# "validate": {"<field, custom label, zone or check output>": {...}}
+VALIDATION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "length": BOUNDS_SCHEMA,
+        "required": {"type": "boolean"},
+        "allowGaps": {"type": "boolean"},
+        "allowEmptyEnds": {"type": "boolean"},
+        "leadingZeros": {"type": "string", "enum": ["keep", "forbid"]},
+        "pattern": {"type": "string"},
+        "allowed": {"type": "array", "items": {"type": ["string", "number"]}},
+        "range": BOUNDS_SCHEMA,
+        "onFail": {"type": "string", "enum": ["review", "blank", "both", "flag"]},
+    },
+}
+
+# "checks": [{...}] cross-field rules (src/rules/checks.py)
+CHECK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name", "sources"],
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "priority": {"type": "array", "items": {"type": "string"}},
+        "normalize": NORMALIZE_SCHEMA,
+        "onMissing": {"type": "string", "enum": ["fallback", "review"]},
+        "onConflict": {"type": "string", "enum": ["prefer", "review", "error"]},
+        "reviewOnConflict": {"type": "boolean"},
+        "reviewOnFallback": {"type": "boolean"},
+        "reviewOnAllMissing": {"type": "boolean"},
+        "skipInvalid": {"type": "boolean"},
+        "skipFlagged": {"type": "boolean"},
+        "absorbSourceReview": {"type": "boolean"},
+        "output": {"type": "string", "minLength": 1},
+    },
+}
+
 ZONE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -89,6 +184,28 @@ ZONE_SCHEMA = {
                 "pattern": {"type": "string"},
                 "minConfidence": zero_to_one_number,
                 "emptyValue": {"type": "string"},
+                # Barcode / QR: decoder order and optional engines
+                "engines": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": BARCODE_ENGINES},
+                    "minItems": 1,
+                },
+                "pyzbar": {"type": "boolean"},
+                # Built-in decoder: Code 39 mod 43 check digit / full ASCII,
+                # ITF GS1 check digit and minimum length
+                "code39Checksum": {"type": "boolean"},
+                "code39Extended": {"enum": ["auto", True, False]},
+                "itfChecksum": {"type": "boolean"},
+                "itfMinLength": {"type": "integer", "minimum": 2},
+                # Barcode: zone (e.g. OCR of the printed digits) read only when
+                # the barcode gives nothing; creates a check named after this zone
+                "fallbackZone": {"type": "string"},
+                "reviewOnFallback": {"type": "boolean"},
+                "fallbackNormalize": NORMALIZE_SCHEMA,
+                # Read only when a check needs this zone as a fallback
+                "lazy": {"type": "boolean"},
+                # Read this zone from a differently processed image (e.g. "grey")
+                "colorDropout": COLOR_DROPOUT_SCHEMA,
             },
         },
     },
@@ -323,6 +440,14 @@ TEMPLATE_SCHEMA = {
                             "type": "string",
                             "enum": list(FIELD_TYPES.keys()),
                         },
+                        # Fit the block onto its printed rectangular border after
+                        # page alignment (overrides alignment_params.rectify_on_border)
+                        "rectifyOnBorder": {"type": "boolean"},
+                        # Gap between the bubbles' bounding box and the printed
+                        # border, [x, y] or one number; default: estimated per sheet
+                        "borderPadding": {
+                            "anyOf": [positive_number, two_positive_numbers]
+                        },
                     },
                 }
             },
@@ -331,10 +456,24 @@ TEMPLATE_SCHEMA = {
             "description": "The value to be used in case of empty bubble detected at global level.",
             "type": "string",
         },
+        "colorDropout": {
+            **COLOR_DROPOUT_SCHEMA,
+            "description": "How a colour scan is turned into the grey image that is read (default: plain grey)",
+        },
         "zones": {
             "description": "Non-bubble regions to read: barcodes, QR codes, printed text (OCR) and handwriting (ICR)",
             "type": "object",
             "patternProperties": {"^.*$": ZONE_SCHEMA},
+        },
+        "validate": {
+            "description": "Shape checks per output (field, custom label, zone or check output): length, gaps, pattern, allowed values, range",
+            "type": "object",
+            "patternProperties": {"^.*$": VALIDATION_SCHEMA},
+        },
+        "checks": {
+            "description": "Cross-field rules combining several reads of one value (e.g. barcode with OCR fallback)",
+            "type": "array",
+            "items": CHECK_SCHEMA,
         },
     },
 }

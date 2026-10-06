@@ -17,6 +17,7 @@ from pathlib import Path
 from src.api.storage import new_id, read_json, write_json_atomic
 from src.api.worker import (
     SAVE_REVIEW,
+    archive_template_version,
     get_process_engine,
     job_task,
     scan_and_store,
@@ -112,6 +113,8 @@ class JobManager:
                 "workers": options.get("workers"),
             },
             "name": options.get("name") or "",
+            # Folder prefix rewrites used when re-reading this job's files later
+            "path_remap": list(options.get("path_remap") or []),
             "total_files": 0,
             "processed_files": 0,
             "pages": 0,
@@ -185,6 +188,18 @@ class JobManager:
             self.live.pop(job_id, None)
         return job
 
+    def update(self, job_id, changes):
+        """Edit settings of a job (name, path_remap) at any time."""
+        with self.lock:
+            job = self.live.get(job_id)
+            if job is None:
+                job = self.get(job_id)
+                if job is None:
+                    return None
+            job.update(changes)
+            self._save(job)
+            return dict(job)
+
     def _save(self, job):
         write_json_atomic(self.data.job_file(job["id"]), job)
 
@@ -234,6 +249,11 @@ class JobManager:
             "template_id": template_id,
             "template_dir": str(template_dir),
             "version": version,
+            # Content hash recorded with every scan; the folder is archived so
+            # results can be re-rendered after the template is edited
+            "template_version": archive_template_version(
+                template_dir, self.data.template_versions, template_id
+            ),
             "job_id": job["id"],
             "scans_root": str(self.data.scans),
             "save_images": job["options"]["save_images"],

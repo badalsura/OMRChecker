@@ -164,6 +164,7 @@ function renderDetail() {
     r.review && r.review.length
       ? el("button", { class: "small", onclick: () => emit("review-scan", r.scan_id) }, `Review ${r.review.length} item(s)`)
       : null,
+    el("button", { class: "small", onclick: () => emit("results-scan", r.scan_id) }, "Open in Results"),
     el("a", { class: "button small ghost", href: url(`/scans/${r.scan_id}`), target: "_blank" }, "JSON")
   );
   box.append(header);

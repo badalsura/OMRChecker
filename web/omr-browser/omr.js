@@ -28,16 +28,19 @@
     // ------------------------------------------------------------------------
     var CONFIG_DEFAULTS = {
       dimensions: { display_height: 2480, display_width: 1640, processing_height: 820, processing_width: 666 },
-      threshold_params: { GAMMA_LOW: 0.7, MIN_GAP: 30, MIN_JUMP: 25, CONFIDENT_SURPLUS: 5, JUMP_DELTA: 30, PAGE_TYPE_FOR_THRESHOLD: "white" },
-      alignment_params: { auto_align: false, match_col: 5, max_steps: 20, stride: 1, thickness: 3, block_snap_radius: 0 },
+      threshold_params: { GAMMA_LOW: 0.7, MIN_GAP: 30, MIN_JUMP: 25, CONFIDENT_SURPLUS: 5, JUMP_DELTA: 30, PAGE_TYPE_FOR_THRESHOLD: "white", mode: "adaptive", fixed_threshold: 120, fixed_min_fill_ratio: 0.12 },
+      alignment_params: { auto_align: false, match_col: 5, max_steps: 20, stride: 1, thickness: 3, block_snap_radius: 0, rectify_on_border: false, rectify_search_px: 20 },
       review_params: {
         confidence_margin: 20,
         min_confidence: 0.35,
         min_marked_fill_ratio: 0.25,
         max_unmarked_fill_ratio: 0.6,
+        min_marked_bubbles: 0,
         review_flags: ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees"],
       },
       ml_params: { bubble_model_path: null, icr_model_path: null },
+      // "opencv" and "pyzbar" are Python-only engines and are skipped here
+      barcode_params: { engines: ["zxing", "builtin", "opencv", "pyzbar"], pyzbar: false, review_fallback_decodes: false },
       outputs: { show_image_level: 0, save_image_level: 0, save_detections: true, filter_out_multimarked_files: false },
     };
     var GLOBAL_PAGE_THRESHOLD_WHITE = 200;
@@ -55,6 +58,8 @@
     var REGISTRATION_ERROR = "Sheet registration failed (page, markers or timing marks not found)";
     // TimingMarkAlignment
     var TM_DEFAULT_SIZE_TOLERANCE = 0.5, TM_DEFAULT_MIN_MATCHED = 8, TM_DEFAULT_MAX_RESIDUAL = 3.0, TM_MIN_PAGE_AREA_FRACTION = 0.3, TPS_GRID_STEP = 16;
+    // A fit matching this share of marks with none past the track ends is final
+    var TM_GOOD_FIT_FRACTION = 0.95, TM_MIN_TILT_DEGREES = 0.3;
     // CropPage
     var MIN_PAGE_AREA_THRESHOLD = 80000, MAX_COSINE_THRESHOLD = 0.35, APPROX_POLY_EPSILON_FACTOR = 0.025;
 
@@ -131,9 +136,216 @@
       var n = width * height;
       var out = new Uint8Array(n);
       for (var i = 0, j = 0; i < n; i++, j += 4) {
-        out[i] = (rgba[j] * 4899 + rgba[j + 1] * 9617 + rgba[j + 2] * 1868 + 8192) >> 14;
+        out[i] = (rgba[j] * 9798 + rgba[j + 1] * 19235 + rgba[j + 2] * 3735 + 16384) >> 15;
       }
       return makeImage(width, height, out);
+    }
+
+    // ------------------------------------------------------------------------
+    // Colour dropout (port of src/color.py). Pixel buffers are
+    // {width, height, data, channels: 3 | 4} in RGB(A) order.
+    // ------------------------------------------------------------------------
+    var fr = Math.fround;
+    var DROPOUT_MODES = ["grey", "red", "green", "blue", "max", "color"];
+    var DROPOUT_TOLERANCE = 60.0, LIGHTNESS_WEIGHT = 0.5, DROPOUT_FALLOFF = 1.5;
+    function dropoutSpec(mode, color, tolerance, strength) {
+      return { mode: mode, color: color, tolerance: tolerance, strength: strength, key: JSON.stringify([mode, color, tolerance, strength]) };
+    }
+    var GREY_DROPOUT = dropoutSpec("grey", null, 0.0, 1.0);
+    // '#E8618C' / 'E8618C' / '#e86' -> [b, g, r]
+    function parseHex(value) {
+      var text = String(value).trim().replace(/^#+/, "");
+      if (text.length === 3)
+        text = text
+          .split("")
+          .map(function (c) {
+            return c + c;
+          })
+          .join("");
+      if (text.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(text)) throw new Error("Not a hex colour: '" + value + "'");
+      return [parseInt(text.slice(4, 6), 16), parseInt(text.slice(2, 4), 16), parseInt(text.slice(0, 2), 16)];
+    }
+    // Canonical spec from a template value (object, mode string or null), like normalize_dropout
+    function normalizeDropout(spec) {
+      if (spec === null || spec === undefined) return GREY_DROPOUT;
+      if (spec.key && spec.mode) return spec;
+      if (typeof spec === "string") spec = { mode: spec };
+      var mode = String(spec.mode !== undefined ? spec.mode : "grey").toLowerCase();
+      if (mode === "gray") mode = "grey";
+      if (DROPOUT_MODES.indexOf(mode) < 0) throw new Error("Unknown colorDropout mode '" + mode + "'");
+      var strength = clamp(Number(spec.strength !== undefined ? spec.strength : 1.0), 0.0, 1.0);
+      if (mode === "grey" || strength <= 0) return GREY_DROPOUT;
+      var color = null, tolerance = 0.0;
+      if (mode === "color") {
+        if (!spec.color) throw new Error("colorDropout mode 'color' needs a 'color' (#RRGGBB)");
+        color = parseHex(spec.color);
+        tolerance = Number(spec.tolerance !== undefined ? spec.tolerance : DROPOUT_TOLERANCE);
+        if (tolerance <= 0) return GREY_DROPOUT;
+      }
+      return dropoutSpec(mode, color, tolerance, strength);
+    }
+    function dropoutToJson(spec) {
+      spec = normalizeDropout(spec);
+      var out = { mode: spec.mode };
+      if (spec.mode === "color") {
+        out.color = "#" + [spec.color[2], spec.color[1], spec.color[0]].map(function (v) {
+          return (v < 16 ? "0" : "") + v.toString(16).toUpperCase();
+        }).join("");
+        out.tolerance = spec.tolerance;
+      }
+      if (spec.mode !== "grey") out.strength = spec.strength;
+      return out;
+    }
+
+    // cv2.cvtColor(float32 BGR / 255, COLOR_BGR2Lab) reproduced bit for bit: OpenCV
+    // interpolates a 33^3 table (built with its softfloat maths) for sRGB input.
+    var F32BUF = new Float32Array(1), U32BUF = new Uint32Array(F32BUF.buffer);
+    function softCbrt(x) {
+      // OpenCV softfloat cbrt (Turkowski): rational approximation, truncated mantissa
+      F32BUF[0] = x;
+      var bits = U32BUF[0], ex = ((bits >>> 23) & 255) - 127, shx = ex % 3;
+      shx -= shx >= 0 ? 3 : 0;
+      ex = (ex - shx) / 3 - 1;
+      var v = (1 + (bits & 0x7fffff) / 8388608) * Math.pow(2, shx);
+      v = ((((45.2548339756803022511987494 * v + 192.2798368355061050458134625) * v + 119.1654824285581628956914143) * v + 13.43250139086239872172837314) * v + 0.1636161226585754240958355063) /
+        ((((14.80884093219134573786480845 * v + 151.9714051044435648658557668) * v + 168.5254414101568283957668343) * v + 33.9905941350215598754191872) * v + 1);
+      return (Math.floor(v * 16777216) / 16777216) * Math.pow(2, ex + 1);
+    }
+    var labLut = null;
+    function buildLabLut() {
+      var D = 33, c = [0.412453, 0.35758, 0.180423, 0.212671, 0.71516, 0.072169, 0.019334, 0.119193, 0.950227];
+      var wx = 1 / 0.950456, wz = 1 / 1.088754;
+      // Table axes are (blue, green, red), as in OpenCV's initLUTforLABLUVs16
+      var S = [fr(c[2] * wx), fr(c[1] * wx), fr(c[0] * wx), fr(c[5]), fr(c[4]), fr(c[3]), fr(c[8] * wz), fr(c[7] * wz), fr(c[6] * wz)];
+      var lthresh = fr(216 / 24389), lscale = fr(841 / 108), lbias = fr(16 / 116), f9033 = fr(24389 / 27);
+      var gamma = new Float32Array(D), n, p, q, r;
+      for (n = 0; n < D; n++) {
+        var x = fr(n / 32);
+        gamma[n] = x <= 809 / 20000 ? x / (323 / 25) : Math.pow((x + 11 / 200) / (1 + 11 / 200), 12 / 5);
+      }
+      function f(t) {
+        return t > lthresh ? softCbrt(t) : fr(t * lscale + lbias);
+      }
+      var out = new Int16Array(D * D * D * 3);
+      for (p = 0; p < D; p++)
+        for (q = 0; q < D; q++)
+          for (r = 0; r < D; r++) {
+            var R = gamma[p], G = gamma[q], B = gamma[r];
+            var X = fr(fr(fr(R * S[0]) + fr(G * S[1])) + fr(B * S[2]));
+            var Y = fr(fr(fr(R * S[3]) + fr(G * S[4])) + fr(B * S[5]));
+            var Z = fr(fr(fr(R * S[6]) + fr(G * S[7])) + fr(B * S[8]));
+            var FX = f(X), FY = f(Y), FZ = f(Z);
+            var L = Y > lthresh ? fr(fr(116 * FY) - 16) : fr(f9033 * Y);
+            var a = fr(500 * fr(FX - FY)), b = fr(200 * fr(FY - FZ));
+            var idx = (p + q * D + r * D * D) * 3;
+            out[idx] = cvRound(fr(fr(16384 * L) / 100));
+            out[idx + 1] = cvRound(fr(fr(16384 * fr(a + 128)) / 256));
+            out[idx + 2] = cvRound(fr(fr(16384 * fr(b + 128)) / 256));
+          }
+      return out;
+    }
+    // Lab (float32 values) of a BGR byte colour
+    function labOf(b, g, r) {
+      if (!labLut) labLut = buildLabLut();
+      var D = 33, lut = labLut;
+      var cx = cvRound(fr(b / 255) * 16384), cy = cvRound(fr(g / 255) * 16384), cz = cvRound(fr(r / 255) * 16384);
+      var tx = cx >> 9, ty = cy >> 9, tz = cz >> 9, x = (cx >> 5) & 15, y = (cy >> 5) & 15, z = (cz >> 5) & 15;
+      var a0 = 0, a1 = 0, a2 = 0;
+      for (var i = 0; i < 8; i++) {
+        var px = (i >> 2) & 1, qy = (i >> 1) & 1, rz = i & 1;
+        var w = (px ? x : 16 - x) * (qy ? y : 16 - y) * (rz ? z : 16 - z);
+        var idx = (Math.min(tx + px, D - 1) + Math.min(ty + qy, D - 1) * D + Math.min(tz + rz, D - 1) * D * D) * 3;
+        a0 += lut[idx] * w;
+        a1 += lut[idx + 1] * w;
+        a2 += lut[idx + 2] * w;
+      }
+      return [fr(((a0 + 2048) >> 12) * 100 / 16384), fr(((a1 + 2048) >> 12) * 256 / 16384 - 128), fr(((a2 + 2048) >> 12) * 256 / 16384 - 128)];
+    }
+    // color_match_weight's 32x32x32 table (255 = fully matching), float32 like numpy
+    var weightTables = {};
+    function dropoutWeightTable(color, tolerance) {
+      var key = color.join(",") + "/" + tolerance;
+      if (weightTables[key]) return weightTables[key];
+      var t = labOf(color[0], color[1], color[2]);
+      var top = fr(DROPOUT_FALLOFF * tolerance), falloff = fr((DROPOUT_FALLOFF - 1.0) * tolerance);
+      var table = new Uint8Array(32768);
+      for (var bi = 0; bi < 32; bi++)
+        for (var gi = 0; gi < 32; gi++)
+          for (var ri = 0; ri < 32; ri++) {
+            var lab = labOf(bi * 8 + 4, gi * 8 + 4, ri * 8 + 4);
+            var d0 = fr(fr(lab[0] - t[0]) * LIGHTNESS_WEIGHT), d1 = fr(lab[1] - t[1]), d2 = fr(lab[2] - t[2]);
+            var dist = fr(Math.sqrt(fr(fr(fr(d0 * d0) + fr(d1 * d1)) + fr(d2 * d2))));
+            var wgt = clamp(fr(fr(top - dist) / falloff), 0, 1);
+            table[(bi << 10) | (gi << 5) | ri] = roundHalfEven(fr(wgt * 255));
+          }
+      weightTables[key] = table;
+      return table;
+    }
+    function pixelsToGray(px) {
+      if (!px.channels || px.channels === 1) return makeImage(px.width, px.height, px.data);
+      var n = px.width * px.height, s = px.channels, d = px.data, out = new Uint8Array(n);
+      for (var i = 0, j = 0; i < n; i++, j += s) out[i] = (d[j] * 9798 + d[j + 1] * 19235 + d[j + 2] * 3735 + 16384) >> 15;
+      return makeImage(px.width, px.height, out);
+    }
+    // apply_dropout: colour pixels -> the grey image the reader uses. `greyOf` (optional)
+    // returns the plain grey conversion of px, so callers can share it.
+    function applyDropout(px, spec, greyOf) {
+      spec = normalizeDropout(spec);
+      if (!px.channels || px.channels === 1) return makeImage(px.width, px.height, px.data);
+      greyOf =
+        greyOf ||
+        function () {
+          return pixelsToGray(px);
+        };
+      if (spec.mode === "grey") return greyOf();
+      var n = px.width * px.height, s = px.channels, d = px.data, out = new Uint8Array(n), i, j;
+      var needGrey = spec.mode === "color" || spec.strength < 1.0;
+      var grey = needGrey ? greyOf().data : null;
+      if (spec.mode === "red" || spec.mode === "green" || spec.mode === "blue") {
+        var c = spec.mode === "red" ? 0 : spec.mode === "green" ? 1 : 2;
+        for (i = 0, j = c; i < n; i++, j += s) out[i] = d[j];
+      } else if (spec.mode === "max") {
+        for (i = 0, j = 0; i < n; i++, j += s) {
+          var m = d[j] > d[j + 1] ? d[j] : d[j + 1];
+          out[i] = m > d[j + 2] ? m : d[j + 2];
+        }
+      } else {
+        // Push matching pixels to white: grey + round((255 - grey) * w / 255)
+        var table = dropoutWeightTable(spec.color, spec.tolerance), push = pushTable();
+        for (i = 0, j = 0; i < n; i++, j += s) out[i] = push[(grey[i] << 8) | table[((d[j + 2] >> 3) << 10) | ((d[j + 1] >> 3) << 5) | (d[j] >> 3)]];
+      }
+      if (spec.strength < 1.0) {
+        // cv2.addWeighted(grey, 1 - s, dropped, s, 0), tabulated over the byte pairs
+        var blend = blendTable(spec.strength);
+        for (i = 0; i < n; i++) out[i] = blend[(grey[i] << 8) | out[i]];
+      }
+      return makeImage(px.width, px.height, out);
+    }
+    // grey + round((255 - grey) * weight / 255), indexed (grey << 8) | weight
+    var pushLut = null;
+    function pushTable() {
+      if (!pushLut) {
+        pushLut = new Uint8Array(65536);
+        for (var g = 0; g < 256; g++)
+          for (var w = 0; w < 256; w++) {
+            var v = g + roundHalfEven(((255 - g) * w) / 255);
+            pushLut[(g << 8) | w] = v > 255 ? 255 : v;
+          }
+      }
+      return pushLut;
+    }
+    // addWeighted(grey, 1 - s, dropped, s, 0) for every byte pair, indexed (grey << 8) | dropped
+    var blendLuts = {};
+    function blendTable(strength) {
+      if (blendLuts[strength]) return blendLuts[strength];
+      var al = fr(1.0 - strength), be = fr(strength), lut = new Uint8Array(65536);
+      for (var g = 0; g < 256; g++)
+        for (var v = 0; v < 256; v++) {
+          var r = roundHalfEven(fr(g * al + fr(v * be)));
+          lut[(g << 8) | v] = r < 0 ? 0 : r > 255 ? 255 : r;
+        }
+      blendLuts[strength] = lut;
+      return lut;
     }
 
     function minMax(img) {
@@ -1212,7 +1424,48 @@
     function sinDeg(a) {
       return Math.fround(Math.sin((a * Math.PI) / 180));
     }
+    // cv::clipLine on the XY_SHIFT-scaled image size; null when the line is outside
+    function clipLine(width, height, x1, y1, x2, y2) {
+      var right = width - 1, bottom = height - 1, a;
+      var c1 = (x1 < 0) + (x1 > right) * 2 + (y1 < 0) * 4 + (y1 > bottom) * 8;
+      var c2 = (x2 < 0) + (x2 > right) * 2 + (y2 < 0) * 4 + (y2 > bottom) * 8;
+      if ((c1 & c2) === 0 && (c1 | c2) !== 0) {
+        if (c1 & 12) {
+          a = c1 < 8 ? 0 : bottom;
+          x1 += Math.trunc(((a - y1) * (x2 - x1)) / (y2 - y1));
+          y1 = a;
+          c1 = (x1 < 0) + (x1 > right) * 2;
+        }
+        if (c2 & 12) {
+          a = c2 < 8 ? 0 : bottom;
+          x2 += Math.trunc(((a - y2) * (x2 - x1)) / (y2 - y1));
+          y2 = a;
+          c2 = (x2 < 0) + (x2 > right) * 2;
+        }
+        if ((c1 & c2) === 0 && (c1 | c2) !== 0) {
+          if (c1) {
+            a = c1 === 1 ? 0 : right;
+            y1 += Math.trunc(((a - x1) * (y2 - y1)) / (x2 - x1));
+            x1 = a;
+            c1 = 0;
+          }
+          if (c2) {
+            a = c2 === 1 ? 0 : right;
+            y2 += Math.trunc(((a - x2) * (y2 - y1)) / (x2 - x1));
+            x2 = a;
+            c2 = 0;
+          }
+        }
+      }
+      return (c1 | c2) === 0 ? [x1, y1, x2, y2] : null;
+    }
     function line2(mask, w, h, p1x, p1y, p2x, p2y) {
+      var clipped = clipLine(w * XY_ONE, h * XY_ONE, p1x, p1y, p2x, p2y);
+      if (!clipped) return;
+      p1x = clipped[0];
+      p1y = clipped[1];
+      p2x = clipped[2];
+      p2y = clipped[3];
       var dx = p2x - p1x, dy = p2y - p1y;
       var ax = Math.abs(dx), ay = Math.abs(dy), t, xStep, yStep, ecount;
       if (ax > ay) {
@@ -1260,6 +1513,63 @@
     }
     function ellipseMask(w, h, cx, cy, axW, axH) {
       var mask = new Uint8Array(w * h);
+      fillConvexPoly(mask, w, h, ellipsePoly(cx, cy, axW, axH));
+      return mask;
+    }
+    // cv2.ellipse(mask, c, axes, 0, 0, 360, 1, thickness 2): LINE_8 thick polyline
+    function ellipseOutline(mask, w, h, cx, cy, axW, axH) {
+      var v = ellipsePoly(cx, cy, axW, axH), flags = 3, p0 = v[0];
+      for (var i = 1; i < v.length; i++) {
+        thickLine2(mask, w, h, p0, v[i], flags);
+        p0 = v[i];
+        flags = 2;
+      }
+    }
+    // ThickLine for thickness 2 with XY_SHIFT fixed-point ends
+    function thickLine2(mask, w, h, p0, p1, flags) {
+      var dx = (p0[0] - p1[0]) / XY_ONE, dy = (p1[1] - p0[1]) / XY_ONE, r = dx * dx + dy * dy, th = 2 << (XY_SHIFT - 1);
+      if (Math.abs(r) > 2.220446049250313e-16) {
+        r = th / Math.sqrt(r);
+        var ex = cvRound(dy * r), ey = cvRound(dx * r);
+        fillConvexPoly(mask, w, h, [[p0[0] + ex, p0[1] + ey], [p0[0] - ex, p0[1] - ey], [p1[0] - ex, p1[1] - ey], [p1[0] + ex, p1[1] + ey]]);
+      }
+      var c = p0;
+      for (var i = 0; i < 2; i++) {
+        if (flags & (i + 1)) filledCircle(mask, w, h, floorDiv(c[0] + (XY_ONE >> 1), XY_SHIFT), floorDiv(c[1] + (XY_ONE >> 1), XY_SHIFT), (th + (XY_ONE >> 1)) >> XY_SHIFT);
+        c = p1;
+      }
+    }
+    // OpenCV Circle(..., fill=1)
+    function filledCircle(mask, w, h, cx, cy, radius) {
+      var err = 0, dx = radius, dy = 0, plus = 1, minus = (radius << 1) - 1;
+      function hline(y, x1, x2) {
+        if (y < 0 || y >= h) return;
+        x1 = Math.max(x1, 0);
+        x2 = Math.min(x2, w - 1);
+        for (var x = x1; x <= x2; x++) mask[y * w + x] = 1;
+      }
+      while (dx >= dy) {
+        var y11 = cy - dy, y12 = cy + dy, y21 = cy - dx, y22 = cy + dx;
+        var x11 = cx - dx, x12 = cx + dx, x21 = cx - dy, x22 = cx + dy;
+        if (x11 < w && x12 >= 0 && y21 < h && y22 >= 0) {
+          hline(y11, x11, x12);
+          hline(y12, x11, x12);
+          if (x21 < w && x22 >= 0) {
+            hline(y21, x21, x22);
+            hline(y22, x21, x22);
+          }
+        }
+        dy++;
+        err += plus;
+        plus += 2;
+        var m = (err <= 0 ? 1 : 0) - 1;
+        err -= minus & m;
+        dx += m;
+        minus -= m & 2;
+      }
+    }
+    // ellipse2Poly vertices in XY_SHIFT fixed point (EllipseEx)
+    function ellipsePoly(cx, cy, axW, axH) {
       var cX = cx * XY_ONE, cY = cy * XY_ONE, aW = axW * XY_ONE, aH = axH * XY_ONE;
       var delta = floorDiv(Math.max(aW, aH) + (XY_ONE >> 1), XY_SHIFT);
       delta = delta < 3 ? 90 : delta < 10 ? 30 : delta < 15 ? 18 : 5;
@@ -1277,8 +1587,7 @@
         }
       }
       if (v.length === 1) v = [[cX, cY], [cX, cY]];
-      fillConvexPoly(mask, w, h, v);
-      return mask;
+      return v;
     }
     function fillConvexPoly(mask, w, h, v) {
       var npts = v.length, delta = XY_ONE >> 1, delta1 = XY_ONE >> 1, delta2 = XY_ONE >> 1;
@@ -1408,7 +1717,7 @@
       labels.forEach(function (label) {
         var pt = lead.slice(), bubbles = [];
         values.forEach(function (value) {
-          bubbles.push({ x: roundHalfEven(pt[0]), y: roundHalfEven(pt[1]), label: label, value: String(value) });
+          bubbles.push({ x: roundHalfEven(pt[0]), y: roundHalfEven(pt[1]), label: label, value: String(value), dx: 0, dy: 0 });
           pt[_h] += gap;
         });
         fields.push({ label: label, bubbles: bubbles });
@@ -1426,6 +1735,10 @@
         fields: fields,
         shift: 0,
         shiftY: 0,
+        // border rectification: null inherits alignment_params.rectify_on_border
+        rectifyOnBorder: obj.rectifyOnBorder === undefined ? null : obj.rectifyOnBorder,
+        borderPadding: obj.borderPadding === undefined ? null : obj.borderPadding,
+        rectified: false,
       };
     }
 
@@ -1455,7 +1768,18 @@
         var x = z.origin[0], y = z.origin[1], w = z.dimensions[0], h = z.dimensions[1];
         if (x + w > page[0] || y + h > page[1]) throw new Error("Overflowing zone '" + name + "'");
         var options = z.options || {};
-        zones.push({ name: name, type: z.type, origin: [x, y], dimensions: [w, h], options: options, emptyValue: options.emptyValue !== undefined ? options.emptyValue : "" });
+        zones.push({
+          name: name,
+          type: z.type,
+          origin: [x, y],
+          dimensions: [w, h],
+          options: options,
+          emptyValue: options.emptyValue !== undefined ? options.emptyValue : "",
+          // lazy zones are read only when a check needs them as a fallback
+          lazy: !!options.lazy,
+          // null: read the page image; otherwise this zone's own colour dropout variant
+          colorDropout: "colorDropout" in options ? normalizeDropout(options.colorDropout) : null,
+        });
         all[name] = true;
       });
       var customLabels = {}, customFields = {};
@@ -1476,9 +1800,7 @@
       var nonCustom = Object.keys(all).filter(function (l) {
         return !customFields[l];
       });
-      var outputColumns = parseFields("Output Columns", t.outputColumns || []);
-      if (!outputColumns.length) outputColumns = nonCustom.concat(Object.keys(customLabels)).sort(naturalCompare);
-      return {
+      var parsed = {
         json: json,
         pageDimensions: page.slice(),
         bubbleDimensions: t.bubbleDimensions.slice(),
@@ -1488,8 +1810,15 @@
         zones: zones,
         customLabels: customLabels,
         nonCustomLabels: nonCustom,
-        outputColumns: outputColumns,
+        allLabels: Object.keys(all),
+        colorDropout: normalizeDropout(t.colorDropout),
       };
+      // optional "validate" and "checks"; check outputs become columns
+      parsed.rules = new RuleSet(parsed, t.validate, t.checks);
+      var outputColumns = parseFields("Output Columns", t.outputColumns || []);
+      if (!outputColumns.length) outputColumns = nonCustom.concat(Object.keys(customLabels), parsed.rules.newOutputColumns).sort(naturalCompare);
+      parsed.outputColumns = outputColumns;
+      return parsed;
     }
 
     // ------------------------------------------------------------------------
@@ -1499,13 +1828,18 @@
       var self = this;
       this.name = "TimingMarkAlignment";
       this.needsFullResolution = true;
+      this.geometry = "recorded";
       this.page = page;
       var tracks = options.tracks || {};
       this.trackNames = Object.keys(tracks);
       this.expected = [];
       var spacings = [];
+      this.tracks = [];
       this.trackNames.forEach(function (n) {
         var marks = tracks[n].marks;
+        self.tracks.push(marks.map(function (m) {
+          return [Number(m[0]), Number(m[1])];
+        }));
         marks.forEach(function (m) {
           self.expected.push([Number(m[0]), Number(m[1])]);
         });
@@ -1523,6 +1857,7 @@
       this.markH = options.markDimensions[1];
       this.sizeTolerance = options.sizeTolerance !== undefined ? options.sizeTolerance : TM_DEFAULT_SIZE_TOLERANCE;
       var minSpacing = spacings.length ? Math.min.apply(null, spacings) : 50.0;
+      this.minSpacing = minSpacing;
       this.searchRadius = options.searchRadius !== undefined ? options.searchRadius : 0.45 * minSpacing;
       this.minMatched = options.minMatchedMarks !== undefined ? options.minMatchedMarks : Math.min(TM_DEFAULT_MIN_MATCHED, this.expected.length);
       this.maxResidual = options.maxResidual !== undefined ? options.maxResidual : TM_DEFAULT_MAX_RESIDUAL;
@@ -1553,8 +1888,13 @@
         ctx.registration.error = "Timing mark registration rejected: residual " + best.residual.toFixed(2) + "px > " + this.maxResidual + "px";
         return null;
       }
-      var warped = warpPerspective(image, best.homography, Math.trunc(pageW), Math.trunc(pageH), 255);
-      if (this.nonRigid && best.matched >= 6) warped = thinPlateCorrection(warped, best);
+      var H = best.homography, pw = Math.trunc(pageW), ph = Math.trunc(pageH);
+      function warpPage(im) {
+        return warpPerspective(im, H, pw, ph, 255);
+      }
+      var warped = warpPage(image);
+      recordGeometry(ctx, warpPage);
+      if (this.nonRigid && best.matched >= 6) warped = thinPlateCorrection(warped, best, ctx);
       ctx.registration = {
         method: "timing_marks",
         orientation: best.rotation * 90,
@@ -1658,11 +1998,122 @@
       var e0 = tr / 2 - disc, e1 = tr / 2 + disc;
       return e0 > 1e-3 * e1 && e0 > 25;
     }
+    // Best fit for one orientation over a few shifted starting guesses: tracks are
+    // periodic, so a coarse guess about one pitch off (a page scanned flush and
+    // tilted) can lock a track onto its neighbouring mark (fit_orientation)
     TimingMarkAlignment.prototype.fitOrientation = function (corners, candidates, rotation) {
+      var coarse = this.coarseHomography(corners, rotation);
+      if (!coarse) return null;
+      var radius = this.searchRadius * this.pixelsPerUnit(coarse);
+      var guesses = this.startingGuesses(coarse, candidates);
+      var best = null, seen = [];
+      for (var g = 0; g < guesses.length; g++) {
+        var fit = this.refine(guesses[g], candidates, radius, 1234 + rotation * 7 + g * 13);
+        if (!fit) continue;
+        var duplicate = seen.some(function (h) {
+          for (var k = 0; k < 9; k++) if (Math.abs(h[k] - fit.homography[k]) > 1e-3) return false;
+          return true;
+        });
+        if (duplicate) continue;
+        seen.push(fit.homography);
+        fit.rotation = rotation;
+        fit.beyondEnds = this.marksBeyondTrackEnds(fit.homography, candidates, radius * 0.5);
+        if (!best || fitKeyGreater(fit, best)) best = fit;
+        if (fit.beyondEnds === 0 && fit.matched >= TM_GOOD_FIT_FRACTION * this.expected.length) break;
+      }
+      return best;
+    };
+    function fitKeyGreater(a, b) {
+      var ka = a.matched - 2 * a.beyondEnds, kb = b.matched - 2 * b.beyondEnds;
+      return ka > kb || (ka === kb && a.residual < b.residual);
+    }
+    // The coarse mapping turned by the tracks' measured tilt, then shifted by half
+    // and one mark pitch (_starting_guesses)
+    TimingMarkAlignment.prototype.startingGuesses = function (coarse, candidates) {
+      var cx = this.page[0] / 2, cy = this.page[1] / 2, pitch = this.minSpacing;
+      var tilt = this.estimateTilt(coarse, candidates, pitch);
+      var angles = Math.abs(tilt) > TM_MIN_TILT_DEGREES ? [tilt, 0.0] : [0.0];
+      var guesses = [];
+      angles.forEach(function (angle) {
+        // cv2.getRotationMatrix2D(centre, angle, 1)
+        var t = (angle * Math.PI) / 180, al = Math.cos(t), be = Math.sin(t);
+        var rotate = [al, be, (1 - al) * cx - be * cy, -be, al, be * cx + (1 - al) * cy, 0, 0, 1];
+        [0.0, -0.5, 0.5, -1.0, 1.0].forEach(function (dy) {
+          [0.0, -0.5, 0.5].forEach(function (dx) {
+            var shift = [1, 0, dx * pitch, 0, 1, dy * pitch, 0, 0, 1];
+            guesses.push(mul3x3(mul3x3(coarse, shift), rotate));
+          });
+        });
+      });
+      return guesses;
+    };
+    // Degrees the marks are turned from the template, from neighbour directions (_estimate_tilt)
+    TimingMarkAlignment.prototype.estimateTilt = function (coarse, candidates, pitch) {
+      if (candidates.length < 6) return 0.0;
+      var inv = invert3x3(coarse);
+      if (!inv) return 0.0;
+      var pts = projectPoints(inv, candidates), steps = [];
+      for (var i = 0; i < pts.length; i++) {
+        var bd = Infinity, bj = -1;
+        for (var j = 0; j < pts.length; j++) {
+          if (j === i) continue;
+          var dx = pts[j][0] - pts[i][0], dy = pts[j][1] - pts[i][1], d = dx * dx + dy * dy;
+          if (d < bd) {
+            bd = d;
+            bj = j;
+          }
+        }
+        var step = [pts[bj][0] - pts[i][0], pts[bj][1] - pts[i][1]];
+        if (Math.abs(Math.hypot(step[0], step[1]) - pitch) < 0.25 * pitch) steps.push(step);
+      }
+      if (steps.length < 6) return 0.0;
+      var templateSteps = [];
+      for (var k = 1; k < this.expected.length; k++) {
+        var s = [this.expected[k][0] - this.expected[k - 1][0], this.expected[k][1] - this.expected[k - 1][1]];
+        if (Math.abs(Math.hypot(s[0], s[1]) - pitch) < 0.25 * pitch) templateSteps.push(s);
+      }
+      var expected = templateSteps.length ? angleMod90(templateSteps) : 0.0;
+      // Template -> image rotation; getRotationMatrix2D turns the other way
+      return -(pyMod(angleMod90(steps) - expected + 45, 90) - 45);
+    };
+    function pyMod(a, n) {
+      return ((a % n) + n) % n;
+    }
+    // Median direction of step vectors, folded into [-45, 45) degrees
+    function angleMod90(steps) {
+      var angles = steps
+        .map(function (s) {
+          return pyMod((Math.atan2(s[1], s[0]) * 180) / Math.PI + 45, 90) - 45;
+        })
+        .sort(function (a, b) {
+          return a - b;
+        });
+      var m = angles.length >> 1;
+      return angles.length % 2 ? angles[m] : (angles[m - 1] + angles[m]) / 2;
+    }
+    // Blobs one pitch past either end of a track: the fit slid along it
+    TimingMarkAlignment.prototype.marksBeyondTrackEnds = function (H, candidates, radius) {
+      var beyond = [];
+      this.tracks.forEach(function (m) {
+        if (m.length < 2) return;
+        var n = m.length;
+        beyond.push([2 * m[0][0] - m[1][0], 2 * m[0][1] - m[1][1]]);
+        beyond.push([2 * m[n - 1][0] - m[n - 2][0], 2 * m[n - 1][1] - m[n - 2][1]]);
+      });
+      if (!beyond.length || !candidates.length) return 0;
+      var count = 0;
+      projectPoints(H, beyond).forEach(function (p) {
+        for (var j = 0; j < candidates.length; j++) {
+          if (Math.hypot(p[0] - candidates[j][0], p[1] - candidates[j][1]) <= radius) {
+            count++;
+            break;
+          }
+        }
+      });
+      return count;
+    };
+    TimingMarkAlignment.prototype.refine = function (H, candidates, radius, seed) {
       var self = this;
-      var H = this.coarseHomography(corners, rotation);
-      if (!H) return null;
-      var radius = this.searchRadius * this.pixelsPerUnit(H);
       var attempts = [radius * 2.0, radius, radius * 0.5];
       function pts(pairs) {
         return {
@@ -1679,7 +2130,7 @@
         if (pairs.length < Math.max(4, Math.floor(this.minMatched / 2))) return null;
         var p = pts(pairs);
         if (!spansTwoDimensions(p.t)) return null;
-        var fit = findHomographyRansac(p.t, p.i, Math.max(2.0, 0.5 * radius), 1234 + a + rotation * 7);
+        var fit = findHomographyRansac(p.t, p.i, Math.max(2.0, 0.5 * radius), seed + a);
         if (!fit) return null;
         H = fit.H;
       }
@@ -1696,8 +2147,14 @@
         res += Math.hypot(b[0] - fp.t[k][0], b[1] - fp.t[k][1]);
       }
       res /= fp.i.length;
-      return { rotation: rotation, homography: Hf, matched: finalPairs.length, residual: res, templatePts: fp.t, imagePts: fp.i };
+      return { homography: Hf, matched: finalPairs.length, residual: res, templatePts: fp.t, imagePts: fp.i };
     };
+
+    // Register a pure geometric image -> image step to replay on companion images
+    // (colour dropout variants some zones read); see ImagePreprocessor.record_geometry
+    function recordGeometry(ctx, fn) {
+      if (ctx && ctx.geometry) ctx.geometry.push(fn);
+    }
 
     // Coarse page outline (TimingMarkAlignment.find_page_corners)
     function findPageCorners(image) {
@@ -1721,7 +2178,7 @@
     function tpsKernel(r) {
       return r > 0 ? r * r * Math.log(r) : 0;
     }
-    function thinPlateCorrection(warped, fit) {
+    function thinPlateCorrection(warped, fit, ctx) {
       var inv = invert3x3(fit.homography);
       var observed = projectPoints(inv, fit.imagePts), targets = fit.templatePts, n = targets.length;
       var A = [], bx = [], by = [];
@@ -1768,7 +2225,11 @@
           mapY[yy * pw + xx] = yy + ddy;
         }
       }
-      return remapLinear(warped, mapX, mapY, pw, ph, 255);
+      function remap(im) {
+        return remapLinear(im, mapX, mapY, pw, ph, 255);
+      }
+      recordGeometry(ctx, remap);
+      return remap(warped);
     }
 
     // CropPage: page outline -> warp. Python finds the page with Canny edges on the
@@ -1776,16 +2237,21 @@
     function CropPage(options) {
       this.name = "CropPage";
       this.needsFullResolution = false;
+      this.geometry = "recorded";
       this.morphKernel = (options && options.morphKernel) || [10, 10];
     }
     CropPage.prototype.apply = function (image, ctx) {
       var blurred = normalizeMinMax(gaussianBlur(image, 3, 3, 0));
-      var quad = findPageQuad(blurred, this.morphKernel);
+      // Fixed thresholds miss white-on-white or dark sheets; retry adaptively
+      var quad = findPageQuad(blurred, this.morphKernel) || findPageQuadAdaptive(blurred, this.morphKernel);
       if (!quad) {
         ctx.registration = { method: "crop_page", error: "Paper boundary not found" };
         return null;
       }
       ctx.registration = { method: "crop_page", corners: quad };
+      recordGeometry(ctx, function (im) {
+        return fourPointTransform(im, quad);
+      });
       return fourPointTransform(blurred, quad);
     };
     // cv2.Canny(img, low, high) with a 3x3 Sobel and the L1 gradient norm
@@ -1846,6 +2312,11 @@
       return makeImage(w, h, out);
     }
     // CropPage.find_page: truncate, close, Canny, then the largest rectangular hull
+    // CropPage.min_page_area: the page covers a fixed share of the frame at any size
+    var DEFAULT_PROCESSING_AREA = 666 * 820;
+    function minPageArea(image) {
+      return (MIN_PAGE_AREA_THRESHOLD * (image.width * image.height)) / DEFAULT_PROCESSING_AREA;
+    }
     function findPageQuad(image, morphKernel) {
       var norm = normalizeMinMax(image);
       var lut = new Uint8Array(256);
@@ -1853,37 +2324,66 @@
       var trunc = normalizeMinMax(applyLut(norm, lut));
       var closed = morphRect(morphRect(trunc, morphKernel[0], morphKernel[1], true), morphKernel[0], morphKernel[1], false);
       var edge = canny(closed, 185, 55);
-      var cc = connectedComponents(edge), runs = cc.runs, comps = cc.components;
-      if (!comps.length) return null;
-      // per component: extreme points of each row -> convex hull
-      var rowsByComp = {};
-      for (var r = 0; r < runs.count; r++) {
-        var lab = runs.label[r], yy = runs.y[r];
-        var e = rowsByComp[lab] || (rowsByComp[lab] = {});
-        var cur = e[yy];
-        if (!cur) e[yy] = [runs.x0[r], runs.x1[r]];
-        else {
-          if (runs.x0[r] < cur[0]) cur[0] = runs.x0[r];
-          if (runs.x1[r] > cur[1]) cur[1] = runs.x1[r];
+      return pageQuadFromEdges([edge], minPageArea(image), 5);
+    }
+    // CropPage.find_page_adaptive: Otsu + auto-Canny edges of the binary and blurred page
+    function findPageQuadAdaptive(image, morphKernel) {
+      var blurred = gaussianBlur(image, 5, 5, 0), t = otsuValue(blurred);
+      var binary = thresholdBinary(blurred, t, false);
+      var closed = morphRect(morphRect(binary, morphKernel[0], morphKernel[1], true), morphKernel[0], morphKernel[1], false);
+      return pageQuadFromEdges([autoCanny(closed), autoCanny(blurred)], minPageArea(image), 10);
+    }
+    // ImageUtils.auto_canny (sigma 0.93 around the median)
+    function autoCanny(img) {
+      var hist = new Uint32Array(256), d = img.data, n = d.length, i;
+      for (i = 0; i < n; i++) hist[d[i]]++;
+      function nth(k) {
+        for (var v = 0, c = 0; v < 256; v++) {
+          c += hist[v];
+          if (c > k) return v;
         }
+        return 255;
       }
+      var median = n % 2 ? nth((n - 1) / 2) : (nth(n / 2 - 1) + nth(n / 2)) / 2;
+      var lower = Math.trunc(Math.max(0, (1.0 - 0.93) * median)), upper = Math.trunc(Math.min(255, (1.0 + 0.93) * median));
+      return canny(img, lower, upper);
+    }
+    // Convex hulls of the edge contours, largest first; the first 4-corner,
+    // near-rectangular approximation among the `limit` largest is the page
+    function pageQuadFromEdges(edges, minArea, limit) {
       var hulls = [];
-      comps.forEach(function (comp) {
-        if (comp.w * comp.h < MIN_PAGE_AREA_THRESHOLD) return;
-        var rows = rowsByComp[comp.label], pts = [];
-        Object.keys(rows).forEach(function (k) {
-          var yk = Number(k);
-          pts.push([rows[k][0], yk]);
-          if (rows[k][1] !== rows[k][0]) pts.push([rows[k][1], yk]);
+      edges.forEach(function (edge) {
+        var cc = connectedComponents(edge), runs = cc.runs, comps = cc.components;
+        // per component: extreme points of each row -> convex hull
+        var rowsByComp = {};
+        for (var r = 0; r < runs.count; r++) {
+          var lab = runs.label[r], yy = runs.y[r];
+          var e = rowsByComp[lab] || (rowsByComp[lab] = {});
+          var cur = e[yy];
+          if (!cur) e[yy] = [runs.x0[r], runs.x1[r]];
+          else {
+            if (runs.x0[r] < cur[0]) cur[0] = runs.x0[r];
+            if (runs.x1[r] > cur[1]) cur[1] = runs.x1[r];
+          }
+        }
+        comps.forEach(function (comp) {
+          // a hull is never larger than its bounding box: skip what can't qualify
+          if (comp.w * comp.h < minArea) return;
+          var rows = rowsByComp[comp.label], pts = [];
+          Object.keys(rows).forEach(function (k) {
+            var yk = Number(k);
+            pts.push([rows[k][0], yk]);
+            if (rows[k][1] !== rows[k][0]) pts.push([rows[k][1], yk]);
+          });
+          var hull = convexHull(pts);
+          if (hull.length >= 3) hulls.push({ hull: hull, area: polygonArea(hull) });
         });
-        var hull = convexHull(pts);
-        if (hull.length >= 3) hulls.push({ hull: hull, area: polygonArea(hull) });
       });
       hulls.sort(function (a, b) {
         return b.area - a.area;
       });
-      for (var hi = 0; hi < hulls.length && hi < 5; hi++) {
-        if (hulls[hi].area < MIN_PAGE_AREA_THRESHOLD) continue;
+      for (var hi = 0; hi < hulls.length && hi < limit; hi++) {
+        if (hulls[hi].area < minArea) continue;
         var hull2 = hulls[hi].hull;
         var approx = approxPolyClosed(hull2, APPROX_POLY_EPSILON_FACTOR * perimeter(hull2));
         if (approx.length !== 4) continue;
@@ -1914,6 +2414,7 @@
     function CropOnMarkers(options, marker, config) {
       this.name = "CropOnMarkers";
       this.needsFullResolution = false;
+      this.geometry = "recorded";
       this.minMatchingThreshold = options.min_matching_threshold !== undefined ? options.min_matching_threshold : 0.3;
       this.maxMatchingVariation = options.max_matching_variation !== undefined ? options.max_matching_variation : 0.41;
       var range = options.marker_rescale_range || [35, 100];
@@ -2079,6 +2580,9 @@
         return null;
       }
       ctx.registration = { method: "markers", scale: bestScale, scores: scores, corners: centres };
+      recordGeometry(ctx, function (im) {
+        return fourPointTransform(im, centres);
+      });
       return fourPointTransform(image, centres);
     };
     function plausibleQuad(centres, imageArea) {
@@ -2104,6 +2608,7 @@
     function LevelsProcessor(options) {
       this.name = "Levels";
       this.needsFullResolution = false;
+      this.geometry = "none";
       var low = Math.trunc(255 * (options.low !== undefined ? options.low : 0)), high = Math.trunc(255 * (options.high !== undefined ? options.high : 1)), gamma = options.gamma !== undefined ? options.gamma : 1.0;
       var lut = new Uint8Array(256);
       for (var i = 0; i < 256; i++) {
@@ -2118,6 +2623,7 @@
     function MedianBlurProcessor(options) {
       this.name = "MedianBlur";
       this.needsFullResolution = false;
+      this.geometry = "none";
       this.k = Math.trunc(options.kSize || 5);
     }
     MedianBlurProcessor.prototype.apply = function (image) {
@@ -2126,6 +2632,7 @@
     function GaussianBlurProcessor(options) {
       this.name = "GaussianBlur";
       this.needsFullResolution = false;
+      this.geometry = "none";
       var k = options.kSize || [3, 3];
       this.k = [Math.trunc(k[0]), Math.trunc(k[1])];
       this.sigma = Math.trunc(options.sigmaX || 0);
@@ -2251,8 +2758,11 @@
       for (var j = 0; j < n; j++) s += (arr[j] - m) * (arr[j] - m);
       return Math.sqrt(s / n);
     }
-    function summarizeField(label, value, bubbles, markedCount, lowConfidence, params) {
+    function summarizeField(label, value, bubbles, markedCount, lowConfidence, params, extraFlags) {
       var flags = {};
+      (extraFlags || []).forEach(function (f) {
+        flags[f] = 1;
+      });
       if (markedCount > 1) flags.multi_marked = 1;
       if (markedCount === 0) flags.empty = 1;
       if (lowConfidence) flags.ambiguous_threshold = 1;
@@ -2284,25 +2794,16 @@
       var x0 = block.origin[0], y0 = block.origin[1];
       var left = x0 - radius, top = y0 - radius, right = x0 + blockW + radius, bottom = y0 + blockH + radius;
       if (left < 0 || top < 0 || right > img.width || bottom > img.height) return [block.shift, 0];
-      // ring of each bubble outline (approximates cv2.ellipse thickness 2)
-      var pts = [];
+      // every bubble outline, drawn like cv2.ellipse(..., thickness=2)
       var axW = Math.max(Math.trunc(bw / 2) - 1, 1), axH = Math.max(Math.trunc(bh / 2) - 1, 1);
-      var seen = new Uint8Array(blockW * blockH);
+      var outline = new Uint8Array(blockW * blockH);
       block.fields.forEach(function (f) {
         f.bubbles.forEach(function (b) {
-          var cx = Math.trunc(b.x - x0 + bw / 2), cy = Math.trunc(b.y - y0 + bh / 2);
-          for (var yy = cy - axH - 2; yy <= cy + axH + 2; yy++)
-            for (var xx = cx - axW - 2; xx <= cx + axW + 2; xx++) {
-              if (xx < 0 || yy < 0 || xx >= blockW || yy >= blockH) continue;
-              var nx = (xx - cx) / axW, ny = (yy - cy) / axH, r = Math.sqrt(nx * nx + ny * ny);
-              var dist = Math.abs(r - 1) * Math.min(axW, axH);
-              if (dist <= 1.0 && !seen[yy * blockW + xx]) {
-                seen[yy * blockW + xx] = 1;
-                pts.push(yy * blockW + xx);
-              }
-            }
+          ellipseOutline(outline, blockW, blockH, Math.trunc(b.x - x0 + bw / 2), Math.trunc(b.y - y0 + bh / 2), axW, axH);
         });
       });
+      var pts = [];
+      for (var pi = 0; pi < outline.length; pi++) if (outline[pi]) pts.push(pi);
       var n = blockW * blockH, k = pts.length;
       if (!k || k === n) return [block.shift, 0];
       // TM_CCOEFF_NORMED of a binary mask against (255 - region)
@@ -2333,17 +2834,316 @@
             by = oy;
           }
         }
-      if (best - scores[radius * size + radius] < 0.02) return [block.shift, 0];
+      // only move when clearly better, and never to the edge of the search window
+      if (best - scores[radius * size + radius] < 0.02 || Math.abs(bx - radius) === radius || Math.abs(by - radius) === radius) return [block.shift, 0];
       return [bx - radius, by - radius];
     }
 
+    // numpy's add.reduce over a contiguous 1-D array (pairwise summation); f32: float32 maths
+    function pairwiseSum(a, s, n, f32) {
+      var i, res, j;
+      if (n < 8) {
+        res = 0;
+        for (i = 0; i < n; i++) res = f32 ? fr(res + a[s + i]) : res + a[s + i];
+        return res;
+      }
+      if (n <= 128) {
+        var r = [];
+        for (j = 0; j < 8; j++) r.push(a[s + j]);
+        for (i = 8; i < n - (n % 8); i += 8) for (j = 0; j < 8; j++) r[j] = f32 ? fr(r[j] + a[s + i + j]) : r[j] + a[s + i + j];
+        if (f32) res = fr(fr(fr(r[0] + r[1]) + fr(r[2] + r[3])) + fr(fr(r[4] + r[5]) + fr(r[6] + r[7])));
+        else res = r[0] + r[1] + (r[2] + r[3]) + (r[4] + r[5] + (r[6] + r[7]));
+        for (; i < n; i++) res = f32 ? fr(res + a[s + i]) : res + a[s + i];
+        return res;
+      }
+      var n2 = Math.floor(n / 2);
+      n2 -= n2 % 8;
+      var t = pairwiseSum(a, s, n2, f32) + pairwiseSum(a, s + n2, n - n2, f32);
+      return f32 ? fr(t) : t;
+    }
+    function npSum(a, f32) {
+      return pairwiseSum(a, 0, a.length, f32);
+    }
+
+    // ------------------------------------------------------------------------
+    // Field block rectification onto a printed border (port of src/rectify.py)
+    // ------------------------------------------------------------------------
+    var RECT_MIN_SEGMENT_SHARE = 0.6, RECT_MIN_COVERAGE = 0.5, RECT_MAX_LINE_RMS = 1.5, RECT_MAX_ANGLE_DEV = 6.0, RECT_MAX_SIDE_RATIO_DEV = 0.08, RECT_MIN_FIT_RATIO = 0.97;
+    function blockBubbles(block) {
+      var out = [];
+      block.fields.forEach(function (f) {
+        f.bubbles.forEach(function (b) {
+          out.push(b);
+        });
+      });
+      return out;
+    }
+    // np.polyfit(x, y, 1) on float32 points: lstsq in double, float32 result
+    function polyfitF32(xs, ys) {
+      var n = xs.length, s0 = 0, i;
+      for (i = 0; i < n; i++) s0 = fr(s0 + fr(xs[i] * xs[i]));
+      var sc0 = fr(Math.sqrt(s0)), sc1 = fr(Math.sqrt(n));
+      var u = new Float64Array(n), v = fr(1 / sc1);
+      for (i = 0; i < n; i++) u[i] = fr(xs[i] / sc0);
+      // least squares [u, v] c = y via Gram-Schmidt in double
+      var vv = n * v * v, uv = 0, uy = 0, vy = 0;
+      for (i = 0; i < n; i++) {
+        uv += u[i] * v;
+        vy += v * ys[i];
+      }
+      var k = uv / vv, rr = 0;
+      for (i = 0; i < n; i++) {
+        var ru = u[i] - k * v;
+        rr += ru * ru;
+        uy += ru * ys[i];
+      }
+      var c0 = uy / rr, c1 = vy / vv - k * c0;
+      return [fr(fr(c0) / sc0), fr(fr(c1) / sc1)];
+    }
+    // _fit_side: a near-horizontal line (in mask's orientation) close to `expected`
+    function fitSide(mask, mw, mh, transposed, along, expected, search) {
+      var rows = transposed ? mw : mh, cols = transposed ? mh : mw;
+      function at(r, c) {
+        return transposed ? mask[c * mw + r] : mask[r * mw + c];
+      }
+      var lo = Math.trunc(Math.max(0, Math.floor(expected - search))), hi = Math.trunc(Math.min(rows, Math.ceil(expected + search) + 1));
+      var start = roundHalfEven(along[0]), end = roundHalfEven(along[1]);
+      if (hi - lo < 3 || end - start < 20) return null;
+      var count = clamp(Math.floor((end - start) / 40), 4, 12);
+      var edges = [], i, r, c;
+      for (i = 0; i <= count; i++) edges.push(Math.trunc(i === count ? end : start + i * ((end - start) / count)));
+      var px = [], py = [];
+      for (var e = 0; e < count; e++) {
+        var a = edges[e], b = edges[e + 1];
+        if (b <= a) continue;
+        var cov = new Float64Array(hi - lo), peak = 0;
+        for (r = lo; r < hi; r++) {
+          var s = 0;
+          for (c = a; c < b && c < cols; c++) s += at(r, c) ? 1 : 0;
+          cov[r - lo] = s / (Math.min(b, cols) - a);
+          if (cov[r - lo] > cov[peak]) peak = r - lo;
+        }
+        if (cov[peak] < RECT_MIN_COVERAGE) continue;
+        var thr = Math.max(RECT_MIN_COVERAGE, 0.8 * cov[peak]), groups = [], cur = null;
+        for (r = 0; r < cov.length; r++) {
+          if (cov[r] >= thr) {
+            if (cur && r === cur[cur.length - 1] + 1) cur.push(r);
+            else groups.push((cur = [r]));
+          }
+        }
+        var best = null, bestD = Infinity;
+        groups.forEach(function (g) {
+          var m = 0;
+          g.forEach(function (x) {
+            m += x;
+          });
+          var d = Math.abs(lo + m / g.length - expected);
+          if (d < bestD) {
+            bestD = d;
+            best = g;
+          }
+        });
+        var bw = best.map(function (x) {
+          return x * cov[x];
+        }),
+          ws = best.map(function (x) {
+            return cov[x];
+          });
+        px.push(fr((a + b) / 2.0));
+        py.push(fr(lo + npSum(bw, false) / npSum(ws, false)));
+      }
+      var needed = Math.max(3, Math.ceil(RECT_MIN_SEGMENT_SHARE * count));
+      if (px.length < needed) return null;
+      var keep = px.map(function () {
+        return true;
+      });
+      function fitKept() {
+        var kx = [], ky = [];
+        for (var q = 0; q < px.length; q++)
+          if (keep[q]) {
+            kx.push(px[q]);
+            ky.push(py[q]);
+          }
+        return polyfitF32(kx, ky);
+      }
+      var line, q, kept;
+      for (var it = 0; it < 2; it++) {
+        line = fitKept();
+        kept = 0;
+        for (q = 0; q < px.length; q++) {
+          keep[q] = Math.abs(fr(py[q] - fr(fr(line[0] * px[q]) + line[1]))) <= 2.0;
+          if (keep[q]) kept++;
+        }
+        if (kept < needed) return null;
+      }
+      line = fitKept();
+      var sq = [];
+      for (q = 0; q < px.length; q++)
+        if (keep[q]) {
+          var res = fr(py[q] - fr(fr(line[0] * px[q]) + line[1]));
+          sq.push(fr(res * res));
+        }
+      if (fr(Math.sqrt(fr(npSum(sq, true) / sq.length))) > RECT_MAX_LINE_RMS) return null;
+      if (Math.abs(line[0]) > Math.tan((RECT_MAX_ANGLE_DEV * 2 * Math.PI) / 180)) return null;
+      return line;
+    }
+    function lineAt(line, t) {
+      return line[0] * t + line[1];
+    }
+    function intersectLines(hz, vt) {
+      var y = (hz[0] * vt[1] + hz[1]) / (1.0 - hz[0] * vt[0]);
+      return [vt[0] * y + vt[1], y];
+    }
+    function nearRectangular(c) {
+      for (var i = 0; i < 4; i++) {
+        var pp = c[(i + 3) % 4], p = c[i], pn = c[(i + 1) % 4];
+        var ux = fr(pp[0] - p[0]), uy = fr(pp[1] - p[1]), vx = fr(pn[0] - p[0]), vy = fr(pn[1] - p[1]);
+        var cos = (ux * vx + uy * vy) / (Math.hypot(ux, uy) * Math.hypot(vx, vy) + 1e-9);
+        if (Math.abs((Math.acos(clamp(cos, -1, 1)) * 180) / Math.PI - 90) > RECT_MAX_ANGLE_DEV) return false;
+      }
+      var L = [];
+      for (var k = 0; k < 4; k++) L.push(Math.hypot(c[(k + 1) % 4][0] - c[k][0], c[(k + 1) % 4][1] - c[k][1]));
+      return !(Math.abs(L[0] - L[2]) > RECT_MAX_SIDE_RATIO_DEV * Math.max(L[0], L[2]) || Math.abs(L[1] - L[3]) > RECT_MAX_SIDE_RATIO_DEV * Math.max(L[1], L[3]));
+    }
+    // Mean darkness on the expected bubble outlines at the given positions
+    function bubbleFit(img, bubbles, bw, bh, offsets) {
+      var cs = bubbles.map(function (b, i) {
+        return [Math.trunc(b.x + offsets[i][0] + bw / 2), Math.trunc(b.y + offsets[i][1] + bh / 2)];
+      });
+      var pad = Math.trunc(Math.max(bw, bh)), minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      cs.forEach(function (c) {
+        minX = Math.min(minX, c[0]);
+        maxX = Math.max(maxX, c[0]);
+        minY = Math.min(minY, c[1]);
+        maxY = Math.max(maxY, c[1]);
+      });
+      var left = Math.max(minX - pad, 0), top = Math.max(minY - pad, 0), right = Math.min(maxX + pad, img.width), bottom = Math.min(maxY + pad, img.height);
+      if (right <= left || bottom <= top) return 0.0;
+      var w = right - left, h = bottom - top, mask = new Uint8Array(w * h);
+      var axW = Math.max(Math.trunc(bw / 2) - 1, 1), axH = Math.max(Math.trunc(bh / 2) - 1, 1);
+      cs.forEach(function (c) {
+        ellipseOutline(mask, w, h, c[0] - left, c[1] - top, axW, axH);
+      });
+      var s = 0, n = 0;
+      for (var y = 0; y < h; y++)
+        for (var x = 0; x < w; x++)
+          if (mask[y * w + x]) {
+            s += img.data[(top + y) * img.width + left + x];
+            n++;
+          }
+      return n ? 255.0 - s / n : 0.0;
+    }
+    // rectify_field_block: {ok, reason, offsets?, maxShift?}
+    function rectifyFieldBlock(img, block, searchPx) {
+      var x0 = Number(block.origin[0]), y0 = Number(block.origin[1]);
+      var x1 = x0 + Number(block.dimensions[0]), y1 = y0 + Number(block.dimensions[1]);
+      var pad = block.borderPadding;
+      var padding = pad === null || pad === undefined ? null : typeof pad === "number" ? [pad, pad] : [Number(pad[0]), Number(pad[1])];
+      var search = Number(searchPx);
+      var cx = padding ? padding[0] : search, cy = padding ? padding[1] : search;
+      var margin = Math.ceil(Math.max(cx, cy) + search + 3);
+      var left = Math.trunc(x0) - margin, top = Math.trunc(y0) - margin, right = Math.ceil(x1) + margin, bottom = Math.ceil(y1) + margin;
+      if (left < 0 || top < 0 || right > img.width || bottom > img.height) return { ok: false, reason: "search window outside the page" };
+      var region = cropImage(img, left, top, right - left, bottom - top), rw = region.width, rh = region.height;
+      var t = otsuValue(region), dark = new Uint8Array(rw * rh);
+      for (var i = 0; i < dark.length; i++) dark[i] = region.data[i] > t ? 0 : 255;
+      var darkImg = makeImage(rw, rh, dark), bw = block.bubbleDimensions[0], bh = block.bubbleDimensions[1];
+      var run = Math.trunc(Math.max(bw, bh) * 1.5) + 1;
+      var horizontal = morphBinary(morphBinary(morphBinary(darkImg, 1, 3, true), run, 1, false), run, 1, true).data;
+      var vertical = morphBinary(morphBinary(morphBinary(darkImg, 3, 1, true), 1, run, false), 1, run, true).data;
+      var loX = x0 - left, hiX = x1 - left, loY = y0 - top, hiY = y1 - top, sides = {};
+      var specs = [
+        ["top", horizontal, false, [loX, hiX], loY - cy],
+        ["bottom", horizontal, false, [loX, hiX], hiY + cy],
+        ["left", vertical, true, [loY, hiY], loX - cx],
+        ["right", vertical, true, [loY, hiY], hiX + cx],
+      ];
+      for (var s = 0; s < 4; s++) {
+        var line = fitSide(specs[s][1], rw, rh, specs[s][2], specs[s][3], specs[s][4], search);
+        if (!line) return { ok: false, reason: specs[s][0] + " border not found" };
+        sides[specs[s][0]] = line;
+      }
+      var corners = [intersectLines(sides.top, sides.left), intersectLines(sides.top, sides.right), intersectLines(sides.bottom, sides.right), intersectLines(sides.bottom, sides.left)].map(function (p) {
+        return [fr(fr(p[0]) + left), fr(fr(p[1]) + top)];
+      });
+      var padX, padY;
+      if (!padding) {
+        var midY = (loY + hiY) / 2, midX = (loX + hiX) / 2;
+        padX = (loX - lineAt(sides.left, midY) + (lineAt(sides.right, midY) - hiX)) / 2;
+        padY = (loY - lineAt(sides.top, midX) + (lineAt(sides.bottom, midX) - hiY)) / 2;
+        if (Math.min(padX, padY) < -2 || Math.max(padX, padY) > 2 * search + 2) return { ok: false, reason: "border gap implausible" };
+      } else {
+        padX = padding[0];
+        padY = padding[1];
+      }
+      var expected = [[x0 - padX, y0 - padY], [x1 + padX, y0 - padY], [x1 + padX, y1 + padY], [x0 - padX, y1 + padY]].map(function (p) {
+        return [fr(p[0]), fr(p[1])];
+      });
+      var maxShift = 0;
+      for (var k = 0; k < 4; k++) {
+        var ddx = fr(corners[k][0] - expected[k][0]), ddy = fr(corners[k][1] - expected[k][1]);
+        maxShift = Math.max(maxShift, fr(Math.sqrt(fr(fr(ddx * ddx) + fr(ddy * ddy)))));
+      }
+      var out = { ok: false, reason: "", maxShift: maxShift };
+      if (maxShift > search) {
+        out.reason = "correction larger than the search margin";
+        return out;
+      }
+      if (!nearRectangular(corners)) {
+        out.reason = "border is not near-rectangular";
+        return out;
+      }
+      var H = getPerspectiveTransform(expected, corners);
+      var bubbles = blockBubbles(block);
+      var offsets = bubbles.map(function (b) {
+        var ccx = fr(b.x + bw / 2.0), ccy = fr(b.y + bh / 2.0), m = projectPoint(H, ccx, ccy);
+        return [roundHalfEven(fr(fr(m[0]) - ccx)), roundHalfEven(fr(fr(m[1]) - ccy))];
+      });
+      var shift = bubbles.map(function () {
+        return [block.shift, block.shiftY];
+      });
+      if (bubbleFit(img, bubbles, bw, bh, offsets) < bubbleFit(img, bubbles, bw, bh, shift) * RECT_MIN_FIT_RATIO) {
+        out.reason = "bubbles fit worse after rectification";
+        return out;
+      }
+      out.ok = true;
+      out.offsets = offsets;
+      return out;
+    }
+    // rectify_field_blocks: returns {block name: true} for blocks that failed
+    function rectifyFieldBlocks(img, template, alignment) {
+      var failed = {}, byDefault = !!alignment.rectify_on_border, search = alignment.rectify_search_px !== undefined ? alignment.rectify_search_px : 20;
+      template.fieldBlocks.forEach(function (block) {
+        if (block.rectified) {
+          blockBubbles(block).forEach(function (b) {
+            b.dx = b.dy = 0;
+          });
+          block.rectified = false;
+        }
+        var enabled = block.rectifyOnBorder;
+        if (!(enabled === null || enabled === undefined ? byDefault : enabled)) return;
+        var res = rectifyFieldBlock(img, block, search);
+        block.lastRectification = res;
+        if (res.ok) {
+          blockBubbles(block).forEach(function (b, i) {
+            b.dx = res.offsets[i][0];
+            b.dy = res.offsets[i][1];
+          });
+          block.shift = 0;
+          block.shiftY = 0;
+          block.rectified = true;
+        } else failed[block.name] = true;
+      });
+      return failed;
+    }
+
     function readBubbles(template, image, config, modelProbs) {
-      var tp = config.threshold_params, rp = config.review_params;
+      var tp = config.threshold_params, rp = config.review_params, ap = config.alignment_params || {};
       var img = image;
       if (img.width !== template.pageDimensions[0] || img.height !== template.pageDimensions[1]) img = resizeLinear(img, template.pageDimensions[0], template.pageDimensions[1]);
       var mm = minMax(img);
       if (mm[1] > mm[0]) img = normalizeMinMax(img);
-      var snap = (config.alignment_params && config.alignment_params.block_snap_radius) || 0;
+      var snap = ap.block_snap_radius || 0;
       template.fieldBlocks.forEach(function (block) {
         block.shiftY = 0;
         block.shift = 0;
@@ -2353,40 +3153,66 @@
           block.shiftY = s[1];
         }
       });
+      var rectifyFailed = rectifyFieldBlocks(img, template, ap);
       var allVals = [], strips = [], stds = [];
       template.fieldBlocks.forEach(function (block) {
         var bw = block.bubbleDimensions[0], bh = block.bubbleDimensions[1];
         block.fields.forEach(function (field) {
           var vals = field.bubbles.map(function (b) {
-            return boxMean(img, b.x + block.shift, b.y + block.shiftY, bw, bh);
+            return boxMean(img, b.x + block.shift + b.dx, b.y + block.shiftY + b.dy, bw, bh);
           });
           stds.push(roundTo(stdPop(vals), 2));
           strips.push(vals);
           Array.prototype.push.apply(allVals, vals);
         });
       });
-      var globalStdThresh = getGlobalThreshold(stds, tp, 1);
-      var globalThr = getGlobalThreshold(allVals, tp, 4);
+      // threshold_params.mode "fixed": one intensity line for every sheet
+      var fixedMode = (tp.mode || "adaptive") === "fixed";
+      var fixedThr = 0, fixedMinFill = 0, fillMargin = 0, globalStdThresh, globalThr;
+      if (fixedMode) {
+        fixedThr = Number(tp.fixed_threshold !== undefined ? tp.fixed_threshold : 120);
+        fixedMinFill = Number(tp.fixed_min_fill_ratio !== undefined ? tp.fixed_min_fill_ratio : 0.12);
+        fillMargin = Math.max(Math.min(fixedMinFill, 1.0 - fixedMinFill), 0.05);
+        globalStdThresh = globalThr = fixedThr;
+      } else {
+        globalStdThresh = getGlobalThreshold(stds, tp, 1);
+        globalThr = getGlobalThreshold(allVals, tp, 4);
+      }
       var probs = modelProbs ? modelProbs(img, template) : null;
       return Promise.resolve(probs).then(function (modelMarkedProbs) {
         var omrResponse = {}, fieldDetails = {}, thresholdSum = 0, stripNo = 0, boxNo = 0;
         template.fieldBlocks.forEach(function (block) {
           var bw = block.bubbleDimensions[0], bh = block.bubbleDimensions[1];
+          var extra = rectifyFailed[block.name] ? ["rectify_failed"] : null;
           block.fields.forEach(function (field) {
-            var noOutliers = stds[stripNo] < globalStdThresh;
-            var local = getLocalThreshold(strips[stripNo], globalThr, noOutliers, tp);
-            var thr = local.threshold;
+            var thr, lowConfidence;
+            if (fixedMode) {
+              thr = fixedThr;
+              lowConfidence = false;
+            } else {
+              var local = getLocalThreshold(strips[stripNo], globalThr, stds[stripNo] < globalStdThresh, tp);
+              thr = local.threshold;
+              lowConfidence = local.lowConfidence;
+            }
             thresholdSum += thr;
             var detected = [], details = [];
             field.bubbles.forEach(function (bubble, bi) {
               var mean = strips[stripNo][bi];
               var modelProb = modelMarkedProbs ? modelMarkedProbs[boxNo] : null;
               boxNo++;
-              var x = bubble.x + block.shift, y = bubble.y + block.shiftY;
-              var marked = thr > mean;
-              var fr = fillRatio(img, x, y, bw, bh, thr - rp.confidence_margin);
-              var conf = clamp(Math.abs(thr - mean) / rp.confidence_margin, 0, 1);
-              var detail = { value: bubble.value, x: x, y: y, w: bw, h: bh, mean_intensity: roundTo(mean, 2), fill_ratio: roundTo(fr, 3), marked: marked, confidence: roundTo(conf, 3) };
+              var x = bubble.x + block.shift + bubble.dx, y = bubble.y + block.shiftY + bubble.dy;
+              var marked, fill, conf;
+              if (fixedMode) {
+                // marked when enough of the interior is darker than the line
+                fill = fillRatio(img, x, y, bw, bh, fixedThr);
+                marked = fill >= fixedMinFill;
+                conf = clamp(Math.abs(fill - fixedMinFill) / fillMargin, 0, 1);
+              } else {
+                marked = thr > mean;
+                fill = fillRatio(img, x, y, bw, bh, thr - rp.confidence_margin);
+                conf = clamp(Math.abs(thr - mean) / rp.confidence_margin, 0, 1);
+              }
+              var detail = { value: bubble.value, x: x, y: y, w: bw, h: bh, mean_intensity: roundTo(mean, 2), fill_ratio: roundTo(fill, 3), marked: marked, confidence: roundTo(conf, 3) };
               if (modelProb !== null && modelProb !== undefined) {
                 var modelMarked = modelProb >= 0.5;
                 detail.model_marked_prob = roundTo(modelProb, 4);
@@ -2402,17 +3228,591 @@
               omrResponse[b.label] = b.label in omrResponse ? omrResponse[b.label] + b.value : b.value;
             });
             if (!detected.length) omrResponse[field.label] = block.emptyValue;
-            fieldDetails[field.label] = summarizeField(field.label, omrResponse[field.label], details, detected.length, local.lowConfidence, rp);
+            fieldDetails[field.label] = summarizeField(field.label, omrResponse[field.label], details, detected.length, lowConfidence, rp, extra);
             stripNo++;
           });
         });
+        var thresholds = { global: roundTo(globalThr, 2), global_std: roundTo(globalStdThresh, 2), average_local: stripNo ? roundTo(thresholdSum / stripNo, 2) : 0 };
+        if (fixedMode) thresholds.mode = "fixed";
         return {
           omrResponse: omrResponse,
           fieldDetails: fieldDetails,
           alignedImage: img,
-          thresholds: { global: roundTo(globalThr, 2), global_std: roundTo(globalStdThresh, 2), average_local: stripNo ? roundTo(thresholdSum / stripNo, 2) : 0 },
+          thresholds: thresholds,
         };
       });
+    }
+
+    // ------------------------------------------------------------------------
+    // Built-in 1-D barcode decoder (port of src/readers/linear.py): Code 128,
+    // Code 39, ITF, EAN-13/8 and UPC-A from scanline run lengths
+    // ------------------------------------------------------------------------
+    var LIN = { CODE128: "Code 128", CODE39: "Code 39", ITF: "ITF", EAN13: "EAN-13", EAN8: "EAN-8", UPCA: "UPC-A" };
+    var LIN_ALL = [LIN.CODE128, LIN.CODE39, LIN.ITF, LIN.EAN13, LIN.EAN8, LIN.UPCA];
+    var LIN_ALIASES = { code128: LIN.CODE128, code39: LIN.CODE39, itf: LIN.ITF, ean13: LIN.EAN13, ean8: LIN.EAN8, upca: LIN.UPCA, linearcodes: null, all: null, any: null };
+    var C128_PATTERNS = (
+      "212222 222122 222221 121223 121322 131222 122213 122312 132212 221213 221312 231212 112232 122132 122231 113222 123122 123221 223211 221132 " +
+      "221231 213212 223112 312131 311222 321122 321221 312212 322112 322211 212123 212321 232121 111323 131123 131321 112313 132113 132311 211313 " +
+      "231113 231311 112133 112331 132131 113123 113321 133121 313121 211331 231131 213113 213311 213131 311123 311321 331121 312113 312311 332111 " +
+      "314111 221411 431111 111224 111422 121124 121421 141122 141221 112214 112412 122114 122411 142112 142211 241211 221114 413111 241112 134111 " +
+      "111242 121142 121241 114212 124112 124211 411212 421112 421211 212141 214121 412121 111143 111341 131141 114113 114311 411113 411311 113141 " +
+      "114131 311141 411131 211412 211214 211232"
+    )
+      .split(" ")
+      .map(function (p) {
+        return p.split("").map(Number);
+      });
+    var C128_STOP = [2, 3, 3, 1, 1, 1, 2];
+    var C128_FNC1 = 102, C128_SHIFT = 98, C128_CODE_C = 99, C128_CODE_B = 100, C128_CODE_A = 101;
+    var C39_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-. $/+%";
+    var C39_ENCODINGS = [0x034, 0x121, 0x061, 0x160, 0x031, 0x130, 0x070, 0x025, 0x124, 0x064, 0x109, 0x049, 0x148, 0x019, 0x118, 0x058, 0x00d, 0x10c, 0x04c, 0x01c, 0x103, 0x043, 0x142, 0x013, 0x112, 0x052, 0x007, 0x106, 0x046, 0x016, 0x181, 0x0c1, 0x1c0, 0x091, 0x190, 0x0d0, 0x085, 0x184, 0x0c4, 0x0a8, 0x0a2, 0x08a, 0x02a];
+    var C39_BY_CODE = {};
+    C39_ENCODINGS.forEach(function (code, i) {
+      C39_BY_CODE[code] = C39_ALPHABET[i];
+    });
+    C39_BY_CODE[0x094] = "*";
+    var ITF_PATTERNS = [[1, 1, 2, 2, 1], [2, 1, 1, 1, 2], [1, 2, 1, 1, 2], [2, 2, 1, 1, 1], [1, 1, 2, 1, 2], [2, 1, 2, 1, 1], [1, 2, 2, 1, 1], [1, 1, 1, 2, 2], [2, 1, 1, 2, 1], [1, 2, 1, 2, 1]];
+    var EAN_L = [[3, 2, 1, 1], [2, 2, 2, 1], [2, 1, 2, 2], [1, 4, 1, 1], [1, 1, 3, 2], [1, 2, 3, 1], [1, 1, 1, 4], [1, 3, 1, 2], [1, 2, 1, 3], [3, 1, 1, 2]];
+    var EAN_G = EAN_L.map(function (p) {
+      return p.slice().reverse();
+    });
+    var EAN_LG = EAN_L.concat(EAN_G);
+    var EAN_FIRST_DIGIT = { "000000": 0, "001011": 1, "001101": 2, "001110": 3, "010011": 4, "011001": 5, "011100": 6, "010101": 7, "010110": 8, "011010": 9 };
+    // zxing >= 2.3 (and zxing-wasm) report a UPC-A as EAN-13 unless only UPC-A is allowed
+    var UPCA_AS_EAN13 = true;
+    var MAX_PATTERN_ERROR = 0.32, MIN_PATTERN_MARGIN = 0.12;
+
+    // Map a zone's `formats` onto the symbologies read here ({} = none supported)
+    function builtinFormats(names) {
+      var all = {};
+      LIN_ALL.forEach(function (f) {
+        all[f] = true;
+      });
+      if (!names || !names.length) return all;
+      var wanted = {};
+      for (var i = 0; i < names.length; i++) {
+        var key = String(names[i]).toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (Object.prototype.hasOwnProperty.call(LIN_ALIASES, key)) {
+          if (LIN_ALIASES[key] === null) return all;
+          wanted[LIN_ALIASES[key]] = true;
+        }
+      }
+      return wanted;
+    }
+    function boxFilter1D(values, radius, f32) {
+      // moving average with edge replication; f32: cumulative sum in float32 (numpy on float32 input)
+      if (radius < 1) return values;
+      var n = values.length, width = 2 * radius + 1, csum = new Float64Array(n + 2 * radius + 1), acc = 0;
+      for (var i = 0; i < n + 2 * radius; i++) {
+        var v = values[i < radius ? 0 : i >= n + radius ? n - 1 : i - radius];
+        acc = f32 ? fr(acc + v) : acc + v;
+        csum[i + 1] = acc;
+      }
+      var out = new Float64Array(n);
+      for (var j = 0; j < n; j++) out[j] = (csum[j + width] - csum[j]) / width;
+      return out;
+    }
+    function movingExtreme(values, radius, isMax) {
+      var n = values.length, out = new Float64Array(n);
+      for (var i = 0; i < n; i++) {
+        var e = isMax ? -Infinity : Infinity;
+        for (var k = i - radius; k <= i + radius; k++) {
+          var v = values[k < 0 ? 0 : k >= n ? n - 1 : k];
+          if (isMax ? v > e : v < e) e = v;
+        }
+        out[i] = e;
+      }
+      return out;
+    }
+    // np.percentile(..., method="linear") of a sorted copy
+    function percentileLinear(sorted, q) {
+      var n = sorted.length, vi = (n - 1) * (q / 100), lo = Math.floor(vi), hi = Math.min(lo + 1, n - 1), g = vi - lo;
+      var a = sorted[lo], b = sorted[hi], diff = b - a;
+      return g >= 0.5 ? b - diff * (1 - g) : a + diff * g;
+    }
+    // Mean intensity profiles of `count` horizontal bands (float32 like numpy)
+    function scanlineProfiles(gray, count, band) {
+      var h = gray.height, w = gray.width, d = gray.data;
+      var top = Math.trunc(h * 0.08), bottom = Math.max(Math.trunc(h * 0.92), Math.trunc(h * 0.08) + 1);
+      var step = (bottom - 1 - top) / (count - 1), centres = [];
+      for (var i = 0; i < count; i++) {
+        var c = Math.trunc(i === count - 1 ? bottom - 1 : i * step + top);
+        if (centres.indexOf(c) < 0) centres.push(c);
+      }
+      centres.sort(function (a, b) {
+        return a - b;
+      });
+      return centres.map(function (c) {
+        var y0 = Math.max(c - (band >> 1), 0), y1 = Math.min(c + (band >> 1) + 1, h), row = new Float32Array(w);
+        for (var x = 0; x < w; x++) {
+          var s = 0;
+          for (var y = y0; y < y1; y++) s += d[y * w + x];
+          row[x] = s / (y1 - y0);
+        }
+        return row;
+      });
+    }
+    // Sub-pixel bar/space boundaries of one scanline: {edges, firstDark} or null
+    function lineEdges(line, minContrast) {
+      var n = line.length, i;
+      if (n < 20) return null;
+      var sorted = Float64Array.from(line).sort();
+      var lo = percentileLinear(sorted, 3), hi = percentileLinear(sorted, 97);
+      if (hi - lo < (minContrast || 40)) return null;
+      var radius = Math.max(Math.trunc(n / 24), 6);
+      var emax = boxFilter1D(movingExtreme(line, radius, true), radius >> 1, false);
+      var emin = boxFilter1D(movingExtreme(line, radius, false), radius >> 1, false);
+      var thr = new Float64Array(n), dark = new Uint8Array(n), weakLevel = (hi - lo) * 0.35, mid = (hi + lo) / 2.0;
+      for (i = 0; i < n; i++) {
+        thr[i] = emax[i] - emin[i] < weakLevel ? mid : (emax[i] + emin[i]) / 2.0;
+        dark[i] = line[i] < thr[i] ? 1 : 0;
+      }
+      var change = [];
+      for (i = 0; i < n - 1; i++) if (dark[i + 1] !== dark[i]) change.push(i);
+      if (change.length < 6) return null;
+      var edges = change.map(function (c) {
+        var a = line[c] - thr[c], b = line[c + 1] - thr[c + 1], denom = a === b ? 1.0 : a - b;
+        return c + clamp(a / denom, 0.0, 1.0) + 0.5;
+      });
+      return { edges: edges, firstDark: !!dark[0] };
+    }
+    function runsFromEdges(edges, firstDark, length) {
+      var out = firstDark ? [0.0] : [], prev = 0.0;
+      for (var i = 0; i < edges.length; i++) {
+        out.push(edges[i] - prev);
+        prev = edges[i];
+      }
+      out.push(length - prev);
+      return out;
+    }
+    function linMatch(widths, patterns, totalModules) {
+      var total = 0, i, k;
+      for (i = 0; i < widths.length; i++) total += widths[i];
+      if (total <= 0) return -1;
+      var module = total / totalModules, best = -1, bestErr = 1e9, secondErr = 1e9;
+      for (i = 0; i < patterns.length; i++) {
+        var p = patterns[i], err = 0, m = Math.min(widths.length, p.length);
+        for (k = 0; k < m; k++) err += Math.abs(widths[k] / module - p[k]);
+        err /= p.length;
+        if (err < bestErr) {
+          secondErr = bestErr;
+          bestErr = err;
+          best = i;
+        } else if (err < secondErr) secondErr = err;
+      }
+      if (bestErr > MAX_PATTERN_ERROR || secondErr - bestErr < MIN_PATTERN_MARGIN) return -1;
+      return best;
+    }
+    function quietEnough(space, module, required, atBorder) {
+      return atBorder || space >= module * required;
+    }
+    function okRatio(a, b, tolerance) {
+      return Math.abs(a - b) <= (tolerance === undefined ? 0.35 : tolerance) * Math.max(a, b);
+    }
+    function quietBefore(runs, i, count, totalModules, required) {
+      var total = 0;
+      for (var k = i; k < i + count; k++) total += runs[k];
+      var module = total / totalModules;
+      if (i === 1 && runs[0] >= 2 * module) return true;
+      return runs[i - 1] >= module * required * 0.7;
+    }
+    function elSign(k, firstIsBar) {
+      return (k % 2 === 0) === firstIsBar ? 1.0 : -1.0;
+    }
+    // Least squares widths = module * pattern + sign * bias -> [module, bias, error]
+    function linFit(widths, pattern, firstIsBar) {
+      var spp = 0, sps = 0, sss = 0, swp = 0, sws = 0, k;
+      for (k = 0; k < pattern.length; k++) {
+        var p = pattern[k], s = elSign(k, firstIsBar), w = widths[k];
+        spp += p * p;
+        sps += p * s;
+        sss += s * s;
+        swp += w * p;
+        sws += w * s;
+      }
+      var det = spp * sss - sps * sps;
+      if (det <= 0) return [0.0, 0.0, 1e9];
+      var module = (swp * sss - sws * sps) / det, bias = (spp * sws - sps * swp) / det;
+      if (module <= 0) return [0.0, 0.0, 1e9];
+      var limit = 0.45 * module;
+      bias = Math.max(-limit, Math.min(limit, bias));
+      var err = 0;
+      for (k = 0; k < pattern.length; k++) err += Math.abs(widths[k] - module * pattern[k] - elSign(k, firstIsBar) * bias);
+      return [module, bias, err / (pattern.length * module)];
+    }
+    function linMatchFit(widths, patterns, firstIsBar) {
+      var best = -1, bestErr = 1e9, secondErr = 1e9, fit = [0.0, 0.0];
+      for (var i = 0; i < patterns.length; i++) {
+        var r = linFit(widths, patterns[i], firstIsBar);
+        if (r[2] < bestErr) {
+          secondErr = bestErr;
+          bestErr = r[2];
+          best = i;
+          fit = [r[0], r[1]];
+        } else if (r[2] < secondErr) secondErr = r[2];
+      }
+      if (bestErr > MAX_PATTERN_ERROR || secondErr - bestErr < MIN_PATTERN_MARGIN) return [-1, 0.0, 0.0];
+      return [best, fit[0], fit[1]];
+    }
+    function debias(widths, bias, firstIsBar) {
+      return widths.map(function (w, k) {
+        return Math.max(w - elSign(k, firstIsBar) * bias, 0.05);
+      });
+    }
+    function updateBias(bias, widths, pattern, firstIsBar) {
+      var r = linFit(widths, pattern, firstIsBar);
+      return r[2] > MAX_PATTERN_ERROR ? bias : 0.7 * bias + 0.3 * r[1];
+    }
+    function sumOf(a) {
+      var s = 0;
+      for (var i = 0; i < a.length; i++) s += a[i];
+      return s;
+    }
+    function decodeCode128(runs) {
+      var n = runs.length, starts = C128_PATTERNS.slice(103, 106);
+      for (var i = 1; i < n - 6 * 3 - 7; i += 2) {
+        if (!quietBefore(runs, i, 6, 11, 5)) continue;
+        var m = linMatchFit(runs.slice(i, i + 6), starts, true);
+        if (m[0] < 0) continue;
+        if (!quietEnough(runs[i - 1], m[1], 5, i === 1 && runs[0] >= 2 * m[1])) continue;
+        var result = code128From(runs, i, 103 + m[0], m[1], m[2]);
+        if (result) return result;
+      }
+      return null;
+    }
+    function code128From(runs, i, startValue, module, bias) {
+      var values = [startValue], pos = i + 6, n = runs.length, data = C128_PATTERNS.slice(0, 106);
+      while (pos + 7 <= n) {
+        var stopWidths = debias(runs.slice(pos, pos + 7), bias, true), stopModule = sumOf(stopWidths) / 13.0;
+        if (okRatio(stopModule, module) && linMatch(stopWidths, [C128_STOP], 13) === 0) {
+          var trailing = pos + 7 < n ? runs[pos + 7] : module * 10;
+          if (quietEnough(trailing, module, 5, pos + 8 >= n) && values.length >= 3) return code128Text(values);
+        }
+        var raw = runs.slice(pos, pos + 6), charWidths = debias(raw, bias, true), charModule = sumOf(charWidths) / 11.0;
+        if (!okRatio(charModule, module)) return null;
+        var value = linMatch(charWidths, data, 11);
+        if (value < 0 || value >= 103) return null;
+        values.push(value);
+        bias = updateBias(bias, raw, C128_PATTERNS[value], true);
+        module = 0.8 * module + 0.2 * charModule;
+        pos += 6;
+      }
+      return null;
+    }
+    function code128Text(values) {
+      var checksum = values[0], k;
+      for (k = 1; k < values.length - 1; k++) checksum += k * values[k];
+      if (checksum % 103 !== values[values.length - 1]) return null;
+      var codeSet = { 103: "A", 104: "B", 105: "C" }[values[0]], out = [], shift = false, fnc4Next = false, fnc4Latched = false;
+      var data = values.slice(1, -1);
+      for (var index = 0; index < data.length; index++) {
+        var value = data[index], current = codeSet;
+        if (shift) {
+          current = codeSet === "A" ? "B" : "A";
+          shift = false;
+        }
+        if (current === "C") {
+          if (value < 100) out.push((value < 10 ? "0" : "") + value);
+          else if (value === C128_CODE_B) codeSet = "B";
+          else if (value === C128_CODE_A) codeSet = "A";
+          else if (value === C128_FNC1 && index > 0) out.push("\x1d");
+          continue;
+        }
+        if (value < 96) {
+          var code = current === "A" ? (value < 64 ? value + 32 : value - 64) : value + 32;
+          if (fnc4Next || fnc4Latched) {
+            code += 128;
+            fnc4Next = false;
+          }
+          out.push(String.fromCharCode(code));
+          continue;
+        }
+        if (value === C128_FNC1) {
+          if (index > 0) out.push("\x1d");
+        } else if (value === C128_SHIFT) shift = true;
+        else if (value === C128_CODE_C) codeSet = "C";
+        else if ((current === "A" && value === C128_CODE_A) || (current === "B" && value === C128_CODE_B)) {
+          if (fnc4Next) {
+            fnc4Latched = !fnc4Latched;
+            fnc4Next = false;
+          } else fnc4Next = true;
+        } else if (value === C128_CODE_A) codeSet = "A";
+        else if (value === C128_CODE_B) codeSet = "B";
+      }
+      var text = out.join("");
+      return text ? [text, LIN.CODE128] : null;
+    }
+    // [char, narrow, wide, bias] for 9 elements (bar first), or null
+    function code39Char(widths, bias) {
+      widths = debias(widths, bias || 0.0, true);
+      var ordered = widths.slice().sort(function (a, b) {
+        return a - b;
+      });
+      var narrowMax = ordered[5], wideMin = ordered[6];
+      if (wideMin < narrowMax * 1.5) return null;
+      var narrow = (ordered[0] + ordered[1] + ordered[2] + ordered[3] + ordered[4] + ordered[5]) / 6.0, wide = (ordered[6] + ordered[7] + ordered[8]) / 3.0;
+      if (ordered[0] < narrow * 0.4 || ordered[8] > wide * 1.6) return null;
+      var threshold = (narrowMax + wideMin) / 2.0, code = 0, nb = [], ns = [];
+      for (var k = 0; k < widths.length; k++) {
+        var isWide = widths[k] > threshold;
+        code = (code << 1) | (isWide ? 1 : 0);
+        if (!isWide) (k % 2 === 0 ? nb : ns).push(widths[k]);
+      }
+      var ch = C39_BY_CODE[code];
+      if (ch === undefined) return null;
+      var spread = nb.length && ns.length ? (sumOf(nb) / nb.length - sumOf(ns) / ns.length) / 2.0 : 0.0;
+      return [ch, narrow, wide, (bias || 0.0) + spread];
+    }
+    function decodeCode39(runs, checkDigit, extended) {
+      var n = runs.length;
+      for (var i = 1; i < n - 9 * 3; i += 2) {
+        if (!quietBefore(runs, i, 9, 15, 7)) continue;
+        var first = code39Char(runs.slice(i, i + 9));
+        if (!first || first[0] !== "*") continue;
+        if (!quietEnough(runs[i - 1], first[1], 7, i === 1 && runs[0] >= 2 * first[1])) continue;
+        var result = code39From(runs, i + 9, first[1], first[2], first[3], checkDigit, extended);
+        if (result) return result;
+      }
+      return null;
+    }
+    function code39From(runs, pos, narrow, wide, bias, checkDigit, extended) {
+      var chars = [], n = runs.length;
+      while (pos + 10 <= n) {
+        var gap = runs[pos] + bias;
+        if (gap < narrow * 0.4 || gap > narrow * 3.2) return null;
+        var decoded = code39Char(runs.slice(pos + 1, pos + 10), bias);
+        if (!decoded) return null;
+        if (!(okRatio(decoded[1], narrow, 0.45) && okRatio(decoded[2], wide))) return null;
+        bias = 0.7 * bias + 0.3 * decoded[3];
+        pos += 10;
+        if (decoded[0] === "*") {
+          var trailing = pos < n ? runs[pos] : narrow * 10;
+          if (!quietEnough(trailing, narrow, 7, pos + 1 >= n)) return null;
+          if (!chars.length) return null;
+          var text = chars.join("");
+          if (checkDigit) {
+            if (text.length < 2) return null;
+            var total = 0;
+            for (var c = 0; c < text.length - 1; c++) total += C39_ALPHABET.indexOf(text[c]);
+            if (C39_ALPHABET[total % 43] !== text[text.length - 1]) return null;
+            text = text.slice(0, -1);
+          }
+          if (extended) {
+            var full = code39FullAscii(text);
+            if (full !== null) text = full;
+            else if (extended === true) return null;
+          }
+          return [text, LIN.CODE39];
+        }
+        chars.push(decoded[0]);
+      }
+      return null;
+    }
+    function code39FullAscii(text) {
+      var out = [], i = 0;
+      function inRange(c, a, b) {
+        return c >= a && c <= b;
+      }
+      while (i < text.length) {
+        var ch = text[i];
+        if ("$%/+".indexOf(ch) >= 0) {
+          if (i + 1 >= text.length) return null;
+          var nx = text[i + 1], o = nx.charCodeAt(0);
+          i += 2;
+          if (ch === "+" && inRange(nx, "A", "Z")) out.push(String.fromCharCode(o + 32));
+          else if (ch === "$" && inRange(nx, "A", "Z")) out.push(String.fromCharCode(o - 64));
+          else if (ch === "%" && inRange(nx, "A", "E")) out.push(String.fromCharCode(o - 38));
+          else if (ch === "%" && inRange(nx, "F", "J")) out.push(String.fromCharCode(o - 11));
+          else if (ch === "%" && inRange(nx, "K", "O")) out.push(String.fromCharCode(o + 16));
+          else if (ch === "%" && inRange(nx, "P", "T")) out.push(String.fromCharCode(o + 43));
+          else if (ch === "%" && nx === "U") out.push("\x00");
+          else if (ch === "%" && nx === "V") out.push("@");
+          else if (ch === "%" && nx === "W") out.push("`");
+          else if (ch === "%" && "XYZ".indexOf(nx) >= 0) out.push(String.fromCharCode(127));
+          else if (ch === "/" && inRange(nx, "A", "O")) out.push(String.fromCharCode(o - 32));
+          else if (ch === "/" && nx === "Z") out.push(":");
+          else return null;
+        } else {
+          out.push(ch);
+          i++;
+        }
+      }
+      return out.join("");
+    }
+    function decodeItf(runs, minLength, checkDigit) {
+      var n = runs.length;
+      for (var i = 1; i < n - 4 - 10 - 3; i += 2) {
+        if (!quietBefore(runs, i, 4, 4, 8)) continue;
+        var f = linFit(runs.slice(i, i + 4), [1, 1, 1, 1], true);
+        if (f[2] > MAX_PATTERN_ERROR || f[0] <= 0) continue;
+        if (!quietEnough(runs[i - 1], f[0], 8, i === 1 && runs[0] >= 2 * f[0])) continue;
+        var result = itfFrom(runs, i + 4, f[0], f[1], minLength, checkDigit);
+        if (result) return result;
+      }
+      return null;
+    }
+    function itfFrom(runs, pos, narrow, bias, minLength, checkDigit) {
+      var digits = [], n = runs.length;
+      while (pos + 3 <= n) {
+        var stop = debias(runs.slice(pos, pos + 3), bias, true);
+        if (digits.length >= minLength && stop[0] > narrow * 1.7 && stop[1] < narrow * 1.6 && stop[2] < narrow * 1.6) {
+          var trailing = pos + 3 < n ? runs[pos + 3] : narrow * 10;
+          if (quietEnough(trailing, narrow, 8, pos + 4 >= n)) {
+            var text = digits.join("");
+            if (checkDigit && !mod10Ok(text)) return null;
+            return [text, LIN.ITF];
+          }
+        }
+        if (pos + 10 > n) break;
+        var raw = runs.slice(pos, pos + 10), block = debias(raw, bias, true), pairModule = sumOf(block) / 14.0;
+        if (!okRatio(pairModule, narrow, 0.45)) return null;
+        var first = linMatch([block[0], block[2], block[4], block[6], block[8]], ITF_PATTERNS, 7);
+        var second = linMatch([block[1], block[3], block[5], block[7], block[9]], ITF_PATTERNS, 7);
+        if (first < 0 || second < 0) return null;
+        digits.push(first, second);
+        var pattern = [];
+        for (var k = 0; k < 5; k++) pattern.push(ITF_PATTERNS[first][k], ITF_PATTERNS[second][k]);
+        bias = updateBias(bias, raw, pattern, true);
+        narrow = 0.8 * narrow + 0.2 * pairModule;
+        pos += 10;
+      }
+      return null;
+    }
+    function mod10Ok(text) {
+      if (text.length < 2 || !/^[0-9]+$/.test(text)) return false;
+      var total = 0;
+      for (var off = 0; off < text.length - 1; off++) total += Number(text[text.length - 2 - off]) * (off % 2 === 0 ? 3 : 1);
+      return (10 - (total % 10)) % 10 === Number(text[text.length - 1]);
+    }
+    function decodeEan(runs, wanted) {
+      var n = runs.length;
+      for (var i = 1; i < n - 3; i += 2) {
+        if (!quietBefore(runs, i, 3, 3, 5)) continue;
+        var f = linFit(runs.slice(i, i + 3), [1, 1, 1], true);
+        if (f[2] > MAX_PATTERN_ERROR || f[0] <= 0) continue;
+        if (!quietEnough(runs[i - 1], f[0], 5, i === 1 && runs[0] >= 2 * f[0])) continue;
+        var halves = [6, 4];
+        for (var h = 0; h < 2; h++) {
+          if (halves[h] === 6 && !(wanted[LIN.EAN13] || wanted[LIN.UPCA])) continue;
+          if (halves[h] === 4 && !wanted[LIN.EAN8]) continue;
+          var result = eanFrom(runs, i + 3, f[0], f[1], halves[h], wanted);
+          if (result) return result;
+        }
+      }
+      return null;
+    }
+    function eanSide(runs, pos, module, bias, count, left) {
+      var firstIsBar = !left, candidates = left ? EAN_LG : EAN_L, digits = [], parities = [];
+      for (var c = 0; c < count; c++) {
+        var raw = runs.slice(pos, pos + 4);
+        if (raw.length < 4) return null;
+        var widths = debias(raw, bias, firstIsBar), digitModule = sumOf(widths) / 7.0;
+        if (!okRatio(digitModule, module, 0.3)) return null;
+        var index = linMatch(widths, candidates, 7);
+        if (index < 0) return null;
+        digits.push(index % 10);
+        parities.push(Math.floor(index / 10));
+        bias = updateBias(bias, raw, candidates[index], firstIsBar);
+        module = 0.8 * module + 0.2 * digitModule;
+        pos += 4;
+      }
+      return [digits, parities, pos, module, bias];
+    }
+    function eanFrom(runs, pos, module, bias, half, wanted) {
+      var n = runs.length;
+      if (pos + half * 4 * 2 + 5 + 3 > n) return null;
+      var left = eanSide(runs, pos, module, bias, half, true);
+      if (!left) return null;
+      pos = left[2];
+      module = left[3];
+      bias = left[4];
+      if (linFit(runs.slice(pos, pos + 5), [1, 1, 1, 1, 1], false)[2] > MAX_PATTERN_ERROR) return null;
+      var right = eanSide(runs, pos + 5, module, bias, half, false);
+      if (!right) return null;
+      pos = right[2];
+      module = right[3];
+      var endGuard = runs.slice(pos, pos + 3);
+      if (endGuard.length < 3 || linFit(endGuard, [1, 1, 1], true)[2] > MAX_PATTERN_ERROR) return null;
+      var trailing = pos + 3 < n ? runs[pos + 3] : module * 10;
+      if (!quietEnough(trailing, module, 5, pos + 4 >= n)) return null;
+      var text;
+      if (half === 6) {
+        var first = EAN_FIRST_DIGIT[left[1].join("")];
+        if (first === undefined) return null;
+        text = String(first) + left[0].join("") + right[0].join("");
+        if (!mod10Ok(text)) return null;
+        if (text[0] === "0" && wanted[LIN.UPCA] && (!wanted[LIN.EAN13] || !UPCA_AS_EAN13)) return [text.slice(1), LIN.UPCA];
+        if (wanted[LIN.EAN13]) return [text, LIN.EAN13];
+        return null;
+      }
+      if (left[1].some(Boolean)) return null;
+      text = left[0].join("") + right[0].join("");
+      if (!mod10Ok(text)) return null;
+      return [text, LIN.EAN8];
+    }
+    function decodeRuns(runs, wanted, options) {
+      var found;
+      if (wanted[LIN.CODE128] && (found = decodeCode128(runs))) return found;
+      if ((wanted[LIN.EAN13] || wanted[LIN.EAN8] || wanted[LIN.UPCA]) && (found = decodeEan(runs, wanted))) return found;
+      if (wanted[LIN.CODE39] && (found = decodeCode39(runs, options.code39Checksum || false, options.code39Extended === undefined ? "auto" : options.code39Extended))) return found;
+      if (wanted[LIN.ITF] && (found = decodeItf(runs, options.itfMinLength === undefined ? 6 : options.itfMinLength, options.itfChecksum || false))) return found;
+      return null;
+    }
+    // 1-D unsharp mask; profile is float32, the result float64 (as numpy)
+    function sharpenProfile(profile, amount, radius) {
+      var smooth = boxFilter1D(boxFilter1D(profile, radius, true), radius, false), out = new Float64Array(profile.length);
+      for (var i = 0; i < profile.length; i++) out[i] = profile[i] + amount * (profile[i] - smooth[i]);
+      return out;
+    }
+    function decodeLine(profile, width, wanted, options) {
+      var e = lineEdges(profile);
+      if (!e) return null;
+      var runs = runsFromEdges(e.edges, e.firstDark, width), found = decodeRuns(runs, wanted, options);
+      if (!found) {
+        // right-to-left (upside-down code), keeping "leading space first"
+        var reverse = runs.slice().reverse();
+        if (runs.length % 2 === 0) reverse.unshift(0.0);
+        found = decodeRuns(reverse, wanted, options);
+      }
+      return found;
+    }
+    function linearScan(gray, wanted, options, minAgree, lines) {
+      var votes = [], total = 0, profiles = scanlineProfiles(gray, lines, 3);
+      for (var p = 0; p < profiles.length; p++) {
+        var profile = profiles[p], found = decodeLine(profile, gray.width, wanted, options);
+        if (!found) found = decodeLine(sharpenProfile(profile, 1.5, 1), gray.width, wanted, options);
+        if (!found) found = decodeLine(sharpenProfile(profile, 3.0, 2), gray.width, wanted, options);
+        if (!found) continue;
+        var entry = null;
+        for (var v = 0; v < votes.length; v++) if (votes[v].text === found[0] && votes[v].format === found[1]) entry = votes[v];
+        if (!entry) votes.push((entry = { text: found[0], format: found[1], count: 0 }));
+        entry.count++;
+        total++;
+        if (entry.count >= minAgree && entry.count * 2 > total) return entry;
+      }
+      var best = null;
+      votes.forEach(function (e) {
+        if (!best || e.count > best.count) best = e;
+      });
+      return best && best.count >= minAgree ? best : null;
+    }
+    function rot90(img) {
+      // np.rot90 (counter-clockwise): out[i][j] = img[j][w - 1 - i]
+      var w = img.width, h = img.height, out = new Uint8Array(w * h);
+      for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) out[i * h + j] = img.data[j * w + (w - 1 - i)];
+      return makeImage(h, w, out);
+    }
+    // linear.decode: {text, format, votes, rotated} or null
+    function decodeLinear(gray, formats, options, minAgree, lines) {
+      var wanted = builtinFormats(formats);
+      if (!Object.keys(wanted).length) return null;
+      var w = gray.width, h = gray.height, orientations = w >= h ? [false, true] : [true, false];
+      if (Math.max(w, h) > 2 * Math.min(w, h)) orientations = orientations.slice(0, 1);
+      for (var k = 0; k < orientations.length; k++) {
+        var found = linearScan(orientations[k] ? rot90(gray) : gray, wanted, options || {}, minAgree || 2, lines || 12);
+        if (found) return { text: found.text, format: found.format, votes: found.count, rotated: orientations[k] };
+      }
+      return null;
     }
 
     // ------------------------------------------------------------------------
@@ -2519,9 +3919,10 @@
       }
       return fmt;
     }
-    function readBarcodeZone(zone, aligned) {
-      var crop = cropImage(aligned, zone.origin[0] - 10, zone.origin[1] - 10, zone.dimensions[0] + 20, zone.dimensions[1] + 20);
-      if (!zxing.lib) return Promise.resolve(zoneResult(zone, "", 0, ["engine_unavailable"]));
+    // zxing-wasm: progressively heavier preprocessing until something decodes.
+    // Resolves to null when zxing-wasm is not loaded, else [symbols, details].
+    function readZxing(zone, crop) {
+      if (!zxing.lib) return Promise.resolve(null);
       var formats = zxFormats(zone);
       var options = { tryHarder: zxing.options.tryHarder !== false, maxNumberOfSymbols: 8 };
       if (formats.length) options.formats = formats;
@@ -2545,7 +3946,7 @@
       ];
       var i = 0;
       function next() {
-        if (i >= attempts.length) return Promise.resolve(zoneResult(zone, "", 0, ["not_found"]));
+        if (i >= attempts.length) return Promise.resolve([[], {}]);
         var img = attempts[i++]();
         if (!img || !img.width || !img.height) return next();
         return Promise.resolve(zxing.lib.readBarcodes(grayToImageData(img), options)).then(function (symbols) {
@@ -2553,33 +3954,81 @@
             return s.isValid !== false || s.text;
           });
           if (!symbols.length) return next();
-          var flags = symbols.length > 1 ? ["multiple_symbols"] : [];
-          var s0 = symbols[0];
-          var r = zoneResult(zone, s0.text, s0.isValid ? 1.0 : 0.0, flags);
-          r.format = formatLabel(s0.format);
-          r.details = {
-            symbols: symbols.map(function (s) {
+          return [
+            symbols.map(function (s) {
               return { text: s.text, format: formatLabel(s.format), valid: !!s.isValid };
             }),
-            orientation: s0.orientation || 0,
-          };
-          return r;
+            { orientation: symbols[0].orientation || 0 },
+          ];
         });
       }
       return next();
     }
-    function zoneResult(zone, value, confidence, flags) {
-      return { name: zone.name, type: zone.type, value: value, confidence: confidence, flags: flags || [], needs_review: false, box: [], format: null, details: {} };
+    // The built-in scanline decoder: null when not applicable (QR zones, formats it lacks)
+    function readBuiltin(zone, crop) {
+      if (zone.type === "qrcode") return null;
+      var formats = zone.options.formats;
+      if (!Object.keys(builtinFormats(formats)).length) return null;
+      var found = decodeLinear(crop, formats, zone.options);
+      if (!found) return [[], {}];
+      return [[{ text: found.text, format: found.format, valid: true }], { scanline_votes: found.votes, rotated: found.rotated }];
     }
-    function finalizeZone(result, zone) {
+    var BARCODE_ENGINES = ["zxing", "builtin", "opencv", "pyzbar"];
+    // barcode.py engine_order: zone options.engines, else barcode_params.engines
+    function engineOrder(zone, params) {
+      params = params || {};
+      var order = zone.options.engines || params.engines || BARCODE_ENGINES;
+      var pyzbarOn = zone.options.pyzbar !== undefined ? zone.options.pyzbar : params.pyzbar || false;
+      return order.filter(function (name) {
+        return name !== "pyzbar" || pyzbarOn;
+      });
+    }
+    // Engines tried in order until one reads ("opencv" and "pyzbar" exist only in Python)
+    function readBarcodeZone(zone, aligned, params) {
+      var crop = cropImage(aligned, zone.origin[0] - 10, zone.origin[1] - 10, zone.dimensions[0] + 20, zone.dimensions[1] + 20);
+      var order = engineOrder(zone, params), tried = [], k = 0;
+      function finish(symbols, details, engine) {
+        if (!tried.length) return zoneResult(zone, "", 0.0, ["engine_unavailable"]);
+        if (!symbols.length) {
+          var nf = zoneResult(zone, "", 0.0, ["not_found"]);
+          nf.details = { engines: tried };
+          return nf;
+        }
+        var flags = [];
+        if (symbols.length > 1) flags.push("multiple_symbols");
+        if (engine !== "zxing") flags.push("decoded_by_fallback");
+        var s0 = symbols[0], r = zoneResult(zone, s0.text, s0.valid ? 1.0 : 0.0, flags);
+        r.format = s0.format;
+        r.details = Object.assign({ symbols: symbols, engines: tried }, details);
+        r.engine = engine;
+        return r;
+      }
+      function next(symbols, details) {
+        if (k >= order.length) return Promise.resolve(finish(symbols, details, null));
+        var name = order[k++];
+        var outcome = name === "zxing" ? readZxing(zone, crop) : name === "builtin" ? readBuiltin(zone, crop) : null;
+        return Promise.resolve(outcome).then(function (res) {
+          if (!res) return next(symbols, details);
+          tried.push(name);
+          if (res[0].length) return finish(res[0], res[1], name);
+          return next(res[0], res[1]);
+        });
+      }
+      return next([], {});
+    }
+    function zoneResult(zone, value, confidence, flags) {
+      return { name: zone.name, type: zone.type, value: value, confidence: confidence, flags: flags || [], needs_review: false, box: [], format: null, details: {}, engine: null };
+    }
+    // Placeholder for a lazy zone that was not needed (read later only if a check asks)
+    function skippedZone(zone) {
+      var r = zoneResult(zone, zone.emptyValue, 0.0, ["not_read"]);
+      r.box = [zone.origin[0], zone.origin[1], zone.dimensions[0], zone.dimensions[1]];
+      return r;
+    }
+    function finalizeZone(result, zone, extraReviewFlags) {
       var o = zone.options || {};
       if (o.pattern && result.value) {
-        var re;
-        try {
-          re = new RegExp("^(?:" + o.pattern + ")$");
-        } catch (e) {
-          re = null;
-        }
+        var re = pyRegex(o.pattern, true);
         if (re && !re.test(result.value)) result.flags.push("pattern_mismatch");
       }
       var minConf = o.minConfidence !== undefined ? o.minConfidence : 0.6;
@@ -2590,16 +4039,16 @@
       });
       result.flags = Object.keys(set).sort();
       result.needs_review = result.flags.some(function (f) {
-        return ZONE_REVIEW_FLAGS.indexOf(f) >= 0;
+        return ZONE_REVIEW_FLAGS.indexOf(f) >= 0 || (extraReviewFlags || []).indexOf(f) >= 0;
       });
       if (!result.value) result.value = zone.emptyValue;
       return result;
     }
-    function readZone(zone, aligned, readers) {
+    function readZone(zone, aligned, readers, barcodeParams) {
       var box = [zone.origin[0], zone.origin[1], zone.dimensions[0], zone.dimensions[1]];
       var p;
       try {
-        if (zone.type === "barcode" || zone.type === "qrcode") p = readBarcodeZone(zone, aligned);
+        if (zone.type === "barcode" || zone.type === "qrcode") p = readBarcodeZone(zone, aligned, barcodeParams);
         else if (zone.type === "ocr" || zone.type === "icr") {
           var hook = (readers && readers[zone.type]) || zoneReaders[zone.type];
           if (!hook) p = Promise.resolve(zoneResult(zone, "", 0, zone.type === "icr" ? ["no_icr_model", "engine_unavailable"] : ["engine_unavailable"]));
@@ -2624,7 +4073,8 @@
         })
         .then(function (r) {
           r.box = box;
-          return finalizeZone(r, zone);
+          var extra = barcodeParams && barcodeParams.review_fallback_decodes ? ["decoded_by_fallback"] : [];
+          return finalizeZone(r, zone, extra);
         });
     }
 
@@ -2681,7 +4131,7 @@
                 var bw = block.bubbleDimensions[0], bh = block.bubbleDimensions[1];
                 block.fields.forEach(function (f) {
                   f.bubbles.forEach(function (b) {
-                    var x = b.x + block.shift, y = b.y + block.shiftY;
+                    var x = b.x + block.shift + b.dx, y = b.y + block.shiftY + b.dy;
                     crops.push(cropImage(img, Math.max(x, 0), Math.max(y, 0), x + bw - Math.max(x, 0), y + bh - Math.max(y, 0)));
                   });
                 });
@@ -2707,6 +4157,631 @@
     }
 
     // ------------------------------------------------------------------------
+    // Post-read rules: value validation ("validate") and cross-field checks
+    // ("checks"). Port of src/rules (validation.py, checks.py, __init__.py).
+    // ------------------------------------------------------------------------
+    // A Python `re` pattern as a JS RegExp (full: re.fullmatch semantics); null if invalid
+    function pyRegex(pattern, full) {
+      var src = String(pattern)
+        .replace(/\(\?P</g, "(?<")
+        .replace(/\(\?P=(\w+)\)/g, "\\k<$1>")
+        .replace(/\\A/g, "^")
+        .replace(/\\Z/g, "$");
+      try {
+        return new RegExp(full ? "^(?:" + src + ")$" : src);
+      } catch (e) {
+        return null;
+      }
+    }
+    function unicodeClass(cls, fallback) {
+      try {
+        return new RegExp("[" + cls + "]", "u");
+      } catch (e) {
+        return fallback;
+      }
+    }
+    var DIGIT_RE = unicodeClass("\\p{Nd}", /[0-9]/), ALNUM_RE = unicodeClass("\\p{L}\\p{N}", /[0-9A-Za-z]/);
+    function chars(text) {
+      return Array.from(text);
+    }
+    function isBlank(text) {
+      return !String(text).trim();
+    }
+    function pyNumber(text) {
+      // float(text): Python syntax incl. underscores, inf and nan; NaN when invalid
+      var s = String(text).trim();
+      if (/^[+-]?(inf|infinity)$/i.test(s)) return s[0] === "-" ? -Infinity : Infinity;
+      if (/^[+-]?nan$/i.test(s)) return NaN;
+      if (!/^[+-]?((\d(_?\d)*)(\.(\d(_?\d)*)?)?|\.\d(_?\d)*)([eE][+-]?\d(_?\d)*)?$/.test(s)) return undefined;
+      return Number(s.replace(/_/g, ""));
+    }
+    // Python repr() of a str (quotes and escapes as CPython prints them)
+    function pyRepr(text) {
+      var quote = text.indexOf("'") >= 0 && text.indexOf('"') < 0 ? '"' : "'", out = quote;
+      for (var i = 0; i < text.length; i++) {
+        var ch = text[i], code = text.charCodeAt(i);
+        if (ch === "\\" || ch === quote) out += "\\" + ch;
+        else if (ch === "\n") out += "\\n";
+        else if (ch === "\r") out += "\\r";
+        else if (ch === "\t") out += "\\t";
+        else if (code < 0x20 || code === 0x7f) out += "\\x" + (code < 16 ? "0" : "") + code.toString(16);
+        else out += ch;
+      }
+      return out + quote;
+    }
+    function pyStr(v) {
+      return v === null || v === undefined ? "" : String(v);
+    }
+
+    var VALIDATION_FLAG = "validation_failed";
+    var ON_FAIL_ACTIONS = ["review", "blank", "both", "flag"];
+    function ValidationRule(name, spec) {
+      this.name = name;
+      this.length = spec.length === undefined ? null : spec.length;
+      this.allowGaps = spec.allowGaps === undefined ? true : spec.allowGaps;
+      this.allowEmptyEnds = spec.allowEmptyEnds === undefined ? true : spec.allowEmptyEnds;
+      this.leadingZeros = spec.leadingZeros === undefined ? "keep" : spec.leadingZeros;
+      this.required = !!spec.required;
+      this.allowed = spec.allowed === undefined || spec.allowed === null ? null : spec.allowed.map(String);
+      this.range = spec.range === undefined ? null : spec.range;
+      this.onFail = spec.onFail === undefined ? "review" : spec.onFail;
+      this.pattern = null;
+      if (spec.pattern) {
+        this.patternSource = spec.pattern;
+        this.pattern = pyRegex(spec.pattern, true);
+        if (!this.pattern) throw new Error("validate['" + name + "']: invalid pattern '" + spec.pattern + "'");
+      }
+      if (ON_FAIL_ACTIONS.indexOf(this.onFail) < 0) throw new Error("validate['" + name + "']: onFail must be one of ('review', 'blank', 'both', 'flag')");
+      if (["keep", "forbid"].indexOf(this.leadingZeros) < 0) throw new Error("validate['" + name + "']: leadingZeros must be one of ('keep', 'forbid')");
+      this.blanks = this.onFail === "blank" || this.onFail === "both";
+      this.reviews = this.onFail === "review" || this.onFail === "both";
+    }
+    function bounds(spec) {
+      if (Array.isArray(spec)) return [spec.length > 0 ? spec[0] : null, spec.length > 1 ? spec[1] : null];
+      return [spec, spec];
+    }
+    function showBounds(spec) {
+      if (Array.isArray(spec)) {
+        var b = bounds(spec);
+        return "[" + (b[0] === null ? "" : b[0]) + ", " + (b[1] === null ? "" : b[1]) + "]";
+      }
+      return String(spec);
+    }
+    // Reasons the value fails, or [] when it passes (ValidationRule.failures)
+    ValidationRule.prototype.failures = function (value, columns, isEmpty) {
+      value = pyStr(value);
+      if (!columns) {
+        columns = chars(value);
+        isEmpty = columns.map(isBlank);
+      } else if (!isEmpty) isEmpty = columns.map(isBlank);
+      var filled = [];
+      isEmpty.forEach(function (e, i) {
+        if (!e) filled.push(i);
+      });
+      if (!filled.length) return this.required ? ["empty"] : [];
+      var reasons = [], text = value, len = chars(text).length, b, i;
+      if (this.length !== null) {
+        b = bounds(this.length);
+        if ((b[0] !== null && len < b[0]) || (b[1] !== null && len > b[1])) reasons.push("length " + len + " not in " + showBounds(this.length));
+      }
+      var first = filled[0], last = filled[filled.length - 1];
+      if (!this.allowGaps) {
+        var gaps = [];
+        for (i = first; i <= last; i++) if (isEmpty[i]) gaps.push(i + 1);
+        if (gaps.length) reasons.push("gap at position " + gaps.join(", "));
+      }
+      if (!this.allowEmptyEnds) {
+        if (first > 0) reasons.push(first + " empty leading position(s)");
+        if (last < isEmpty.length - 1) reasons.push(isEmpty.length - 1 - last + " empty trailing position(s)");
+      }
+      if (this.leadingZeros === "forbid" && len > 1 && text[0] === "0") reasons.push("leading zero");
+      if (this.pattern && !this.pattern.test(text)) reasons.push("does not match " + pyRepr(this.patternSource));
+      if (this.allowed && this.allowed.indexOf(text) < 0) reasons.push("not an allowed value");
+      if (this.range !== null) {
+        b = bounds(this.range);
+        var number = pyNumber(text);
+        if (number === undefined) reasons.push("not a number");
+        else if ((b[0] !== null && number < b[0]) || (b[1] !== null && number > b[1])) reasons.push(text + " outside " + showBounds(this.range));
+      }
+      return reasons;
+    };
+
+    var NORMALIZERS = ["none", "strip", "digits", "upper", "alnum"];
+    function makeNormalizer(spec, name) {
+      if (isObject(spec)) {
+        if (!("regex" in spec)) throw new Error("check '" + name + "': normalize object needs 'regex'");
+        var re = pyRegex(spec.regex, false);
+        if (!re) throw new Error("check '" + name + "': invalid normalize regex");
+        var group = spec.group === undefined ? 0 : spec.group;
+        var groups = new RegExp(re.source + "|").exec("").length - 1;
+        if (typeof group === "number" && group > groups) throw new Error("check '" + name + "': regex has no group " + group);
+        return function (value) {
+          var m = re.exec(value);
+          if (!m) return "";
+          var g = typeof group === "number" ? m[group] : m.groups && m.groups[group];
+          return g || "";
+        };
+      }
+      if (NORMALIZERS.indexOf(spec) < 0) throw new Error("check '" + name + "': normalize must be one of ('none', 'strip', 'digits', 'upper', 'alnum')");
+      if (spec === "none")
+        return function (v) {
+          return v;
+        };
+      if (spec === "strip")
+        return function (v) {
+          return v.trim();
+        };
+      var keep = spec === "digits" ? DIGIT_RE : spec === "alnum" ? ALNUM_RE : null;
+      if (spec === "upper")
+        return function (v) {
+          return v.trim().toUpperCase();
+        };
+      return function (v) {
+        return chars(v)
+          .filter(function (c) {
+            return keep.test(c);
+          })
+          .join("");
+      };
+    }
+    function CheckRule(spec) {
+      var name = spec.name;
+      if (!name) throw new Error("Every entry in 'checks' needs a name");
+      this.name = name;
+      this.sources = (spec.sources || []).slice();
+      if (!this.sources.length) throw new Error("check '" + name + "': 'sources' must list at least one name");
+      var self = this;
+      if (
+        this.sources.some(function (s, i) {
+          return self.sources.indexOf(s) !== i;
+        })
+      )
+        throw new Error("check '" + name + "': duplicate sources");
+      this.priority = (spec.priority && spec.priority.length ? spec.priority : this.sources).slice();
+      var extra = this.priority.filter(function (s) {
+        return self.sources.indexOf(s) < 0;
+      });
+      if (extra.length) throw new Error("check '" + name + "': priority names " + JSON.stringify(extra.sort()) + " are not sources");
+      this.sources.forEach(function (s) {
+        if (self.priority.indexOf(s) < 0) self.priority.push(s);
+      });
+      this.output = spec.output || name;
+      function opt(key, def) {
+        return spec[key] === undefined ? def : spec[key];
+      }
+      this.onMissing = opt("onMissing", "fallback");
+      this.onConflict = opt("onConflict", "prefer");
+      this.reviewOnConflict = opt("reviewOnConflict", true);
+      this.reviewOnFallback = opt("reviewOnFallback", false);
+      this.reviewOnAllMissing = opt("reviewOnAllMissing", true);
+      this.skipInvalid = opt("skipInvalid", true);
+      this.skipFlagged = opt("skipFlagged", false);
+      this.absorbReview = opt("absorbSourceReview", true);
+      if (["fallback", "review"].indexOf(this.onMissing) < 0) throw new Error("check '" + name + "': onMissing must be one of ('fallback', 'review')");
+      if (["prefer", "review", "error"].indexOf(this.onConflict) < 0) throw new Error("check '" + name + "': onConflict must be one of ('prefer', 'review', 'error')");
+      this.normalize = makeNormalizer(opt("normalize", "none"), name);
+      this.shadows = this.sources.indexOf(this.output) >= 0;
+    }
+    // checks.resolve: [value|null, chosen, flags, needsReview]
+    function resolveCheck(rule, readings) {
+      var present = readings.filter(function (r) {
+        return r.usable;
+      });
+      var flags = [];
+      if (!present.length) {
+        flags.push("all_sources_missing");
+        return [null, null, flags, !!rule.reviewOnAllMissing];
+      }
+      var chosen = present[0].source, value = present[0].normalized, review = false;
+      if (chosen !== rule.priority[0]) {
+        flags.push("fallback_used");
+        review = rule.onMissing === "review" || !!rule.reviewOnFallback;
+      }
+      var distinct = {};
+      present.forEach(function (r) {
+        distinct[r.normalized] = 1;
+      });
+      if (Object.keys(distinct).length > 1) {
+        flags.push("cross_check_failed");
+        if (rule.onConflict === "error") return [null, null, flags, true];
+        if (rule.onConflict === "review" || rule.reviewOnConflict) review = true;
+      }
+      return [value, chosen, flags, review];
+    }
+    function has(obj, key) {
+      return Object.prototype.hasOwnProperty.call(obj, key);
+    }
+    // RuleSet: built once per template; apply() runs per sheet
+    function RuleSet(template, validateSpec, checksSpec) {
+      var self = this;
+      this.globalEmpty = template.emptyValue || "";
+      this.customLabels = template.customLabels;
+      this.zones = {};
+      template.zones.forEach(function (z) {
+        self.zones[z.name] = z;
+      });
+      var base = {};
+      template.allLabels.forEach(function (n) {
+        base[n] = true;
+      });
+      Object.keys(this.customLabels).forEach(function (n) {
+        base[n] = true;
+      });
+      var specs = (checksSpec || []).concat(fallbackZoneChecks(template));
+      var rules = specs.map(function (s) {
+        return new CheckRule(s);
+      });
+      var seenNames = {}, seenOutputs = {};
+      rules.forEach(function (rule) {
+        if (seenNames[rule.name]) throw new Error("Duplicate check name '" + rule.name + "'");
+        seenNames[rule.name] = true;
+        if (seenOutputs[rule.output]) throw new Error("Two checks write the same output '" + rule.output + "'");
+        seenOutputs[rule.output] = true;
+        if (base[rule.output] && !rule.shadows) throw new Error("check '" + rule.name + "': output '" + rule.output + "' already exists; an existing column can only be replaced by a check that reads it");
+        if (base[rule.name] && rule.name !== rule.output) throw new Error("check '" + rule.name + "': name is already a field, custom label or zone");
+      });
+      var byName = {}, outputs = {};
+      rules.forEach(function (r) {
+        byName[r.name] = r;
+        outputs[r.output] = r;
+      });
+      function known(n) {
+        return base[n] || has(outputs, n);
+      }
+      rules.forEach(function (rule) {
+        var renames = {};
+        rule.sources = rule.sources.map(function (source) {
+          var mapped = source;
+          if (!known(mapped) && has(byName, mapped)) mapped = byName[mapped].output;
+          if (!known(mapped)) throw new Error("check '" + rule.name + "': unknown source '" + mapped + "' (not a field, custom label, zone or check)");
+          renames[source] = mapped;
+          return mapped;
+        });
+        rule.priority = rule.priority.map(function (s) {
+          return has(renames, s) ? renames[s] : s;
+        });
+      });
+      this.checks = topologicalOrder(rules, outputs);
+      this.validations = {};
+      this.validationOrder = [];
+      Object.keys(validateSpec || {}).forEach(function (name) {
+        var target = name;
+        if (!known(name) && has(byName, name)) target = byName[name].output;
+        if (!known(target)) throw new Error("validate: unknown name '" + name + "' (not a field, custom label, zone or check output)");
+        if (!has(self.validations, target)) self.validationOrder.push(target);
+        self.validations[target] = new ValidationRule(target, validateSpec[name]);
+      });
+      this.outputs = outputs;
+      this.newOutputColumns = this.checks
+        .filter(function (r) {
+          return !base[r.output];
+        })
+        .map(function (r) {
+          return r.output;
+        });
+      this.active = !!(this.checks.length || this.validationOrder.length);
+    }
+    // Barcode zone option "fallbackZone": a check with another zone as fallback
+    function fallbackZoneChecks(template) {
+      var zones = {}, specs = [];
+      template.zones.forEach(function (z) {
+        zones[z.name] = z;
+      });
+      template.zones.forEach(function (zone) {
+        var fallback = zone.options.fallbackZone;
+        if (!fallback) return;
+        if (!has(zones, fallback) || fallback === zone.name) throw new Error("Zone '" + zone.name + "': fallbackZone '" + fallback + "' is not another zone");
+        if (zone.options.lazy !== undefined && zone.options.lazy !== null && zone.options.lazy) throw new Error("Zone '" + zone.name + "' has a fallback and can't be lazy");
+        var target = zones[fallback];
+        if (target.options.lazy === undefined ? true : target.options.lazy) target.lazy = true;
+        specs.push({
+          name: zone.name,
+          sources: [zone.name, fallback],
+          priority: [zone.name, fallback],
+          normalize: zone.options.fallbackNormalize === undefined ? "strip" : zone.options.fallbackNormalize,
+          onMissing: "fallback",
+          onConflict: "prefer",
+          reviewOnConflict: false,
+          reviewOnFallback: zone.options.reviewOnFallback === undefined ? true : zone.options.reviewOnFallback,
+          output: zone.name,
+        });
+      });
+      return specs;
+    }
+    function topologicalOrder(rules, outputs) {
+      var deps = {}, byName = {}, order = [], done = {}, visiting = [];
+      rules.forEach(function (rule) {
+        byName[rule.name] = rule;
+        var d = {};
+        rule.sources.forEach(function (s) {
+          if (has(outputs, s) && outputs[s] !== rule) d[outputs[s].name] = true;
+        });
+        deps[rule.name] = Object.keys(d).sort();
+      });
+      function visit(name) {
+        if (done[name]) return;
+        var at = visiting.indexOf(name);
+        if (at >= 0) throw new Error("checks form a cycle: " + visiting.slice(at).concat([name]).join(" -> "));
+        visiting.push(name);
+        deps[name].forEach(visit);
+        visiting.pop();
+        done[name] = true;
+        order.push(byName[name]);
+      }
+      rules.forEach(function (r) {
+        visit(r.name);
+      });
+      return order;
+    }
+    function rememberEntity(entity) {
+      if (!has(entity, "pre_rules")) entity.pre_rules = { flags: (entity.flags || []).slice(), needs_review: !!entity.needs_review };
+    }
+    // apply(): resolves to [checks, validation, reviewItems]; readLazy(name) -> Promise<zone dict>
+    RuleSet.prototype.apply = function (omr, responses, fields, zones, readLazy) {
+      if (!this.active) return Promise.resolve([{}, {}, []]);
+      return new RuleRun(this, omr, responses, fields, zones, readLazy).run();
+    };
+    function RuleRun(rules, omr, responses, fields, zones, readLazy) {
+      this.rules = rules;
+      this.omr = omr;
+      this.responses = responses;
+      this.fields = fields;
+      this.zones = zones;
+      this.readLazy = readLazy;
+      this.overrides = {};
+      this.checkValues = {};
+      this.checks = {};
+      this.validation = {};
+      this.review = [];
+      this.held = {};
+    }
+    RuleRun.prototype.emptyOf = function (name) {
+      var z = this.rules.zones[name];
+      return z ? z.emptyValue : this.rules.globalEmpty;
+    };
+    RuleRun.prototype.get = function (name) {
+      return has(this.omr, name) ? this.omr[name] : "";
+    };
+    RuleRun.prototype.baseValue = function (name) {
+      var self = this;
+      if (has(this.overrides, name)) return this.overrides[name];
+      if (has(this.checkValues, name)) return this.checkValues[name];
+      if (has(this.rules.customLabels, name))
+        return this.rules.customLabels[name]
+          .map(function (c) {
+            return pyStr(self.get(c));
+          })
+          .join("");
+      if (has(this.zones, name)) return has(this.zones[name], "value") ? this.zones[name].value : "";
+      return this.get(name);
+    };
+    RuleRun.prototype.columnEmpty = function (label) {
+      var field = this.fields[label], value = pyStr(this.get(label));
+      if (field && (field.flags || []).indexOf("empty") >= 0) return true;
+      return isBlank(value) || value === this.rules.globalEmpty;
+    };
+    RuleRun.prototype.columns = function (name) {
+      var self = this;
+      if (has(this.checkValues, name) || has(this.overrides, name)) return [null, null];
+      if (has(this.rules.customLabels, name)) {
+        var cols = this.rules.customLabels[name];
+        return [
+          cols.map(function (c) {
+            return self.get(c);
+          }),
+          cols.map(function (c) {
+            return self.columnEmpty(c);
+          }),
+        ];
+      }
+      var zone = this.zones[name];
+      if (zone) {
+        var characters = (zone.details || {}).characters;
+        if (characters && characters.length) return [characters, characters.map(isBlank)];
+      }
+      return [null, null];
+    };
+    RuleRun.prototype.isMissing = function (name, value) {
+      var self = this;
+      value = pyStr(value);
+      if (isBlank(value) || value === this.emptyOf(name)) return true;
+      if (has(this.rules.customLabels, name) && !has(this.overrides, name))
+        return this.rules.customLabels[name].every(function (c) {
+          return self.columnEmpty(c);
+        });
+      if (has(this.fields, name) && !has(this.overrides, name)) return (this.fields[name].flags || []).indexOf("empty") >= 0;
+      return false;
+    };
+    RuleRun.prototype.entity = function (name) {
+      if (has(this.checkValues, name)) return null;
+      return this.fields[name] || this.zones[name] || null;
+    };
+    RuleRun.prototype.setValue = function (name, value) {
+      var self = this;
+      this.overrides[name] = value;
+      if (has(this.responses, name) || has(this.rules.outputs, name)) this.responses[name] = value;
+      if (has(this.omr, name) && !has(this.rules.customLabels, name)) {
+        this.omr[name] = value;
+        Object.keys(this.rules.customLabels).forEach(function (label) {
+          if (self.rules.customLabels[label].indexOf(name) >= 0 && !has(self.overrides, label)) self.responses[label] = self.baseValue(label);
+        });
+      }
+    };
+    RuleRun.prototype.run = function () {
+      var self = this, rules = this.rules;
+      var pending = rules.validationOrder.filter(function (n) {
+        return !has(rules.outputs, n);
+      });
+      // columns and zones first, so blanked columns show in their custom labels
+      pending
+        .filter(function (n) {
+          return !has(rules.customLabels, n);
+        })
+        .concat(
+          pending.filter(function (n) {
+            return has(rules.customLabels, n);
+          })
+        )
+        .forEach(function (n) {
+          self.validate(n, null);
+        });
+      var chain = Promise.resolve();
+      rules.checks.forEach(function (rule) {
+        chain = chain.then(function () {
+          return self.runCheck(rule);
+        });
+      });
+      return chain.then(function () {
+        return [self.checks, self.validation, self.review];
+      });
+    };
+    RuleRun.prototype.validate = function (name, record) {
+      var rule = this.rules.validations[name], value = this.baseValue(name), cols = this.columns(name);
+      var reasons = rule.failures(value, cols[0], cols[1]);
+      var kind = record ? "check" : has(this.rules.customLabels, name) ? "custom_label" : has(this.zones, name) ? "zone" : "field";
+      this.validation[name] = { ok: !reasons.length, kind: kind, value: value, reasons: reasons, action: reasons.length ? rule.onFail : null };
+      if (!reasons.length) return;
+      if (rule.blanks) this.setValue(name, this.emptyOf(name));
+      if (record) {
+        record.flags.push(VALIDATION_FLAG);
+        record.validation_reasons = reasons;
+        if (rule.blanks) record.value = this.emptyOf(name);
+        if (rule.reviews) record.needs_review = true;
+        return;
+      }
+      var entity = this.entity(name);
+      if (entity) {
+        rememberEntity(entity);
+        var flags = {};
+        (entity.flags || []).concat([VALIDATION_FLAG]).forEach(function (f) {
+          flags[f] = 1;
+        });
+        entity.flags = Object.keys(flags).sort();
+        entity.validation_reasons = reasons;
+        if (rule.reviews) {
+          entity.needs_review = true;
+          this.held[name] = true;
+        }
+      } else if (rule.reviews) {
+        var item = { kind: kind, name: name, flags: [VALIDATION_FLAG], reasons: reasons };
+        if (kind === "custom_label") item.fields = this.rules.customLabels[name].slice();
+        this.review.push(item);
+      }
+    };
+    // [raw, normalized, usable, note] for one source (may read a lazy zone first)
+    RuleRun.prototype.sourceReading = function (rule, source, haveValue) {
+      var self = this, zone = this.zones[source];
+      if (zone && !has(this.checkValues, source) && (zone.flags || []).indexOf("not_read") >= 0) {
+        if (haveValue || !this.readLazy) return Promise.resolve([null, null, false, "not_read"]);
+        return Promise.resolve(this.readLazy(source)).then(function (read) {
+          self.zones[source] = read;
+          var v = has(read, "value") ? read.value : "";
+          if (has(self.responses, source) && !has(self.overrides, source)) self.responses[source] = v;
+          if (has(self.omr, source)) self.omr[source] = v;
+          return self.reading(rule, source);
+        });
+      }
+      return Promise.resolve(this.reading(rule, source));
+    };
+    RuleRun.prototype.reading = function (rule, source) {
+      var raw = pyStr(this.baseValue(source)), normalized = rule.normalize(raw);
+      if (this.isMissing(source, raw) || !normalized) return [raw, normalized, false, "missing"];
+      var validation = this.rules.validations[source];
+      if (rule.skipInvalid && validation) {
+        var invalid;
+        if (has(this.validation, source) && !has(this.checkValues, source)) invalid = !this.validation[source].ok;
+        else {
+          var cols = this.columns(source);
+          invalid = validation.failures(raw, cols[0], cols[1]).length > 0;
+        }
+        if (invalid) return [raw, normalized, false, "invalid"];
+      }
+      var entity = this.entity(source);
+      if (rule.skipFlagged && entity && entity.needs_review) return [raw, normalized, false, "flagged"];
+      return [raw, normalized, true, null];
+    };
+    RuleRun.prototype.runCheck = function (rule) {
+      var self = this, readings = [], notes = {}, haveValue = false, chain = Promise.resolve();
+      rule.priority.forEach(function (source) {
+        chain = chain.then(function () {
+          return self.sourceReading(rule, source, haveValue).then(function (r) {
+            readings.push({ source: source, raw: r[0], normalized: r[1], usable: r[2] });
+            if (r[3]) notes[source] = r[3];
+            haveValue = haveValue || r[2];
+          });
+        });
+      });
+      return chain.then(function () {
+        var res = resolveCheck(rule, readings), value = res[0];
+        var sources = {}, normalized = {};
+        readings.forEach(function (r) {
+          sources[r.source] = r.raw;
+          normalized[r.source] = r.normalized;
+        });
+        var record = {
+          value: value === null ? self.emptyOf(rule.output) : value,
+          chosen_source: res[1],
+          sources: sources,
+          normalized: normalized,
+          skipped: notes,
+          flags: res[2],
+          needs_review: res[3],
+          output: rule.output,
+        };
+        self.checkValues[rule.output] = record.value;
+        self.responses[rule.output] = record.value;
+        if (has(self.rules.validations, rule.output)) {
+          self.validate(rule.output, record);
+          self.checkValues[rule.output] = record.value;
+          self.responses[rule.output] = record.value;
+        }
+        var fl = {};
+        record.flags.forEach(function (f) {
+          fl[f] = 1;
+        });
+        record.flags = Object.keys(fl).sort();
+        if (rule.absorbReview && !record.needs_review && value !== null) self.absorb(rule, readings);
+        self.checks[rule.name] = record;
+        if (record.needs_review) self.review.push({ kind: "check", name: rule.name, flags: record.flags });
+      });
+    };
+    // A resolved check settles its sources' own review flags when the source was
+    // missing or agrees with another present source
+    RuleRun.prototype.absorb = function (rule, readings) {
+      var self = this;
+      var usable = readings.filter(function (r) {
+        return r.usable;
+      });
+      readings.forEach(function (r) {
+        var source = r.source;
+        if (has(self.checkValues, source) && source !== rule.output) return;
+        var entity = self.fields[source] || self.zones[source];
+        if (!entity || !entity.needs_review) return;
+        if (self.held[source]) return;
+        if (r.usable) {
+          var agrees = usable.some(function (o) {
+            return o.source !== source && o.normalized === r.normalized;
+          });
+          if (!agrees) return;
+        }
+        rememberEntity(entity);
+        entity.needs_review = false;
+        entity.review_resolved_by = rule.name;
+      });
+    };
+    // review_items: flagged fields, flagged zones, then rule items
+    function reviewItems(fields, zones, extra) {
+      var out = [];
+      Object.keys(fields).forEach(function (name) {
+        if (fields[name].needs_review) out.push({ kind: "field", name: name, flags: fields[name].flags });
+      });
+      Object.keys(zones).forEach(function (name) {
+        if (zones[name].needs_review) out.push({ kind: "zone", name: name, flags: zones[name].flags });
+      });
+      return out.concat(extra || []);
+    }
+
+    // ------------------------------------------------------------------------
     // Image decoding (browser and Node)
     // ------------------------------------------------------------------------
     function makeCanvas(w, h) {
@@ -2726,14 +4801,14 @@
       }
       throw new Error("No canvas available to decode the image in this environment");
     }
-    function drawableToGray(drawable, sw, sh, maxDim) {
+    function drawableToPixels(drawable, sw, sh, maxDim, color) {
       var scale = maxDim && Math.max(sw, sh) > maxDim ? maxDim / Math.max(sw, sh) : 1;
       var w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
       var canvas = makeCanvas(w, h), ctx = canvas.getContext("2d");
       if ("imageSmoothingQuality" in ctx) ctx.imageSmoothingQuality = "high";
       ctx.drawImage(drawable, 0, 0, w, h);
       var data = ctx.getImageData(0, 0, w, h);
-      return rgbaToGray(data.data, w, h);
+      return color ? { width: w, height: h, data: data.data, channels: 4 } : rgbaToGray(data.data, w, h);
     }
     function blobToDrawable(blob) {
       if (typeof createImageBitmap === "function") {
@@ -2754,27 +4829,27 @@
         img.src = url;
       });
     }
-    // Convert any supported source into a gray image. options.maxDimension caps the
-    // longest side (phone photos are downsampled by the browser's own resampler).
+    // Convert any supported source into a gray image, or with options.color into
+    // RGB(A) pixels {width, height, data, channels} when the source has colour.
+    // options.maxDimension caps the longest side (phone photos are downsampled by
+    // the browser's own resampler).
     function decodeImage(source, options) {
       options = options || {};
-      var maxDim = options.maxDimension === undefined ? 3000 : options.maxDimension;
+      var maxDim = options.maxDimension === undefined ? 3000 : options.maxDimension, color = !!options.color;
       return Promise.resolve().then(function () {
         if (!source) throw new Error("No image given");
         if (source.data && source.width && source.height && !(typeof HTMLCanvasElement !== "undefined" && source instanceof HTMLCanvasElement)) {
-          var n = source.width * source.height;
-          if (source.data.length === n) return makeImage(source.width, source.height, source.data instanceof Uint8Array ? source.data : new Uint8Array(source.data));
-          if (source.data.length === n * 4) return rgbaToGray(source.data, source.width, source.height);
-          if (source.data.length === n * 3) {
-            var out = new Uint8Array(n);
-            for (var i = 0, j = 0; i < n; i++, j += 3) out[i] = (source.data[j] * 4899 + source.data[j + 1] * 9617 + source.data[j + 2] * 1868 + 8192) >> 14;
-            return makeImage(source.width, source.height, out);
+          var n = source.width * source.height, len = source.data.length;
+          if (len === n) return makeImage(source.width, source.height, source.data instanceof Uint8Array ? source.data : new Uint8Array(source.data));
+          if (len === n * 4 || len === n * 3) {
+            var px = { width: source.width, height: source.height, data: source.data, channels: len / n };
+            return color ? px : pixelsToGray(px);
           }
           throw new Error("Unsupported pixel buffer: expected 1, 3 or 4 channels");
         }
         if (typeof Blob !== "undefined" && source instanceof Blob) {
           return blobToDrawable(source).then(function (d) {
-            var g = drawableToGray(d, d.width || d.naturalWidth, d.height || d.naturalHeight, maxDim);
+            var g = drawableToPixels(d, d.width || d.naturalWidth, d.height || d.naturalHeight, maxDim, color);
             if (d.close) d.close();
             return g;
           });
@@ -2785,16 +4860,16 @@
             source.onerror = rej;
           });
           return ready.then(function () {
-            return drawableToGray(source, source.naturalWidth, source.naturalHeight, maxDim);
+            return drawableToPixels(source, source.naturalWidth, source.naturalHeight, maxDim, color);
           });
         }
-        if (typeof HTMLVideoElement !== "undefined" && source instanceof HTMLVideoElement) return drawableToGray(source, source.videoWidth, source.videoHeight, maxDim);
+        if (typeof HTMLVideoElement !== "undefined" && source instanceof HTMLVideoElement) return drawableToPixels(source, source.videoWidth, source.videoHeight, maxDim, color);
         if (source.getContext && source.width) {
-          if (maxDim && Math.max(source.width, source.height) > maxDim) return drawableToGray(source, source.width, source.height, maxDim);
+          if (maxDim && Math.max(source.width, source.height) > maxDim) return drawableToPixels(source, source.width, source.height, maxDim, color);
           var cd = source.getContext("2d").getImageData(0, 0, source.width, source.height);
-          return rgbaToGray(cd.data, source.width, source.height);
+          return color ? { width: source.width, height: source.height, data: cd.data, channels: 4 } : rgbaToGray(cd.data, source.width, source.height);
         }
-        if (source.width && source.height && (typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap)) return drawableToGray(source, source.width, source.height, maxDim);
+        if (source.width && source.height && typeof ImageBitmap !== "undefined" && source instanceof ImageBitmap) return drawableToPixels(source, source.width, source.height, maxDim, color);
         throw new Error("Unsupported image source");
       });
     }
@@ -2848,14 +4923,65 @@
       this.bubbleModel = model;
       return this;
     };
-    // Registration + preprocessing (ImageInstanceOps.apply_preprocessors)
-    Engine.prototype.register = function (gray, ctx) {
-      var pre = this.preProcessors, dims = this.config.dimensions;
-      var img = gray;
-      if (pre.length && !pre[0].needsFullResolution) img = resizeLinear(img, Math.trunc(dims.processing_width), Math.trunc(dims.processing_height));
+    // Change the page colour dropout (object, mode string or null for grey)
+    Engine.prototype.setColorDropout = function (spec) {
+      this.template.colorDropout = normalizeDropout(spec);
+      return this;
+    };
+    // Distinct per-zone dropout settings that differ from the page's
+    Engine.prototype.zoneDropoutSpecs = function () {
+      var page = this.template.colorDropout, specs = [], keys = {};
+      this.template.zones.forEach(function (z) {
+        var spec = z.colorDropout;
+        if (spec && spec.key !== page.key && !keys[spec.key]) {
+          keys[spec.key] = true;
+          specs.push(spec);
+        }
+      });
+      return specs;
+    };
+    // True when photos should be decoded in colour (some dropout isn't plain grey)
+    Object.defineProperty(Engine.prototype, "needsColor", {
+      get: function () {
+        return this.template.colorDropout.mode !== "grey" || this.zoneDropoutSpecs().length > 0;
+      },
+    });
+    // Template.prepare_image: pixels -> {gray, variants {spec key: grey image}}
+    Engine.prototype.prepareImage = function (px) {
+      if (!px.channels || px.channels === 1) return { gray: px.channels ? makeImage(px.width, px.height, px.data) : px, variants: null };
+      var variants = null, grey = null;
+      function greyOf() {
+        return (grey = grey || pixelsToGray(px));
+      }
+      this.zoneDropoutSpecs().forEach(function (spec) {
+        variants = variants || {};
+        variants[spec.key] = applyDropout(px, spec, greyOf);
+      });
+      return { gray: applyDropout(px, this.template.colorDropout, greyOf), variants: variants };
+    };
+    // Registration + preprocessing (ImageInstanceOps.apply_preprocessors). Companion
+    // images (colour dropout variants) follow the same geometry, updated in place.
+    Engine.prototype.register = function (gray, ctx, companions) {
+      var pre = this.preProcessors, dims = this.config.dimensions, img = gray, key;
+      if (pre.length && !pre[0].needsFullResolution) {
+        var pw = Math.trunc(dims.processing_width), ph = Math.trunc(dims.processing_height);
+        img = resizeLinear(img, pw, ph);
+        for (key in companions || {}) companions[key] = resizeLinear(companions[key], pw, ph);
+      }
       for (var i = 0; i < pre.length; i++) {
+        ctx.geometry = companions ? [] : null;
         img = pre[i].apply(img, ctx);
+        var ops = ctx.geometry;
+        ctx.geometry = null;
         if (!img) return null;
+        if (companions && pre[i].geometry !== "none") {
+          for (key in companions) {
+            var c = companions[key];
+            for (var k = 0; k < ops.length && c; k++) c = ops[k](c);
+            if (c) companions[key] = c;
+            else delete companions[key];
+          }
+        }
       }
       return img;
     };
@@ -2864,21 +4990,33 @@
       opts = opts || {};
       var fileId = opts.fileId || "image";
       var started = now(), timings = {};
-      return decodeImage(source, { maxDimension: opts.maxDimension !== undefined ? opts.maxDimension : this.options.maxDimension })
-        .then(function (gray) {
+      return decodeImage(source, { maxDimension: opts.maxDimension !== undefined ? opts.maxDimension : this.options.maxDimension, color: this.needsColor })
+        .then(function (pixels) {
           timings.decode = elapsed(started);
-          return self.scanGray(gray, fileId, started, timings);
+          return self.scanPixels(pixels, fileId, started, timings);
         })
         .catch(function (error) {
           return makeResult(fileId, STATUS_ERROR, { error: String((error && error.message) || error), timings_ms: timings });
         });
     };
+    // A gray image or colour pixels {width, height, data, channels: 3 | 4} (RGB order)
     Engine.prototype.scanGray = function (gray, fileId, started, timings) {
-      var self = this, template = this.template;
+      return this.scanPixels(gray, fileId, started, timings);
+    };
+    Engine.prototype.scanPixels = function (pixels, fileId, started, timings) {
+      var self = this, template = this.template, config = this.config;
       started = started || now();
       timings = timings || {};
+      var gray = pixels, variants = null;
+      if (pixels.channels && pixels.channels > 1) {
+        // colour dropout; variants only for zones with their own setting
+        var dropStart = now(), prepared = this.prepareImage(pixels);
+        gray = prepared.gray;
+        variants = prepared.variants;
+        timings.dropout = elapsed(dropStart);
+      }
       var step = now(), ctx = {};
-      var aligned = this.register(gray, ctx);
+      var aligned = this.register(gray, ctx, variants);
       timings.registration = elapsed(step);
       if (!aligned) {
         timings.total = elapsed(started);
@@ -2887,13 +5025,27 @@
         return Promise.resolve(r);
       }
       step = now();
-      var model = this.bubbleModel;
-      return readBubbles(template, aligned, this.config, model ? model.predictMarked : null).then(function (detailed) {
+      var model = this.bubbleModel, barcodeParams = config.barcode_params || {};
+      return readBubbles(template, aligned, config, model ? model.predictMarked : null).then(function (detailed) {
         timings.bubbles = elapsed(step);
-        var zstep = now();
+        var zstep = now(), alignedImage = detailed.alignedImage, readyVariants = {};
+        // A zone with its own colorDropout reads its variant, resized and normalised like the page
+        function zoneImage(zone) {
+          var spec = zone.colorDropout;
+          if (!variants || !spec || !variants[spec.key]) return alignedImage;
+          if (!readyVariants[spec.key]) {
+            var v = resizeLinear(variants[spec.key], template.pageDimensions[0], template.pageDimensions[1]), mm = minMax(v);
+            readyVariants[spec.key] = mm[1] > mm[0] ? normalizeMinMax(v) : v;
+          }
+          return readyVariants[spec.key];
+        }
+        function read(zone) {
+          return readZone(zone, zoneImage(zone), self.zoneReaders, barcodeParams);
+        }
         return Promise.all(
           template.zones.map(function (z) {
-            return readZone(z, detailed.alignedImage, self.zoneReaders);
+            // lazy fallback zones are read later, only if a check needs them
+            return z.lazy ? skippedZone(z) : read(z);
           })
         ).then(function (zoneList) {
           timings.zones = elapsed(zstep);
@@ -2913,31 +5065,51 @@
           template.nonCustomLabels.forEach(function (label) {
             responses[label] = omr[label];
           });
-          var review = [];
-          Object.keys(detailed.fieldDetails).forEach(function (name) {
-            var d = detailed.fieldDetails[name];
-            if (d.needs_review) review.push({ kind: "field", name: name, flags: d.flags });
+          var fields = detailed.fieldDetails, rstep = now();
+          var byName = {};
+          template.zones.forEach(function (z) {
+            byName[z.name] = z;
           });
-          zoneList.forEach(function (z) {
-            if (z.needs_review) review.push({ kind: "zone", name: z.name, flags: z.flags });
-          });
-          var score = self.evaluation ? self.evaluation(responses) : null;
-          timings.total = elapsed(started);
-          var result = makeResult(fileId, review.length ? STATUS_NEEDS_REVIEW : STATUS_OK, {
-            responses: responses,
-            fields: detailed.fieldDetails,
-            zones: zones,
-            review: review,
-            score: score,
-            thresholds: detailed.thresholds,
-            timings_ms: timings,
-          });
-          hide(result, "alignedImage", detailed.alignedImage);
-          hide(result, "registration", ctx.registration || null);
-          return result;
+          return template.rules
+            .apply(omr, responses, fields, zones, function (name) {
+              return read(byName[name]);
+            })
+            .then(function (ruleOut) {
+              if (template.rules.active) timings.rules = elapsed(rstep);
+              var score = self.evaluation ? self.evaluation(responses) : null;
+              var review = reviewItems(fields, zones, ruleOut[2]).concat(sheetReview(fields, config.review_params));
+              timings.total = elapsed(started);
+              var result = makeResult(fileId, review.length ? STATUS_NEEDS_REVIEW : STATUS_OK, {
+                responses: responses,
+                fields: fields,
+                zones: zones,
+                review: review,
+                score: score,
+                thresholds: detailed.thresholds,
+                timings_ms: timings,
+                checks: ruleOut[0],
+                validation: ruleOut[1],
+              });
+              hide(result, "alignedImage", alignedImage);
+              hide(result, "registration", ctx.registration || null);
+              return result;
+            });
         });
       });
     };
+    // Sheet-level review items (review_params.min_marked_bubbles; 0 = off)
+    function sheetReview(fields, params) {
+      var minimum = (params && params.min_marked_bubbles) || 0;
+      if (!minimum) return [];
+      var marked = 0;
+      Object.keys(fields).forEach(function (k) {
+        fields[k].bubbles.forEach(function (b) {
+          if (b.marked) marked++;
+        });
+      });
+      if (marked >= minimum) return [];
+      return [{ kind: "sheet", name: "too_few_marks", flags: ["too_few_marks"], marked_bubbles: marked, min_marked_bubbles: minimum }];
+    }
     function hide(obj, key, value) {
       Object.defineProperty(obj, key, { value: value, enumerable: false, writable: true, configurable: true });
     }
@@ -2954,6 +5126,8 @@
         error: parts.error || null,
         thresholds: parts.thresholds || {},
         timings_ms: parts.timings_ms || {},
+        checks: parts.checks || {},
+        validation: parts.validation || {},
       };
     }
 
@@ -2970,6 +5144,16 @@
             t = t.template;
           }
           var cfg = deepMerge(CONFIG_DEFAULTS, config || {});
+          // templateOverrides replaces top-level template keys (null removes one), e.g.
+          // a regrade with another colorDropout
+          var overrides = options.templateOverrides;
+          if (overrides) {
+            t = Object.assign({}, t);
+            Object.keys(overrides).forEach(function (k) {
+              if (overrides[k] === null) delete t[k];
+              else t[k] = JSON.parse(JSON.stringify(overrides[k]));
+            });
+          }
           var template = parseTemplate(t);
           var needed = [];
           (template.preProcessors || []).forEach(function (p) {
@@ -3018,7 +5202,10 @@
       });
       Object.keys(t.zones || {}).forEach(function (n) {
         var z = t.zones[n];
-        if ((z.type === "barcode" || z.type === "qrcode") && !zxing.lib) issues.push("Zone '" + n + "' needs OMR.enableBarcodes()");
+        if ((z.type === "barcode" || z.type === "qrcode") && !zxing.lib) {
+          var o = z.options || {}, builtin = z.type === "barcode" && Object.keys(builtinFormats(o.formats)).length && (o.engines || BARCODE_ENGINES).indexOf("builtin") >= 0;
+          if (!builtin) issues.push("Zone '" + n + "' needs OMR.enableBarcodes()");
+        }
         if ((z.type === "ocr" || z.type === "icr") && !zoneReaders[z.type]) issues.push("Zone '" + n + "' (" + z.type + ") has no reader registered; it will be flagged engine_unavailable");
       });
       return { supported: !issues.some(function (s) {
@@ -3099,7 +5286,7 @@
           delete pending[k];
         });
       };
-      var initOptions = { config: options.config, maxDimension: options.maxDimension, omrScriptUrl: options.omrScriptUrl, extraScripts: options.extraScripts || [], barcodes: options.barcodes || null, bubbleModel: options.bubbleModel || null };
+      var initOptions = { config: options.config, maxDimension: options.maxDimension, omrScriptUrl: options.omrScriptUrl, extraScripts: options.extraScripts || [], barcodes: options.barcodes || null, bubbleModel: options.bubbleModel || null, templateOverrides: options.templateOverrides || null };
       var assets = options.assets || {};
       var assetsReady = Promise.all(
         Object.keys(assets).map(function (name) {
@@ -3123,13 +5310,25 @@
         return {
           info: info,
           worker: worker,
+          // True when photos are decoded in colour (a colour dropout is set)
+          get needsColor() {
+            return !!info.needsColor;
+          },
+          setColorDropout: function (spec) {
+            return call("setColorDropout", { spec: spec === undefined ? null : spec }).then(function (needsColor) {
+              info.needsColor = needsColor;
+              return needsColor;
+            });
+          },
           scan: function (source, opts) {
             opts = opts || {};
             var t0 = now();
-            return decodeImage(source, { maxDimension: opts.maxDimension !== undefined ? opts.maxDimension : options.maxDimension }).then(function (gray) {
+            // Colour dropout needs the RGBA pixels; otherwise the page sends gray
+            var maxDim = opts.maxDimension !== undefined ? opts.maxDimension : options.maxDimension;
+            return decodeImage(source, { maxDimension: maxDim, color: !!info.needsColor }).then(function (px) {
               var decodeMs = elapsed(t0);
-              var buf = gray.data.buffer.byteLength === gray.data.length ? gray.data.buffer : gray.data.slice().buffer;
-              return call("scan", { width: gray.width, height: gray.height, data: buf, fileId: opts.fileId || "image", returnImage: opts.returnImage !== false }, [buf]).then(function (res) {
+              var data = px.data, buf = data.byteOffset === 0 && data.buffer.byteLength === data.byteLength ? data.buffer : data.slice().buffer;
+              return call("scan", { width: px.width, height: px.height, channels: px.channels || 1, data: buf, fileId: opts.fileId || "image", returnImage: opts.returnImage !== false }, [buf]).then(function (res) {
                 var result = res.result;
                 result.timings_ms.decode = decodeMs;
                 if (res.image) hide(result, "alignedImage", makeImage(res.image.width, res.image.height, new Uint8Array(res.image.data)));
@@ -3187,6 +5386,16 @@
         rankFilter: rankFilterAsym,
         morphRect: morphRect,
         canny: canny,
+        normalizeDropout: normalizeDropout,
+        applyDropout: applyDropout,
+        pixelsToGray: pixelsToGray,
+        labOf: labOf,
+        ellipseOutline: ellipseOutline,
+        rectifyFieldBlock: rectifyFieldBlock,
+        decodeLinear: decodeLinear,
+        builtinFormats: builtinFormats,
+        RuleSet: RuleSet,
+        pyRegex: pyRegex,
       },
     };
   }

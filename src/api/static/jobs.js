@@ -110,6 +110,8 @@ export async function refreshJobs() {
           "td",
           { class: "actions" },
           el("a", { class: "button small", href: url(`/jobs/${job.id}/results.csv`) }, "CSV"),
+          el("button", { class: "small", onclick: () => emit("export-open", { job_id: job.id, template_id: job.template_id }) }, "Export…"),
+          job.pages ? el("button", { class: "small", onclick: () => emit("results-job", job.id) }, "Results") : null,
           counts.needs_review ? el("button", { class: "small", onclick: () => emit("review-job", job.id) }, "Review") : null,
           ["queued", "running", "uploading"].includes(job.state)
             ? el(

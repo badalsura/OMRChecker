@@ -2,12 +2,14 @@
 
 export const state = {
   apiKey: safeStorage("get", "omr_api_key") || "",
+  // Name recorded with corrections (sent as X-User); empty = "local"
+  user: safeStorage("get", "omr_user") || "",
   caps: null,
   templates: [],
   listeners: {},
 };
 
-function safeStorage(op, key, value) {
+export function safeStorage(op, key, value) {
   try {
     if (op === "get") return localStorage.getItem(key);
     if (op === "set") localStorage.setItem(key, value);
@@ -15,6 +17,11 @@ function safeStorage(op, key, value) {
     /* storage unavailable */
   }
   return null;
+}
+
+export function setUser(name) {
+  state.user = name || "";
+  safeStorage("set", "omr_user", state.user);
 }
 
 export function setApiKey(key) {
@@ -33,6 +40,7 @@ export class ApiError extends Error {
 export async function api(path, { method = "GET", json, form, raw = false, retry = true } = {}) {
   const headers = {};
   if (state.apiKey) headers["X-API-Key"] = state.apiKey;
+  if (state.user) headers["X-User"] = state.user;
   let body;
   if (json !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -183,4 +191,32 @@ export function download(filename, text, type = "text/csv") {
 export function csvCell(value) {
   const s = value === null || value === undefined ? "" : String(value);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// Modal dialog: returns {close, box}; Esc or a click outside closes it.
+export function modal(title, body, actions = [], { wide = false, onClose } = {}) {
+  const box = el("div", { class: `modal${wide ? " wide" : ""}`, role: "dialog" });
+  const backdrop = el("div", { class: "modal-backdrop" }, box);
+  const close = () => {
+    backdrop.remove();
+    document.removeEventListener("keydown", onKey, true);
+    if (onClose) onClose();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  };
+  box.append(
+    el("div", { class: "modal-head" }, el("h2", {}, title), el("button", { class: "ghost small", onclick: close, title: "Close (Esc)" }, "✕")),
+    el("div", { class: "modal-body" }, body),
+    el("div", { class: "modal-actions" }, actions)
+  );
+  backdrop.addEventListener("mousedown", (e) => {
+    if (e.target === backdrop) close();
+  });
+  document.addEventListener("keydown", onKey, true);
+  document.body.append(backdrop);
+  return { close, box };
 }

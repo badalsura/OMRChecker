@@ -30,25 +30,63 @@ class ImageInstanceOps:
         self.save_img_list: Any = defaultdict(list)
         # Optional learned classifier (src/ml/classifiers.py) for bubble crops
         self.bubble_classifier = None
+        # While companion images are tracked: geometric steps of the current
+        # preprocessor (see ImagePreprocessor.record_geometry)
+        self.geometry_ops = None
 
-    def apply_preprocessors(self, file_path, in_omr, template):
+    def apply_preprocessors(self, file_path, in_omr, template, companions=None):
+        """
+        Register the sheet. companions ({key: image of the same size}, e.g. colour
+        dropout variants some zones read) are updated in place to follow the same
+        geometry; a companion that cannot follow is dropped.
+        """
         tuning_config = self.tuning_config
         pre_processors = template.pre_processors
         # resize to conform to template, unless registration works on the original
         # pixels (or there is nothing to run, so reading resizes straight to the page)
         if pre_processors and not pre_processors[0].needs_full_resolution:
-            in_omr = ImageUtils.resize_util(
-                in_omr,
+            size = (
                 tuning_config.dimensions.processing_width,
                 tuning_config.dimensions.processing_height,
             )
+            in_omr = ImageUtils.resize_util(in_omr, *size)
+            for key in list(companions or {}):
+                companions[key] = ImageUtils.resize_util(companions[key], *size)
 
         # run pre_processors in sequence
         for pre_processor in template.pre_processors:
-            in_omr = pre_processor.apply_filter(in_omr, file_path)
+            if not companions:
+                in_omr = pre_processor.apply_filter(in_omr, file_path)
+            else:
+                self.geometry_ops = []
+                try:
+                    in_omr = pre_processor.apply_filter(in_omr, file_path)
+                    ops = self.geometry_ops
+                finally:
+                    self.geometry_ops = None
+                if in_omr is not None:
+                    self.follow_geometry(pre_processor, ops, companions, file_path)
             if in_omr is None:
                 break
         return in_omr
+
+    @staticmethod
+    def follow_geometry(pre_processor, ops, companions, file_path):
+        mode = getattr(pre_processor, "geometry", "unknown")
+        if mode == "none":
+            return
+        for key in list(companions):
+            image = companions[key]
+            if mode == "recorded":
+                for transform in ops:
+                    image = transform(image)
+            else:
+                # Unknown step: run it again on the companion (best effort)
+                image = pre_processor.apply_filter(image, file_path)
+            if image is None:
+                del companions[key]
+            else:
+                companions[key] = image
 
     def read_omr_response(self, template, image, name, save_dir=None):
         result = self.read_omr_response_detailed(template, image, name, save_dir)
@@ -211,6 +249,7 @@ class ImageInstanceOps:
                 field_block.shift, field_block.shift_y = self.snap_field_block(
                     img, field_block, snap_radius
                 )
+        rectify_failed = self.rectify_field_blocks(img, template)
 
         final_align = None
         if config.outputs.show_image_level >= 2:
@@ -236,7 +275,8 @@ class ImageInstanceOps:
                 q_strip_vals = []
                 for pt in field_block_bubbles:
                     # shifted
-                    x, y = (pt.x + field_block.shift, pt.y + field_block.shift_y)
+                    x = pt.x + field_block.shift + pt.dx
+                    y = pt.y + field_block.shift_y + pt.dy
                     rect = [y, y + box_h, x, x + box_w]
                     q_strip_vals.append(
                         cv2.mean(img[rect[0] : rect[1], rect[2] : rect[3]])[0]
@@ -253,9 +293,18 @@ class ImageInstanceOps:
                 total_q_strip_no += 1
             all_q_std_vals.extend(q_std_vals)
 
-        global_std_thresh, _, _ = self.get_global_threshold(
-            all_q_std_vals
-        )  # , "Q-wise Std-dev Plot", plot_show=True, sort_in_plot=True)
+        threshold_params = config.threshold_params
+        fixed_mode = threshold_params.get("mode", "adaptive") == "fixed"
+        if fixed_mode:
+            # One intensity line for every sheet: no per-sheet threshold search
+            fixed_threshold = float(threshold_params.fixed_threshold)
+            fixed_min_fill = float(threshold_params.fixed_min_fill_ratio)
+            fill_margin = max(min(fixed_min_fill, 1.0 - fixed_min_fill), 0.05)
+            global_std_thresh = global_thr = fixed_threshold
+        else:
+            global_std_thresh, _, _ = self.get_global_threshold(
+                all_q_std_vals
+            )  # , "Q-wise Std-dev Plot", plot_show=True, sort_in_plot=True)
         # plt.show()
         # hist = getPlotImg()
         # InteractionUtils.show("StdHist", hist, 0, 1,config=config)
@@ -263,7 +312,8 @@ class ImageInstanceOps:
         # Note: Plotting takes Significant times here --> Change Plotting args
         # to support show_image_level
         # , "Mean Intensity Histogram",plot_show=True, sort_in_plot=True)
-        global_thr, _, _ = self.get_global_threshold(all_q_vals, looseness=4)
+        if not fixed_mode:
+            global_thr, _, _ = self.get_global_threshold(all_q_vals, looseness=4)
 
         logger.info(
             f"Thresholding: \tglobal_thr: {round(global_thr, 2)} \tglobal_std_THR: {round(global_std_thresh, 2)}\t{'(Looks like a Xeroxed OMR)' if (global_thr == 255) else ''}"
@@ -289,16 +339,20 @@ class ImageInstanceOps:
             box_w, box_h = field_block.bubble_dimensions
             key = field_block.name[:3]
             for field_block_bubbles in field_block.traverse_bubbles:
-                # All Black or All White case
-                no_outliers = all_q_std_vals[total_q_strip_no] < global_std_thresh
-                per_q_strip_threshold = self.get_local_threshold(
-                    all_q_strip_arrs[total_q_strip_no],
-                    global_thr,
-                    no_outliers,
-                    f"Mean Intensity Histogram for {key}.{field_block_bubbles[0].field_label}.{block_q_strip_no}",
-                    config.outputs.show_image_level >= 6,
-                )
-                strip_low_confidence = self.last_local_threshold_low_confidence
+                if fixed_mode:
+                    per_q_strip_threshold = fixed_threshold
+                    strip_low_confidence = False
+                else:
+                    # All Black or All White case
+                    no_outliers = all_q_std_vals[total_q_strip_no] < global_std_thresh
+                    per_q_strip_threshold = self.get_local_threshold(
+                        all_q_strip_arrs[total_q_strip_no],
+                        global_thr,
+                        no_outliers,
+                        f"Mean Intensity Histogram for {key}.{field_block_bubbles[0].field_label}.{block_q_strip_no}",
+                        config.outputs.show_image_level >= 6,
+                    )
+                    strip_low_confidence = self.last_local_threshold_low_confidence
                 per_omr_threshold_avg += per_q_strip_threshold
 
                 detected_bubbles = []
@@ -312,30 +366,42 @@ class ImageInstanceOps:
                     )
                     total_q_box_no += 1
                     x, y, field_value = (
-                        bubble.x + field_block.shift,
-                        bubble.y + field_block.shift_y,
+                        bubble.x + field_block.shift + bubble.dx,
+                        bubble.y + field_block.shift_y + bubble.dy,
                         bubble.field_value,
                     )
-                    bubble_is_marked = per_q_strip_threshold > bubble_mean
-                    # Count only pixels clearly darker than the decision threshold so
-                    # printed letters and tinted bubble backgrounds don't count as ink
-                    fill_ratio = self.get_fill_ratio(
-                        img,
-                        x,
-                        y,
-                        box_w,
-                        box_h,
-                        per_q_strip_threshold - review_params.confidence_margin,
-                    )
-                    # How far the bubble sits from the decision boundary, in [0, 1]
-                    bubble_confidence = float(
-                        np.clip(
-                            abs(per_q_strip_threshold - bubble_mean)
-                            / review_params.confidence_margin,
-                            0,
-                            1,
+                    if fixed_mode:
+                        # Marked when enough of the interior is darker than the line
+                        fill_ratio = self.get_fill_ratio(
+                            img, x, y, box_w, box_h, fixed_threshold
                         )
-                    )
+                        bubble_is_marked = fill_ratio >= fixed_min_fill
+                        bubble_confidence = float(
+                            np.clip(
+                                abs(fill_ratio - fixed_min_fill) / fill_margin, 0, 1
+                            )
+                        )
+                    else:
+                        bubble_is_marked = per_q_strip_threshold > bubble_mean
+                        # Count only pixels clearly darker than the decision threshold
+                        # so printed letters and tinted backgrounds don't count as ink
+                        fill_ratio = self.get_fill_ratio(
+                            img,
+                            x,
+                            y,
+                            box_w,
+                            box_h,
+                            per_q_strip_threshold - review_params.confidence_margin,
+                        )
+                        # How far the bubble sits from the decision boundary, in [0, 1]
+                        bubble_confidence = float(
+                            np.clip(
+                                abs(per_q_strip_threshold - bubble_mean)
+                                / review_params.confidence_margin,
+                                0,
+                                1,
+                            )
+                        )
                     bubble_detail = {
                         "value": field_value,
                         "x": int(x),
@@ -419,6 +485,7 @@ class ImageInstanceOps:
                     len(detected_bubbles),
                     strip_low_confidence,
                     review_params,
+                    ["rectify_failed"] if field_block.name in rectify_failed else None,
                 )
 
                 if config.outputs.show_image_level >= 5:
@@ -489,8 +556,40 @@ class ImageInstanceOps:
                 "global": round(float(global_thr), 2),
                 "global_std": round(float(global_std_thresh), 2),
                 "average_local": per_omr_threshold_avg,
+                **({"mode": "fixed"} if fixed_mode else {}),
             },
         }
+
+    def rectify_field_blocks(self, img, template):
+        """
+        Fit blocks with rectifyOnBorder onto their printed borders (src/rectify.py).
+        Returns the names of blocks where that failed (their fields get flagged).
+        """
+        alignment = self.tuning_config.alignment_params
+        default = alignment.get("rectify_on_border", False)
+        failed = set()
+        for field_block in template.field_blocks:
+            if field_block.rectified:
+                from src.rectify import reset_offsets
+
+                reset_offsets(field_block)
+            enabled = field_block.rectify_on_border
+            if not (default if enabled is None else enabled):
+                continue
+            from src.rectify import apply_offsets, rectify_field_block
+
+            result = rectify_field_block(
+                img, field_block, alignment.get("rectify_search_px", 20)
+            )
+            field_block.last_rectification = result.to_dict()
+            if result.ok:
+                apply_offsets(field_block, result.offsets)
+            else:
+                logger.info(
+                    f"Block '{field_block.name}' not rectified: {result.reason}"
+                )
+                failed.add(field_block.name)
+        return failed
 
     @staticmethod
     def snap_field_block(img, field_block, radius):
@@ -544,8 +643,8 @@ class ImageInstanceOps:
             box_w, box_h = field_block.bubble_dimensions
             for field_block_bubbles in field_block.traverse_bubbles:
                 for bubble in field_block_bubbles:
-                    x = bubble.x + field_block.shift
-                    y = bubble.y + field_block.shift_y
+                    x = bubble.x + field_block.shift + bubble.dx
+                    y = bubble.y + field_block.shift_y + bubble.dy
                     crops.append(img[max(y, 0) : y + box_h, max(x, 0) : x + box_w])
         probabilities = self.bubble_classifier.predict_proba(crops)
         return probabilities[:, self.bubble_classifier.label_index("marked")]
@@ -579,9 +678,15 @@ class ImageInstanceOps:
 
     @staticmethod
     def summarize_field(
-        field_label, value, bubble_details, marked_count, low_confidence, params
+        field_label,
+        value,
+        bubble_details,
+        marked_count,
+        low_confidence,
+        params,
+        extra_flags=None,
     ):
-        flags = []
+        flags = list(extra_flags or [])
         if marked_count > 1:
             flags.append("multi_marked")
         if marked_count == 0:
@@ -641,8 +746,8 @@ class ImageInstanceOps:
                 for pt in field_block_bubbles:
                     x, y = (
                         (
-                            pt.x + field_block.shift,
-                            pt.y + getattr(field_block, "shift_y", 0),
+                            pt.x + field_block.shift + pt.dx,
+                            pt.y + getattr(field_block, "shift_y", 0) + pt.dy,
                         )
                         if shifted
                         else (pt.x, pt.y)

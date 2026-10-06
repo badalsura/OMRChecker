@@ -2,8 +2,23 @@
 Library entry point for reading OMR sheets without the CLI's folder conventions.
 
     engine = OMREngine("samples/sample1/template.json")
-    result = engine.scan(cv2.imread("sheet.jpg", cv2.IMREAD_GRAYSCALE), "sheet.jpg")
+    flag = cv2.IMREAD_COLOR if engine.needs_color else cv2.IMREAD_GRAYSCALE
+    result = engine.scan(cv2.imread("sheet.jpg", flag), "sheet.jpg")
     result.to_dict()
+
+Colour: scan() takes a BGR or grey image. A BGR image goes through the
+template's colorDropout (and per-zone overrides); a grey image is read as-is.
+engine.needs_color says whether decoding in colour is worth it; scan_path()
+already does the right thing for files and PDFs.
+
+Regrading with other colour settings, without touching the template files:
+
+    OMREngine(path, template_overrides={"colorDropout": "grey"})
+    OMREngine(path, template_overrides={"colorDropout": {"mode": "red"}})
+
+template_overrides replaces top-level template keys (None removes one) and is
+validated like the file. engine.set_color_dropout(spec) changes the page
+dropout of an existing engine.
 
 An engine is cheap to call repeatedly but not thread-safe: preprocessors and
 the reading code keep per-instance state. Use one engine per worker thread or
@@ -22,7 +37,8 @@ from src.defaults import CONFIG_DEFAULTS
 from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import logger
 from src.ml.classifiers import load_crop_classifier
-from src.readers import read_zones
+from src.readers import read_zone, read_zones
+from src.rules import review_items
 from src.template import Template
 from src.utils.image import ImageUtils
 from src.utils.parsing import get_concatenated_response, open_config_with_defaults
@@ -44,6 +60,9 @@ class ScanResult:
     error: Optional[str] = None
     thresholds: dict = field(default_factory=dict)
     timings_ms: dict = field(default_factory=dict)
+    # Cross-field checks and value validation (template "checks"/"validate")
+    checks: dict = field(default_factory=dict)
+    validation: dict = field(default_factory=dict)
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
@@ -60,6 +79,8 @@ class ScanResult:
             "error": self.error,
             "thresholds": self.thresholds,
             "timings_ms": self.timings_ms,
+            "checks": self.checks,
+            "validation": self.validation,
         }
 
 
@@ -79,6 +100,7 @@ class OMREngine:
         config_overrides=None,
         bubble_model_path=None,
         icr_model_path=None,
+        template_overrides=None,
     ):
         template_path = Path(template_path)
         template_dir = template_path.parent
@@ -96,7 +118,9 @@ class OMREngine:
             tuning_config.setdefault(section, {}).update(values)
         self.tuning_config = DotMap(tuning_config, _dynamic=False)
 
-        self.template = Template(template_path, self.tuning_config)
+        self.template = Template(
+            template_path, self.tuning_config, overrides=template_overrides
+        )
         self.evaluation_config = None
         if (
             evaluation_path is None
@@ -118,22 +142,36 @@ class OMREngine:
         self.zone_engines = {
             "icr": load_crop_classifier(
                 resolve_path(template_dir, icr_model_path or ml_params.icr_model_path)
-            )
+            ),
+            "barcode_params": self.tuning_config.barcode_params.toDict(),
         }
 
+    @property
+    def needs_color(self):
+        """Decode sheets in colour for this template (a colour dropout is set)."""
+        return self.template.needs_color
+
+    def set_color_dropout(self, spec):
+        """Change the page colorDropout (dict, mode string or None for grey)."""
+        self.template.set_color_dropout(spec)
+
     def scan(self, image, file_id="image", keep_images=True):
-        """Read one grayscale sheet image."""
+        """Read one sheet image: BGR (colour dropout applies) or grayscale."""
         timings = {}
         started = time.perf_counter()
         if image is None:
             return ScanResult(file_id, STATUS_ERROR, error="Image could not be read")
+        # Colour dropout; variants exist only for zones with their own setting
         if image.ndim == 3:
-            import cv2
-
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            image, variants = self.template.prepare_image(image)
+            timings["dropout"] = _elapsed_ms(started)
+        else:
+            variants = {}
 
         self.image_ops.reset_all_save_img()
-        aligned = self.image_ops.apply_preprocessors(file_id, image, self.template)
+        aligned = self.image_ops.apply_preprocessors(
+            file_id, image, self.template, variants or None
+        )
         timings["registration"] = _elapsed_ms(started)
         if aligned is None:
             return ScanResult(
@@ -151,7 +189,14 @@ class OMREngine:
 
         step = time.perf_counter()
         aligned_image = detailed["aligned_image"]
-        zone_results = read_zones(self.template.zones, aligned_image, self.zone_engines)
+        if variants:
+            zone_results = self.template.read_zones_with_variants(
+                aligned_image, variants, self.zone_engines
+            )
+        else:
+            zone_results = read_zones(
+                self.template.zones, aligned_image, self.zone_engines
+            )
         timings["zones"] = _elapsed_ms(step)
 
         omr_response = dict(detailed["omr_response"])
@@ -159,29 +204,40 @@ class OMREngine:
             omr_response[name] = zone_result.value
         responses = get_concatenated_response(omr_response, self.template)
 
+        fields = detailed["field_details"]
+        zones = {name: zone.to_dict() for name, zone in zone_results.items()}
+        checks, validation, rule_review = {}, {}, []
+        if self.template.rules:
+            step = time.perf_counter()
+            checks, validation, rule_review = self.template.rules.apply(
+                omr_response,
+                responses,
+                fields,
+                zones,
+                read_lazy=lambda name: self._read_lazy_zone(
+                    name, aligned_image, variants
+                ),
+            )
+            timings["rules"] = _elapsed_ms(step)
+
         score = None
         if self.evaluation_config is not None:
             score = evaluate_concatenated_response(
                 responses, self.evaluation_config, Path(file_id), None
             )
 
-        review = [
-            {"kind": "field", "name": name, "flags": details["flags"]}
-            for name, details in detailed["field_details"].items()
-            if details["needs_review"]
-        ] + [
-            {"kind": "zone", "name": name, "flags": zone.flags}
-            for name, zone in zone_results.items()
-            if zone.needs_review
-        ]
+        review = review_items(fields, zones, rule_review)
+        review.extend(self._sheet_review(fields))
         timings["total"] = _elapsed_ms(started)
         return ScanResult(
             file_id=file_id,
             status=STATUS_NEEDS_REVIEW if review else STATUS_OK,
             responses=responses,
-            fields=detailed["field_details"],
-            zones={name: zone.to_dict() for name, zone in zone_results.items()},
+            fields=fields,
+            zones=zones,
             review=review,
+            checks=checks,
+            validation=validation,
             score=score,
             thresholds=detailed["thresholds"],
             timings_ms=timings,
@@ -189,10 +245,43 @@ class OMREngine:
             marked_image=detailed["final_marked"] if keep_images else None,
         )
 
+    def _read_lazy_zone(self, name, aligned_image, variants=None):
+        zone = next(z for z in self.template.zones if z.name == name)
+        if variants and zone.color_dropout is not None:
+            return self.template.read_zones_with_variants(
+                aligned_image, variants, self.zone_engines, only=[zone]
+            )[name].to_dict()
+        return read_zone(zone, aligned_image, self.zone_engines).to_dict()
+
+    def _sheet_review(self, field_details):
+        """Sheet-level review items (opt-in checks)."""
+        minimum = self.tuning_config.review_params.get("min_marked_bubbles", 0)
+        if not minimum:
+            return []
+        marked = sum(
+            1
+            for details in field_details.values()
+            for bubble in details["bubbles"]
+            if bubble["marked"]
+        )
+        if marked >= minimum:
+            return []
+        return [
+            {
+                "kind": "sheet",
+                "name": "too_few_marks",
+                "flags": ["too_few_marks"],
+                "marked_bubbles": marked,
+                "min_marked_bubbles": minimum,
+            }
+        ]
+
     def scan_path(self, file_path, keep_images=True):
         """Read an image or every selected page of a PDF; returns a list of results."""
         file_path = Path(file_path)
-        images = ImageUtils.load_omr_image(file_path, self.tuning_config)
+        images = ImageUtils.load_omr_image(
+            file_path, self.tuning_config, color=self.needs_color
+        )
         if not images:
             return [
                 ScanResult(file_path.name, STATUS_ERROR, error="File could not be read")

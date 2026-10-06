@@ -28,22 +28,66 @@ class ReviewError(Exception):
     pass
 
 
-def item_box(result, name):
-    """(kind, [x, y, w, h]) of a field or zone in aligned-image coordinates."""
+def _field_box(field):
+    bubbles = field.get("bubbles") or []
+    if not bubbles:
+        return None
+    x0 = min(b["x"] for b in bubbles)
+    y0 = min(b["y"] for b in bubbles)
+    x1 = max(b["x"] + b["w"] for b in bubbles)
+    y1 = max(b["y"] + b["h"] for b in bubbles)
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
+def related_names(result, name, custom_labels=None):
+    """Fields/zones behind a check or custom label (for crops and the overlay)."""
+    checks = result.get("checks") or {}
+    check = checks.get(name)
+    if not isinstance(check, dict):
+        check = next(
+            (
+                c
+                for c in checks.values()
+                if isinstance(c, dict) and c.get("output") == name
+            ),
+            None,
+        )
+    if isinstance(check, dict):
+        return list((check.get("sources") or {}).keys())
+    if custom_labels and name in custom_labels:
+        return list(custom_labels[name])
+    for item in (result.get("review") or []) + (result.get("read_review") or []):
+        if item.get("name") == name and item.get("fields"):
+            return list(item["fields"])
+    return []
+
+
+def item_box(result, name, custom_labels=None, _depth=0):
+    """(kind, [x, y, w, h]) of a field, zone, check or custom label in
+    aligned-image coordinates (checks and custom labels: the union of their
+    sources)."""
     field = (result.get("fields") or {}).get(name)
     if field is not None:
-        bubbles = field.get("bubbles") or []
-        if not bubbles:
-            return "field", None
-        x0 = min(b["x"] for b in bubbles)
-        y0 = min(b["y"] for b in bubbles)
-        x1 = max(b["x"] + b["w"] for b in bubbles)
-        y1 = max(b["y"] + b["h"] for b in bubbles)
-        return "field", [x0, y0, x1 - x0, y1 - y0]
+        return "field", _field_box(field)
     zone = (result.get("zones") or {}).get(name)
     if zone is not None:
         return "zone", zone.get("box")
-    return None, None
+    related = related_names(result, name, custom_labels) if _depth < 3 else []
+    if not related:
+        return None, None
+    kind = "check" if name in (result.get("checks") or {}) else "custom_label"
+    boxes = []
+    for source in related:
+        _, box = item_box(result, source, custom_labels, _depth + 1)
+        if box:
+            boxes.append(box)
+    if not boxes:
+        return kind, None
+    x0 = min(b[0] for b in boxes)
+    y0 = min(b[1] for b in boxes)
+    x1 = max(b[0] + b[2] for b in boxes)
+    y1 = max(b[1] + b[3] for b in boxes)
+    return kind, [x0, y0, x1 - x0, y1 - y0]
 
 
 def crop_box(image, box, pad=20):
@@ -76,7 +120,11 @@ def split_value(value, bubble_values):
 
 
 def recompute(result, engine):
-    """Recompute concatenated responses, score and status after edits."""
+    """
+    Recompute concatenated responses, rules (template "validate"/"checks"),
+    score and status after edits. Values a person set or accepted stay settled:
+    a rule can't flag them again while they keep that value.
+    """
     from src.evaluation import evaluate_concatenated_response
     from src.utils.parsing import get_concatenated_response
 
@@ -87,11 +135,26 @@ def recompute(result, engine):
     }
     for name, zone in (result.get("zones") or {}).items():
         omr_response[name] = zone.get("value", "")
+    # Sheet-level items (e.g. too_few_marks) are not rule items; keep them
+    sheet_items = [
+        item for item in result.get("review") or [] if item.get("kind") == "sheet"
+    ]
     try:
-        result["responses"] = get_concatenated_response(omr_response, template)
+        if getattr(template, "rules", None) is not None:
+            from src.rules import reapply_rules
+
+            reapply_rules(result, template, dict(omr_response))
+            listed = {item["name"] for item in result.get("review") or []}
+            result["review"] = list(result.get("review") or []) + [
+                item for item in sheet_items if item["name"] not in listed
+            ]
+        else:
+            result["responses"] = get_concatenated_response(omr_response, template)
     except KeyError:
         # Template changed since the scan; keep a flat response
         result["responses"] = {**(result.get("responses") or {}), **omr_response}
+    apply_manual_values(result)
+    honour_decisions(result)
     if engine.evaluation_config is not None:
         try:
             result["score"] = evaluate_concatenated_response(
@@ -107,60 +170,271 @@ def recompute(result, engine):
         result["status"] = "error"
 
 
-def apply_review(result, corrections, accept, reviewer=None):
+def apply_manual_values(result):
+    """Re-impose values a person typed for check outputs (rules re-run would
+    otherwise recompute them)."""
+    responses = result.setdefault("responses", {})
+    checks = result.get("checks") or {}
+    for name, value in (result.get("manual_values") or {}).items():
+        check = checks.get(name)
+        if isinstance(check, dict):
+            if not check.get("manual"):
+                check["original_value"] = check.get("value", "")
+            check["value"] = value
+            check["manual"] = True
+            check["needs_review"] = False
+            responses[check.get("output") or name] = value
+        else:
+            responses[name] = value
+
+
+def current_value(result, name):
+    """The value a field, zone, check or custom label has now."""
+    for group in ("fields", "zones"):
+        item = (result.get(group) or {}).get(name)
+        if item is not None:
+            return item.get("value", "")
+    check = (result.get("checks") or {}).get(name)
+    if isinstance(check, dict):
+        return check.get("value", "")
+    return (result.get("responses") or {}).get(name, "")
+
+
+def honour_decisions(result):
+    """Clear review flags of everything a person decided, while it keeps the
+    value they decided on."""
+    settled = set()
+    for name, log in (result.get("review_log") or {}).items():
+        if current_value(result, name) != log.get("label"):
+            continue
+        settled.add(name)
+        for group in ("fields", "zones", "checks"):
+            item = (result.get(group) or {}).get(name)
+            if isinstance(item, dict):
+                item["needs_review"] = False
+    if settled:
+        result["review"] = [
+            item for item in result.get("review") or [] if item["name"] not in settled
+        ]
+
+
+def normalize_label(label):
+    if isinstance(label, list):
+        label = "".join(str(v) for v in label)
+    return "" if label is None else str(label)
+
+
+def validate_field_value(name, field, label, empty_value=None):
+    """Raise ReviewError unless label is blank/empty or a combination of bubble values."""
+    if empty_value is not None and label == empty_value:
+        return
+    values = [b["value"] for b in field.get("bubbles") or []]
+    if split_value(label, values) is None:
+        raise ReviewError(
+            f"'{label}' is not a combination of the bubble values {values} of '{name}'"
+        )
+
+
+def _distribute(label_name, value, columns, fields, empty_values):
+    """Split a custom label's corrected value over its columns (one bubble
+    value per column; a space or the column's empty value = blank)."""
+    pieces, rest = [], value
+    for column in columns:
+        field = fields.get(column)
+        if field is None:
+            raise ReviewError(
+                f"'{label_name}' can't be edited: column '{column}' is not a bubble field"
+            )
+        empty = empty_values.get(column, "")
+        options = sorted(
+            {b["value"] for b in field.get("bubbles") or []}, key=len, reverse=True
+        )
+        for option in options:
+            if option and rest.startswith(option):
+                pieces.append(option)
+                rest = rest[len(option) :]
+                break
+        else:
+            if rest[:1] == " ":
+                pieces.append(empty)
+                rest = rest[1:]
+            elif empty and rest.startswith(empty):
+                pieces.append(empty)
+                rest = rest[len(empty) :]
+            elif not rest:
+                pieces.append(empty)
+            else:
+                raise ReviewError(
+                    f"'{value}' does not fit the columns {columns} of '{label_name}'"
+                )
+    if rest:
+        raise ReviewError(
+            f"'{value}' is longer than the {len(columns)} columns of '{label_name}'"
+        )
+    return dict(zip(columns, pieces))
+
+
+def apply_review(
+    result,
+    corrections,
+    accept,
+    reviewer=None,
+    empty_values=None,
+    custom_labels=None,
+):
     """
     Update the result in place. Returns the list of resolved item names and a
     list of training events: (kind, name, predicted, label, action, item).
+
+    Names may be fields, zones, cross-field checks (by check name or output
+    column), custom labels and sheet-level items (kind "sheet", e.g.
+    too_few_marks; these can only be accepted, which dismisses them). A corrected custom label is split over its
+    bubble columns; a corrected check keeps the typed value ("manual_values")
+    when rules re-run. Call recompute() afterwards to refresh responses, rule
+    outputs and status.
+
+    The first machine read of every item survives as "original_value" and the
+    items flagged when the sheet was read as "read_review", so later accuracy
+    statistics compare against what the engine actually produced.
+    empty_values: {field: value written for an unmarked field} (template emptyValue).
+    custom_labels: {label: [columns]} of the template.
     """
-    corrections = dict(corrections or {})
+    corrections = {k: normalize_label(v) for k, v in dict(corrections or {}).items()}
     accept = list(accept or [])
+    empty_values = empty_values or {}
     fields = result.get("fields") or {}
     zones = result.get("zones") or {}
-    unknown = [n for n in [*corrections, *accept] if n not in fields and n not in zones]
-    if unknown:
-        raise ReviewError(f"Unknown field or zone: {', '.join(sorted(unknown))}")
+    checks = {
+        name: check
+        for name, check in (result.get("checks") or {}).items()
+        if isinstance(check, dict)
+    }
+    by_output = {check.get("output"): name for name, check in checks.items()}
+    custom_labels = dict(custom_labels or {})
+    sheet_items = {}
+    for item in (result.get("review") or []) + (result.get("read_review") or []):
+        if item.get("kind") == "custom_label" and item.get("fields"):
+            custom_labels.setdefault(item["name"], list(item["fields"]))
+        elif item.get("kind") == "sheet":
+            sheet_items.setdefault(item["name"], item)
 
+    def canonical(name):
+        if name in fields or name in zones or name in checks:
+            return name
+        return by_output.get(name, name)
+
+    corrections = {canonical(k): v for k, v in corrections.items()}
+    accept = [canonical(a) for a in accept]
+    known = set(fields) | set(zones) | set(checks) | set(custom_labels)
+    known |= set(sheet_items)
+    unknown = [n for n in [*corrections, *accept] if n not in known]
+    if unknown:
+        raise ReviewError(
+            f"Unknown field, zone, check or custom label: {', '.join(sorted(unknown))}"
+        )
+    sheet_only = [n for n in corrections if n in sheet_items and n not in fields]
+    if sheet_only:
+        raise ReviewError(
+            f"{', '.join(sheet_only)}: a sheet-level item has no value; accept it to dismiss"
+        )
+
+    # Validate everything before changing anything; a custom label becomes
+    # corrections of its columns
+    column_changes = {}
+    for name, label in corrections.items():
+        if name in fields:
+            validate_field_value(name, fields[name], label, empty_values.get(name))
+        elif name not in zones and name not in checks and name in custom_labels:
+            column_changes[name] = _distribute(
+                name, label, custom_labels[name], fields, empty_values
+            )
+
+    if "read_review" not in result:
+        result["read_review"] = [dict(item) for item in result.get("review") or []]
     events, resolved = [], []
     now = time.time()
-    for name in [*corrections.keys(), *[a for a in accept if a not in corrections]]:
-        corrected = name in corrections
-        target = fields.get(name) if name in fields else zones.get(name)
-        kind = "field" if name in fields else "zone"
-        predicted = target.get("value", "")
-        label = corrections[name] if corrected else predicted
-        if isinstance(label, list):
-            label = "".join(str(v) for v in label)
-        label = "" if label is None else str(label)
-        if kind == "field":
-            values = [b["value"] for b in target.get("bubbles") or []]
-            marks = split_value(label, values)
-            if marks is None:
-                raise ReviewError(
-                    f"'{label}' is not a combination of the bubble values {values} of '{name}'"
-                )
-        events.append(
-            (
-                kind,
-                name,
-                predicted,
-                label,
-                "corrected" if corrected and label != predicted else "accepted",
-                dict(target),
-            )
-        )
-        target["value"] = label
-        target["needs_review"] = False
-        target["reviewed"] = True
-        if corrected and label != predicted:
-            target["original_value"] = predicted
+    responses = result.setdefault("responses", {})
+
+    def settle(kind, name, target, predicted, label, corrected):
+        action = "corrected" if corrected and label != predicted else "accepted"
+        events.append((kind, name, predicted, label, action, dict(target)))
         result.setdefault("review_log", {})[name] = {
             "predicted": predicted,
             "label": label,
-            "action": events[-1][4],
+            "action": action,
             "at": now,
             "reviewer": reviewer,
         }
         resolved.append(name)
+
+    def set_entity(target, label, empty=None):
+        predicted = target.get("value", "")
+        if empty is not None and label != predicted:
+            # Rules read the "empty" flag of bubble columns; keep it truthful
+            blank = label in ("", empty)
+            for holder in (target, target.get("pre_rules")):
+                if isinstance(holder, dict):
+                    flags = set(holder.get("flags") or [])
+                    if blank:
+                        flags.add("empty")
+                    else:
+                        flags.discard("empty")
+                    holder["flags"] = sorted(flags)
+        target["value"] = label
+        target["needs_review"] = False
+        target["reviewed"] = True
+        if isinstance(target.get("pre_rules"), dict):
+            # rules re-run restore this state; the person's decision stands
+            target["pre_rules"]["needs_review"] = False
+        if label != predicted and "original_value" not in target:
+            target["original_value"] = predicted
+
+    for name in [*corrections.keys(), *[a for a in accept if a not in corrections]]:
+        corrected = name in corrections
+        if name in fields or name in zones:
+            target = fields.get(name) if name in fields else zones.get(name)
+            kind = "field" if name in fields else "zone"
+            predicted = target.get("value", "")
+            label = corrections[name] if corrected else predicted
+            before = dict(target)
+            set_entity(
+                target, label, empty_values.get(name, "") if kind == "field" else None
+            )
+            settle(kind, name, before, predicted, label, corrected)
+        elif name in checks:
+            check = checks[name]
+            predicted = check.get("value", "")
+            label = corrections[name] if corrected else predicted
+            before = dict(check)
+            if label != predicted:
+                result.setdefault("manual_values", {})[name] = label
+                responses[check.get("output") or name] = label
+            set_entity(check, label)
+            settle("check", name, before, predicted, label, corrected)
+        elif name in sheet_items and name not in custom_labels:
+            # Dismissed; current_value() of a sheet item is "" so it stays settled
+            settle("sheet", name, dict(sheet_items[name]), "", "", False)
+        else:
+            predicted = responses.get(name, "")
+            label = corrections[name] if corrected else predicted
+            for column, value in column_changes.get(name, {}).items():
+                field = fields[column]
+                before = dict(field)
+                if value != field.get("value", ""):
+                    set_entity(field, value, empty_values.get(column, ""))
+                    settle(
+                        "field", column, before, before.get("value", ""), value, True
+                    )
+            if corrected:
+                responses[name] = label
+            settle(
+                "custom_label",
+                name,
+                {"fields": custom_labels[name]},
+                predicted,
+                label,
+                corrected,
+            )
     result["review"] = [
         item for item in (result.get("review") or []) if item["name"] not in resolved
     ]
@@ -170,6 +444,8 @@ def apply_review(result, corrections, accept, reviewer=None):
 
 def write_training_records(training_root, result, events, aligned):
     """Append labelled crops for every reviewed item (needs the aligned image)."""
+    # Checks and custom labels are derived values; their columns train instead
+    events = [e for e in events or [] if e[0] in ("field", "zone")]
     if not events:
         return []
     training_root = Path(training_root)

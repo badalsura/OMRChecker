@@ -168,6 +168,66 @@ def test_python_client(server, assets, tmp_path):
     assert error.value.status == 404
 
 
+def test_python_client_results_and_exports(server, assets, tmp_path):
+    client = OMRClient(server, user="py-tester")
+    template = client.upload_template([assets["template"]], name="py-results")
+    scan = client.scan(template["id"], [assets["sheets"][0]])["scans"][0]
+    scan_id = scan["scan_id"]
+    truth = assets["truths"][0]
+
+    sheet = client.render(scan_id)
+    assert sheet["image_source"] == "source" and sheet["width"] > 0
+    assert client.render_image(scan_id)[:2] == b"\xff\xd8"
+    other = "B" if truth["q1"] != "B" else "C"
+    updated = client.correct(scan_id, toggle=[("q1", truth["q1"]), ("q1", other)])
+    q1 = next(f for f in updated["fields"] if f["name"] == "q1")
+    assert q1["value"] == other and q1["original_value"] == truth["q1"]
+    assert client.verify(scan_id)["verified"]["by"] == "py-tester"
+    assert client.audit(scan_id)["items"][0]["user"] == "py-tester"
+    accuracy = client.accuracy(template_id=template["id"])
+    assert accuracy["verified_sheets"] == 1
+    listed = list(client.iter_results(page_size=1, template_id=template["id"]))
+    assert [row["id"] for row in listed] == [scan_id]
+    preview = client.regrade(
+        scan_id, {"fieldBlocks": {"MCQ_1": {"bubbleValues": ["D", "C", "B", "A"]}}}
+    )
+    assert preview["applied"] is False and preview["changes"]
+    assert (
+        client.set_path_remap(["/nowhere=/elsewhere"])["rules"][0]["to"] == "/elsewhere"
+    )
+    client.set_path_remap([])
+
+    record = client.export(
+        {"template_id": template["id"]},
+        "csv",
+        tmp_path / "out.csv",
+        profile={
+            "fields": [{"field": "q1", "header": "Question 1"}],
+            "meta": ["file_name"],
+        },
+        poll=0.2,
+        timeout=60,
+    )
+    rows = list(csv.DictReader(open(record["path"], encoding="utf-8-sig")))
+    assert rows == [
+        {
+            "file_name": "sheet0.png",
+            "review_status": "verified",
+            "corrected": "true",
+            "Question 1": other,
+        }
+    ]
+    with pytest.raises(OMRApiError):
+        client.export(
+            {"template_id": template["id"]},
+            "csv",
+            tmp_path / "bad.csv",
+            profile={"fields": [{"field": "q1", "type": "int"}], "strictCast": True},
+            poll=0.2,
+            timeout=60,
+        )
+
+
 def test_python_bulk_folder_cli(server, assets, tmp_path):
     out = tmp_path / "bulk.csv"
     proc = subprocess.run(
