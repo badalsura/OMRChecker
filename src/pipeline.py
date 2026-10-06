@@ -22,7 +22,8 @@ from src.defaults import CONFIG_DEFAULTS
 from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import logger
 from src.ml.classifiers import load_crop_classifier
-from src.readers import read_zones
+from src.readers import read_zone, read_zones
+from src.rules import review_items
 from src.template import Template
 from src.utils.image import ImageUtils
 from src.utils.parsing import get_concatenated_response, open_config_with_defaults
@@ -44,6 +45,9 @@ class ScanResult:
     error: Optional[str] = None
     thresholds: dict = field(default_factory=dict)
     timings_ms: dict = field(default_factory=dict)
+    # Cross-field checks and value validation (template "checks"/"validate")
+    checks: dict = field(default_factory=dict)
+    validation: dict = field(default_factory=dict)
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
@@ -60,6 +64,8 @@ class ScanResult:
             "error": self.error,
             "thresholds": self.thresholds,
             "timings_ms": self.timings_ms,
+            "checks": self.checks,
+            "validation": self.validation,
         }
 
 
@@ -160,35 +166,47 @@ class OMREngine:
             omr_response[name] = zone_result.value
         responses = get_concatenated_response(omr_response, self.template)
 
+        fields = detailed["field_details"]
+        zones = {name: zone.to_dict() for name, zone in zone_results.items()}
+        checks, validation, rule_review = {}, {}, []
+        if self.template.rules:
+            step = time.perf_counter()
+            checks, validation, rule_review = self.template.rules.apply(
+                omr_response,
+                responses,
+                fields,
+                zones,
+                read_lazy=lambda name: self._read_lazy_zone(name, aligned_image),
+            )
+            timings["rules"] = _elapsed_ms(step)
+
         score = None
         if self.evaluation_config is not None:
             score = evaluate_concatenated_response(
                 responses, self.evaluation_config, Path(file_id), None
             )
 
-        review = [
-            {"kind": "field", "name": name, "flags": details["flags"]}
-            for name, details in detailed["field_details"].items()
-            if details["needs_review"]
-        ] + [
-            {"kind": "zone", "name": name, "flags": zone.flags}
-            for name, zone in zone_results.items()
-            if zone.needs_review
-        ]
+        review = review_items(fields, zones, rule_review)
         timings["total"] = _elapsed_ms(started)
         return ScanResult(
             file_id=file_id,
             status=STATUS_NEEDS_REVIEW if review else STATUS_OK,
             responses=responses,
-            fields=detailed["field_details"],
-            zones={name: zone.to_dict() for name, zone in zone_results.items()},
+            fields=fields,
+            zones=zones,
             review=review,
+            checks=checks,
+            validation=validation,
             score=score,
             thresholds=detailed["thresholds"],
             timings_ms=timings,
             aligned_image=aligned_image if keep_images else None,
             marked_image=detailed["final_marked"] if keep_images else None,
         )
+
+    def _read_lazy_zone(self, name, aligned_image):
+        zone = next(z for z in self.template.zones if z.name == name)
+        return read_zone(zone, aligned_image, self.zone_engines).to_dict()
 
     def scan_path(self, file_path, keep_images=True):
         """Read an image or every selected page of a PDF; returns a list of results."""

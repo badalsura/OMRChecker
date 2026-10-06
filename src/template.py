@@ -11,6 +11,7 @@ from src.constants.common import FIELD_TYPES
 from src.core import ImageInstanceOps
 from src.logger import logger
 from src.processors.manager import PROCESSOR_MANAGER
+from src.rules import RuleSet
 from src.utils.parsing import (
     custom_sort_output_columns,
     open_template_with_defaults,
@@ -54,10 +55,14 @@ class Template:
         self.setup_field_blocks(field_blocks_object)
         self.setup_zones(zones_object)
         self.parse_custom_labels(custom_labels_object)
+        # Optional "validate" and "checks" (src/rules); rule outputs are columns
+        self.rules = RuleSet(
+            self, json_object.get("validate"), json_object.get("checks")
+        )
 
         non_custom_columns, all_custom_columns = (
             list(self.non_custom_labels),
-            list(custom_labels_object.keys()),
+            list(custom_labels_object.keys()) + self.rules.new_output_columns,
         )
 
         if len(self.output_columns) == 0:
@@ -348,6 +353,8 @@ class Zone:
         self.dimensions = dimensions
         self.options = options
         self.empty_val = options.get("emptyValue", "")
+        # Lazy zones are read only when a check needs them as a fallback
+        self.lazy = bool(options.get("lazy", False))
 
     def crop(self, image, padding=0):
         (x, y), (w, h) = self.origin, self.dimensions

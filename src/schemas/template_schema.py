@@ -68,6 +68,73 @@ TIMING_MARK_OPTIONS_SCHEMA = {
 
 BARCODE_ENGINES = ["zxing", "builtin", "opencv", "pyzbar"]
 
+# Length or range bounds: a number, or [min, max] where either may be null
+BOUNDS_SCHEMA = {
+    "anyOf": [
+        {"type": "number"},
+        {
+            "type": "array",
+            "items": {"type": ["number", "null"]},
+            "minItems": 1,
+            "maxItems": 2,
+        },
+    ]
+}
+
+NORMALIZE_SCHEMA = {
+    "anyOf": [
+        {"type": "string", "enum": ["none", "strip", "digits", "upper", "alnum"]},
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["regex"],
+            "properties": {
+                "regex": {"type": "string"},
+                "group": {"type": ["integer", "string"]},
+            },
+        },
+    ]
+}
+
+# "validate": {"<field, custom label, zone or check output>": {...}}
+VALIDATION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "length": BOUNDS_SCHEMA,
+        "required": {"type": "boolean"},
+        "allowGaps": {"type": "boolean"},
+        "allowEmptyEnds": {"type": "boolean"},
+        "leadingZeros": {"type": "string", "enum": ["keep", "forbid"]},
+        "pattern": {"type": "string"},
+        "allowed": {"type": "array", "items": {"type": ["string", "number"]}},
+        "range": BOUNDS_SCHEMA,
+        "onFail": {"type": "string", "enum": ["review", "blank", "both", "flag"]},
+    },
+}
+
+# "checks": [{...}] cross-field rules (src/rules/checks.py)
+CHECK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name", "sources"],
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "sources": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "priority": {"type": "array", "items": {"type": "string"}},
+        "normalize": NORMALIZE_SCHEMA,
+        "onMissing": {"type": "string", "enum": ["fallback", "review"]},
+        "onConflict": {"type": "string", "enum": ["prefer", "review", "error"]},
+        "reviewOnConflict": {"type": "boolean"},
+        "reviewOnFallback": {"type": "boolean"},
+        "reviewOnAllMissing": {"type": "boolean"},
+        "skipInvalid": {"type": "boolean"},
+        "skipFlagged": {"type": "boolean"},
+        "absorbSourceReview": {"type": "boolean"},
+        "output": {"type": "string", "minLength": 1},
+    },
+}
+
 ZONE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -104,6 +171,13 @@ ZONE_SCHEMA = {
                 "code39Extended": {"enum": ["auto", True, False]},
                 "itfChecksum": {"type": "boolean"},
                 "itfMinLength": {"type": "integer", "minimum": 2},
+                # Barcode: zone (e.g. OCR of the printed digits) read only when
+                # the barcode gives nothing; creates a check named after this zone
+                "fallbackZone": {"type": "string"},
+                "reviewOnFallback": {"type": "boolean"},
+                "fallbackNormalize": NORMALIZE_SCHEMA,
+                # Read only when a check needs this zone as a fallback
+                "lazy": {"type": "boolean"},
             },
         },
     },
@@ -350,6 +424,16 @@ TEMPLATE_SCHEMA = {
             "description": "Non-bubble regions to read: barcodes, QR codes, printed text (OCR) and handwriting (ICR)",
             "type": "object",
             "patternProperties": {"^.*$": ZONE_SCHEMA},
+        },
+        "validate": {
+            "description": "Shape checks per output (field, custom label, zone or check output): length, gaps, pattern, allowed values, range",
+            "type": "object",
+            "patternProperties": {"^.*$": VALIDATION_SCHEMA},
+        },
+        "checks": {
+            "description": "Cross-field rules combining several reads of one value (e.g. barcode with OCR fallback)",
+            "type": "array",
+            "items": CHECK_SCHEMA,
         },
     },
 }

@@ -85,5 +85,25 @@ def read_zone(zone, image, engines=None):
     return finalize(result, zone, extra_review_flags=extra)
 
 
+def skipped_zone(zone):
+    """Placeholder for a lazy zone that was not needed (see src/rules/checks.py)."""
+    return ZoneReadResult(
+        zone.name,
+        zone.type,
+        zone.empty_val,
+        0.0,
+        ["not_read"],
+        box=[*zone.origin, *zone.dimensions],
+    )
+
+
 def read_zones(zones, image, engines=None):
-    return {zone.name: read_zone(zone, image, engines) for zone in zones}
+    """Read every zone; lazy zones (fallbacks) are read later only if needed."""
+    return {
+        zone.name: (
+            skipped_zone(zone)
+            if getattr(zone, "lazy", False)
+            else read_zone(zone, image, engines)
+        )
+        for zone in zones
+    }

@@ -24,7 +24,7 @@ from src.constants.common import (
 from src.defaults import CONFIG_DEFAULTS
 from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import console, logger
-from src.readers import read_zones
+from src.readers import read_zone, read_zones
 from src.template import Template
 from src.utils.file import Paths, setup_dirs_for_paths, setup_outputs_for_template
 from src.utils.image import ImageUtils
@@ -278,13 +278,32 @@ def _process_single_image(
     zone_results = read_zones(template.zones, detailed["aligned_image"], zone_engines)
     for zone_name, zone_result in zone_results.items():
         response_dict[zone_name] = zone_result.value
-    write_review_rows(
-        outputs_namespace, img_name, file_path, detailed["field_details"], zone_results
-    )
 
     # TODO: move inner try catch here
     # concatenate roll nos, set unmarked responses, etc
     omr_response = get_concatenated_response(response_dict, template)
+    zones = {name: zone.to_dict() for name, zone in zone_results.items()}
+    checks, rule_review = {}, []
+    if template.rules:
+        zone_by_name = {zone.name: zone for zone in template.zones}
+        checks, _, rule_review = template.rules.apply(
+            response_dict,
+            omr_response,
+            detailed["field_details"],
+            zones,
+            read_lazy=lambda name: read_zone(
+                zone_by_name[name], detailed["aligned_image"], zone_engines
+            ).to_dict(),
+        )
+    write_review_rows(
+        outputs_namespace,
+        img_name,
+        file_path,
+        detailed["field_details"],
+        zones,
+        rule_review,
+        {**omr_response, **{name: c["value"] for name, c in checks.items()}},
+    )
 
     if evaluation_config is None or not evaluation_config.get_should_explain_scoring():
         logger.info(f"Read Response: \n{omr_response}")
@@ -350,7 +369,15 @@ def _process_single_image(
     return multi_marked
 
 
-def write_review_rows(outputs_namespace, img_name, file_path, field_details, zones):
+def write_review_rows(
+    outputs_namespace,
+    img_name,
+    file_path,
+    field_details,
+    zones,
+    rule_review=(),
+    responses=None,
+):
     rows = [
         [
             img_name,
@@ -367,15 +394,29 @@ def write_review_rows(outputs_namespace, img_name, file_path, field_details, zon
         [
             img_name,
             file_path,
-            zone.type,
+            zone["type"],
             name,
-            zone.value,
-            round(zone.confidence, 3),
-            "|".join(zone.flags),
+            zone["value"],
+            round(zone["confidence"], 3),
+            "|".join(zone["flags"]),
         ]
         for name, zone in zones.items()
-        if zone.needs_review
+        if zone["needs_review"]
     ]
+    # Check and custom-label validation items (template "checks"/"validate")
+    for item in rule_review:
+        value = (responses or {}).get(item["name"], "")
+        rows.append(
+            [
+                img_name,
+                file_path,
+                item["kind"],
+                item["name"],
+                value,
+                "",
+                "|".join(item["flags"]),
+            ]
+        )
     if rows:
         pd.DataFrame(rows, dtype=str).to_csv(
             outputs_namespace.files_obj["NeedsReview"],
