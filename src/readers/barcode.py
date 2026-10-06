@@ -97,13 +97,15 @@ def _attempts(crop):
     _, otsu = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     yield otsu
     yield cv2.GaussianBlur(crop, (3, 3), 0)
-    # Blurred/noisy 1-D codes: average along the bars, re-sharpen across them
-    averaged = cv2.blur(crop, (1, 15))
-    sharpened = cv2.addWeighted(
-        averaged, 2.0, cv2.GaussianBlur(averaged, (0, 0), 2), -1.0, 0
-    )
-    yield cv2.resize(sharpened, None, fx=3, fy=1, interpolation=cv2.INTER_CUBIC)
-    yield cv2.createCLAHE(2.0, (8, 2)).apply(averaged)
+    # Blurred/noisy 1-D codes: average along the bars, re-sharpen across them.
+    # Bars may run either way (codes printed sideways), so try both.
+    for turned in (crop, cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)):
+        averaged = cv2.blur(turned, (1, 15))
+        sharpened = cv2.addWeighted(
+            averaged, 2.0, cv2.GaussianBlur(averaged, (0, 0), 2), -1.0, 0
+        )
+        yield cv2.resize(sharpened, None, fx=3, fy=1, interpolation=cv2.INTER_CUBIC)
+        yield cv2.createCLAHE(2.0, (8, 2)).apply(averaged)
 
 
 def decode_symbols(crop, formats=None):
