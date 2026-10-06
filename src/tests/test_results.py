@@ -426,3 +426,13 @@ def test_regrade_overrides_deep_merge(spec):
         assert build_engine(directory).scan(image, "x").responses["q1"] == "A"
     finally:
         shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_results_screen_is_served(tmp_path):
+    with make_client(tmp_path) as client:
+        page = client.get("/").text
+        assert 'data-tab="results"' in page and 'id="res-canvas"' in page
+        for name in ("results.js", "export.js"):
+            response = client.get(f"/static/{name}")
+            assert response.status_code == 200
+            assert "export function" in response.text

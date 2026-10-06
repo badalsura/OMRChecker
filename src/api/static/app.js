@@ -1,9 +1,13 @@
 // Entry point: tabs, API key, capabilities and module wiring.
-import { api, loadTemplates, setApiKey, state, toast } from "./api.js";
+import { api, loadTemplates, setApiKey, setUser, state, toast } from "./api.js";
+import { initExport } from "./export.js";
 import { initJobs, onShowJobs } from "./jobs.js";
+import { bindToolbar, initResults, onShowResults } from "./results.js";
 import { initReview, refreshBadge } from "./review.js";
 import { initScan } from "./scan.js";
 import { initTemplates } from "./templates.js";
+
+const TABS = ["scan", "review", "results", "jobs", "templates"];
 
 function showTab(name) {
   for (const button of document.querySelectorAll(".tabs button")) {
@@ -14,11 +18,16 @@ function showTab(name) {
   }
   if (name === "jobs") onShowJobs();
   if (name === "review") refreshBadge();
+  if (name === "results") onShowResults();
   try {
     history.replaceState(null, "", `#${name}`);
   } catch (e) {
     /* ignore */
   }
+}
+
+function showUser() {
+  document.getElementById("user-btn").textContent = state.user ? `User: ${state.user}` : "User";
 }
 
 async function init() {
@@ -32,12 +41,23 @@ async function init() {
       boot();
     }
   });
+  document.getElementById("user-btn").addEventListener("click", () => {
+    const name = prompt("Your name (recorded with every correction you make):", state.user);
+    if (name !== null) {
+      setUser(name.trim());
+      showUser();
+    }
+  });
+  showUser();
   initScan();
   initReview();
+  initResults();
+  bindToolbar();
+  initExport();
   initJobs();
   initTemplates();
   const initial = (location.hash || "#scan").slice(1);
-  if (["scan", "review", "jobs", "templates"].includes(initial)) showTab(initial);
+  if (TABS.includes(initial)) showTab(initial);
   await boot();
 }
 
