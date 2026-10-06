@@ -14,9 +14,13 @@ All three have the same operations and no third-party dependencies.
 | results | `job_results_csv(job_id, out_path)` | `jobResultsCsv(id, path)` | `JobResultsCSV`, `JobResultsCSVTo` |
 | one page | `get_scan(scan_id)` | `getScan(id)` | `GetScan` |
 | human review | `review_queue(...)`, `submit_review(scan_id, corrections, accept)` | `reviewQueue(params)`, `submitReview(...)` | `ReviewQueue`, `SubmitReview` |
+| results screen (list, render, edit) | `list_results`, `iter_results`, `render`, `render_image`, `overlay`, `correct(scan_id, changes, toggle=)`, `verify`, `regrade`, `audit` | `listResults`, `render`, `correct`, `verify`, `regrade` | `ListResults`, `Render`, `Correct`, `Verify` |
+| accuracy / path remap / job settings | `accuracy`, `path_remap`, `set_path_remap`, `update_job` | `accuracy` | `Accuracy` |
+| exports (csv, xlsx, pdf, sqlite, sql) | `export(filters, fmt, out_path, profile=)`, `create_export`, `export_status`, `download_export`, `export_profiles`, `save_export_profile` | `createExport`, `exportStatus`, `downloadExport` | `CreateExport`, `WaitForExport`, `DownloadExport` |
 
 Pass the API key (server started with `OMR_API_KEY` / `--api-key`) as the second
-constructor argument; it is sent as `X-API-Key`.
+constructor argument; it is sent as `X-API-Key`. The Python client also takes
+`user=` (sent as `X-User`), which is recorded in the audit trail of corrections.
 
 **Fastest bulk path:** put the sheets on a disk the server can read and create a
 job with `folder=` - nothing is uploaded and the server reads with all cores.
