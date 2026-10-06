@@ -35,7 +35,11 @@ your labelled data.
 | `model_disagrees` | the learned classifier and the threshold reader disagree | yes |
 
 Zones add `not_found`, `multiple_symbols`, `pattern_mismatch`,
-`engine_unavailable`, `no_icr_model` and `read_error`.
+`engine_unavailable`, `no_icr_model` and `read_error`, which go to review, and
+`decoded_by_fallback` and `not_read`, which don't (see
+[Barcode engines](#barcode-engines) and [Cross-field checks](#cross-field-checks)).
+Template rules add `validation_failed`, `cross_check_failed`, `fallback_used`
+and `all_sources_missing`.
 
 Tune these in `config.json`:
 
@@ -112,8 +116,9 @@ phone lens distortion.
 **EccAlignment.** Dense refinement against an image of the blank form. Use it
 after a coarse step.
 
-**Zones.** Barcode and QR zones use ZXing-C++ and accept every symbology it
-supports:
+**Zones.** Barcode and QR zones use ZXing-C++ first (see
+[Barcode engines](#barcode-engines) for the fallbacks) and accept every
+symbology it supports:
 - linear codes: Code 128, Code 39 and 93, Codabar, EAN-8 and EAN-13, UPC-A and UPC-E, ITF, DataBar
 - 2D codes: PDF417, QR (all versions), Micro QR, rMQR, Data Matrix, Aztec and MaxiCode
 
@@ -125,6 +130,178 @@ configured, ICR results are always sent to review.
 Other `config.json` additions:
 - `alignment_params.block_snap_radius`: snaps each block in x and y onto its printed bubbles; off by default.
 - `ml_params.bubble_model_path` and `ml_params.icr_model_path`: paths to ONNX models.
+
+## Barcode engines
+
+A barcode or QR zone tries these decoders in order and stops at the first one
+that reads. Later engines run only when every earlier one read nothing, so
+they cost nothing on sheets ZXing reads.
+
+| engine | reads | notes |
+|---|---|---|
+| `zxing` | every ZXing-C++ symbology | the primary reader, with progressively heavier preprocessing |
+| `builtin` | Code 128 (sets A/B/C), Code 39, ITF, EAN-13, EAN-8, UPC-A | pure NumPy, no native library; see below |
+| `opencv` | QR Code | `cv2.QRCodeDetectorAruco`, then `cv2.QRCodeDetector` |
+| `pyzbar` | ZBar's symbologies | optional: used only when installed **and** switched on |
+
+The zone result records which engine read it in `engine`. A value read by
+anything other than `zxing` gets the flag `decoded_by_fallback`. That flag
+doesn't send the sheet to review unless you set `review_fallback_decodes`.
+
+```json
+"barcode_params": {
+  "engines": ["zxing", "builtin", "opencv", "pyzbar"],
+  "pyzbar": false,
+  "review_fallback_decodes": false
+}
+```
+
+A zone can override these with `options.engines` (the order) and
+`options.pyzbar`. pyzbar isn't in `requirements.txt`; install it with
+`pip install pyzbar` (it also needs the ZBar library, `libzbar0` on Linux). The
+Windows build bundles it (see [packaging](../packaging/README.md)).
+
+**Built-in decoder** (`src/readers/linear.py`):
+- It reads horizontal scanlines across the zone at 12 heights. Tall zones are
+  read on their 90° rotation, and every line is also read right to left, so
+  upside-down codes work.
+- Each line is binarised against its local minimum/maximum envelope, with
+  sub-pixel edges. Ink spread is estimated per character, and blurry lines get
+  a 1-D sharpening retry.
+- It checks quiet zones, module consistency and checksums (Code 128 always;
+  EAN/UPC always; Code 39 and ITF on request).
+- A value is accepted only when at least 2 scanlines decode the same text.
+- Zone options: `code39Checksum` (mod 43), `code39Extended` (`"auto"`, `true`
+  or `false`; full ASCII), `itfChecksum` (GS1 mod 10) and `itfMinLength`
+  (default 6).
+
+Measured on zxing-generated codes with 1.2–4 px modules, blur, noise and up to
+4° rotation, it read 98% of codes, where a single ZXing pass read 85%. It had
+no false reads on 2,000 negative images of text, noise, random stripes and
+bubble grids. It takes about 2 ms per zone when it reads and about 11 ms
+(median) when there is nothing to read.
+
+## Value validation
+
+`validate` checks the shape of any output: a bubble field, a custom label
+(such as a multi-column roll number), a zone or a check output.
+
+```json
+"validate": {
+  "Roll":       {"length": 12, "allowGaps": false, "allowEmptyEnds": false,
+                 "leadingZeros": "keep", "onFail": "review"},
+  "booklet":    {"pattern": "[A-D]", "onFail": "both"},
+  "centre":     {"allowed": ["101", "102", "205"]},
+  "marks":      {"range": [0, 100], "onFail": "flag"},
+  "answer_book":{"length": [10, 12], "required": true}
+}
+```
+
+| key | meaning |
+|---|---|
+| `length` | exact length, or `[min, max]` (either may be `null`) |
+| `required` | an empty value fails; otherwise an empty value passes and nothing else is checked |
+| `allowGaps` | `false`: an empty column between filled ones fails |
+| `allowEmptyEnds` | `false`: empty leading or trailing columns fail |
+| `leadingZeros` | `"keep"` (default) or `"forbid"` |
+| `pattern` | regular expression the whole value must match |
+| `allowed` | list of allowed values |
+| `range` | numeric `[min, max]`; the value is compared as a number but stays text |
+| `onFail` | `review` (default), `blank`, `both` (blank and review) or `flag` (record only) |
+
+Gap and empty-end checks use the per-column values of a custom label, and the
+character boxes of an ICR zone. They don't use the joined string, so a blank
+middle digit is caught even when `emptyValue` is `""`. For other values, a
+space counts as an empty position.
+
+A failure adds `validation_failed` and the reasons to the field or zone, and is
+recorded in `result.validation[name]`:
+
+```json
+{"ok": false, "kind": "custom_label", "value": "13456", "reasons": ["gap at position 2"], "action": "review"}
+```
+
+- `blank` sets the output to the template's `emptyValue` (a zone's own
+  `emptyValue` for zones).
+- A failing custom label adds the review item
+  `{"kind": "custom_label", "name", "flags", "reasons", "fields"}`.
+
+## Cross-field checks
+
+`checks` combine several reads of one value. Typical uses: a barcode with the
+printed digits underneath as a fallback, a QR code that must match a barcode,
+or a handwritten number (ICR) compared with its bubbled column.
+
+```json
+"checks": [{
+  "name": "answer_book",
+  "sources": ["barcode2", "sr_no_ocr"],
+  "normalize": "digits",
+  "priority": ["barcode2", "sr_no_ocr"],
+  "onMissing": "fallback",
+  "onConflict": "prefer",
+  "reviewOnConflict": true,
+  "reviewOnFallback": false,
+  "output": "answer_book"
+}]
+```
+
+| key | default | meaning |
+|---|---|---|
+| `sources` | — | fields, custom labels, zones or other checks' outputs |
+| `priority` | `sources` order | which present source wins |
+| `normalize` | `"none"` | `none`, `strip`, `digits`, `upper`, `alnum` or `{"regex": "...", "group": 1}`; applied before comparing, and to the output |
+| `onMissing` | `fallback` | the first priority source is missing: use the next one (`fallback`), or do that and send the sheet to review (`review`) |
+| `onConflict` | `prefer` | sources disagree: keep the priority value (`prefer`), keep it and always review (`review`), or blank the output and review (`error`) |
+| `reviewOnConflict` | `true` | with `prefer`, whether a conflict still goes to review |
+| `reviewOnFallback` | `false` | review whenever a fallback supplied the value |
+| `reviewOnAllMissing` | `true` | review when no source has a value |
+| `skipInvalid` | `true` | a source that fails its own `validate` rule counts as missing |
+| `skipFlagged` | `false` | a source already flagged for review counts as missing |
+| `absorbSourceReview` | `true` | see below |
+| `output` | `name` | output column; may be one of the check's own sources, which it then replaces |
+
+- **Output.** The value goes to `responses[output]` and the CSV.
+  `result.checks[name]` holds `value`, `chosen_source`, `sources` (raw values),
+  `normalized`, `skipped` (sources not used, and why), `flags` and
+  `needs_review`. Flags are `fallback_used`, `cross_check_failed` and
+  `all_sources_missing`. A check that needs review adds
+  `{"kind": "check", "name", "flags"}` to `review`.
+- **Order.** Checks can read other checks' outputs. They run in dependency
+  order, and a cycle is a template error.
+- **Validation.** A check output can have its own `validate` rule. When it fails
+  with `blank`, later checks see the output as missing.
+- **Source review.** When a check settles a value without needing review, its
+  sources' own review flags are cleared: a missing source whose value came from
+  another source, or a source that agrees with another one.
+  `review_resolved_by` names the check. A source that decided the value alone
+  keeps its flags.
+
+**Barcode with printed-digit fallback.** Draw an OCR zone over the printed
+number under the barcode and point the barcode zone at it:
+
+```json
+"zones": {
+  "barcode2":  {"type": "barcode", "origin": [700, 110], "dimensions": [460, 90],
+                "options": {"formats": ["Code128"], "fallbackZone": "sr_no_ocr",
+                            "fallbackNormalize": "digits"}},
+  "sr_no_ocr": {"type": "ocr", "origin": [700, 205], "dimensions": [460, 40],
+                "options": {"whitelist": "0123456789"}}
+}
+```
+
+This creates a check named `barcode2` with sources `[barcode2, sr_no_ocr]`,
+`onMissing: fallback` and `onConflict: prefer`. Its output replaces the
+`barcode2` column. The OCR zone becomes *lazy*: it is read only when no engine
+reads the barcode, so readable sheets pay nothing for it. Until then its result
+shows the flag `not_read`. `reviewOnFallback` defaults to `true` here; set
+`"reviewOnFallback": false` in the barcode zone's options to accept OCR'd
+values without review. Any zone can be made lazy with `"lazy": true`, so that
+explicit checks also read it only as a fallback.
+
+**Re-running after corrections.** `src.rules.reapply_rules(result_dict,
+template)` re-runs the rules on a stored result. It updates `responses`,
+`checks`, `validation`, `review` and `status`.
 
 ## Library and batch
 
@@ -255,7 +432,8 @@ Firefox and Node 18+.
   onnxruntime-web; both are loaded on demand.
 - **Not supported:** OCR/ICR zones need a reader you register (for example
   tesseract.js); without one they are flagged for review. FeatureBasedAlignment
-  and EccAlignment don't run in the browser.
+  and EccAlignment don't run in the browser. Template `validate` and
+  `checks`, and the built-in and OpenCV barcode fallbacks, are not ported yet.
 
 Send sheets that come back `needs_review` or `error` to `POST /scans` so they
 join the review queue.
