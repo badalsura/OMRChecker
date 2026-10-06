@@ -29,6 +29,14 @@ CONFIG_SCHEMA = {
                     "enum": ["white", "black"],
                     "type": "string",
                 },
+                # "fixed": skip adaptive thresholds and use the values below
+                "mode": {"enum": ["adaptive", "fixed"], "type": "string"},
+                "fixed_threshold": {"type": "number", "minimum": 0, "maximum": 255},
+                "fixed_min_fill_ratio": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                },
             },
         },
         "alignment_params": {

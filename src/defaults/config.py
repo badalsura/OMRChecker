@@ -15,6 +15,12 @@ CONFIG_DEFAULTS = DotMap(
             "CONFIDENT_SURPLUS": 5,
             "JUMP_DELTA": 30,
             "PAGE_TYPE_FOR_THRESHOLD": "white",
+            # "adaptive" (page and strip thresholds per sheet) or "fixed": a bubble
+            # is marked when at least fixed_min_fill_ratio of its interior is
+            # darker than fixed_threshold
+            "mode": "adaptive",
+            "fixed_threshold": 120,
+            "fixed_min_fill_ratio": 0.12,
         },
         "alignment_params": {
             # Note: 'auto_align' enables automatic template alignment, use if the scans show slight misalignments.

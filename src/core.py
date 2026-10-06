@@ -291,9 +291,18 @@ class ImageInstanceOps:
                 total_q_strip_no += 1
             all_q_std_vals.extend(q_std_vals)
 
-        global_std_thresh, _, _ = self.get_global_threshold(
-            all_q_std_vals
-        )  # , "Q-wise Std-dev Plot", plot_show=True, sort_in_plot=True)
+        threshold_params = config.threshold_params
+        fixed_mode = threshold_params.get("mode", "adaptive") == "fixed"
+        if fixed_mode:
+            # One intensity line for every sheet: no per-sheet threshold search
+            fixed_threshold = float(threshold_params.fixed_threshold)
+            fixed_min_fill = float(threshold_params.fixed_min_fill_ratio)
+            fill_margin = max(min(fixed_min_fill, 1.0 - fixed_min_fill), 0.05)
+            global_std_thresh = global_thr = fixed_threshold
+        else:
+            global_std_thresh, _, _ = self.get_global_threshold(
+                all_q_std_vals
+            )  # , "Q-wise Std-dev Plot", plot_show=True, sort_in_plot=True)
         # plt.show()
         # hist = getPlotImg()
         # InteractionUtils.show("StdHist", hist, 0, 1,config=config)
@@ -301,7 +310,8 @@ class ImageInstanceOps:
         # Note: Plotting takes Significant times here --> Change Plotting args
         # to support show_image_level
         # , "Mean Intensity Histogram",plot_show=True, sort_in_plot=True)
-        global_thr, _, _ = self.get_global_threshold(all_q_vals, looseness=4)
+        if not fixed_mode:
+            global_thr, _, _ = self.get_global_threshold(all_q_vals, looseness=4)
 
         logger.info(
             f"Thresholding: \tglobal_thr: {round(global_thr, 2)} \tglobal_std_THR: {round(global_std_thresh, 2)}\t{'(Looks like a Xeroxed OMR)' if (global_thr == 255) else ''}"
@@ -327,16 +337,20 @@ class ImageInstanceOps:
             box_w, box_h = field_block.bubble_dimensions
             key = field_block.name[:3]
             for field_block_bubbles in field_block.traverse_bubbles:
-                # All Black or All White case
-                no_outliers = all_q_std_vals[total_q_strip_no] < global_std_thresh
-                per_q_strip_threshold = self.get_local_threshold(
-                    all_q_strip_arrs[total_q_strip_no],
-                    global_thr,
-                    no_outliers,
-                    f"Mean Intensity Histogram for {key}.{field_block_bubbles[0].field_label}.{block_q_strip_no}",
-                    config.outputs.show_image_level >= 6,
-                )
-                strip_low_confidence = self.last_local_threshold_low_confidence
+                if fixed_mode:
+                    per_q_strip_threshold = fixed_threshold
+                    strip_low_confidence = False
+                else:
+                    # All Black or All White case
+                    no_outliers = all_q_std_vals[total_q_strip_no] < global_std_thresh
+                    per_q_strip_threshold = self.get_local_threshold(
+                        all_q_strip_arrs[total_q_strip_no],
+                        global_thr,
+                        no_outliers,
+                        f"Mean Intensity Histogram for {key}.{field_block_bubbles[0].field_label}.{block_q_strip_no}",
+                        config.outputs.show_image_level >= 6,
+                    )
+                    strip_low_confidence = self.last_local_threshold_low_confidence
                 per_omr_threshold_avg += per_q_strip_threshold
 
                 detected_bubbles = []
@@ -354,26 +368,38 @@ class ImageInstanceOps:
                         bubble.y + field_block.shift_y,
                         bubble.field_value,
                     )
-                    bubble_is_marked = per_q_strip_threshold > bubble_mean
-                    # Count only pixels clearly darker than the decision threshold so
-                    # printed letters and tinted bubble backgrounds don't count as ink
-                    fill_ratio = self.get_fill_ratio(
-                        img,
-                        x,
-                        y,
-                        box_w,
-                        box_h,
-                        per_q_strip_threshold - review_params.confidence_margin,
-                    )
-                    # How far the bubble sits from the decision boundary, in [0, 1]
-                    bubble_confidence = float(
-                        np.clip(
-                            abs(per_q_strip_threshold - bubble_mean)
-                            / review_params.confidence_margin,
-                            0,
-                            1,
+                    if fixed_mode:
+                        # Marked when enough of the interior is darker than the line
+                        fill_ratio = self.get_fill_ratio(
+                            img, x, y, box_w, box_h, fixed_threshold
                         )
-                    )
+                        bubble_is_marked = fill_ratio >= fixed_min_fill
+                        bubble_confidence = float(
+                            np.clip(
+                                abs(fill_ratio - fixed_min_fill) / fill_margin, 0, 1
+                            )
+                        )
+                    else:
+                        bubble_is_marked = per_q_strip_threshold > bubble_mean
+                        # Count only pixels clearly darker than the decision threshold
+                        # so printed letters and tinted backgrounds don't count as ink
+                        fill_ratio = self.get_fill_ratio(
+                            img,
+                            x,
+                            y,
+                            box_w,
+                            box_h,
+                            per_q_strip_threshold - review_params.confidence_margin,
+                        )
+                        # How far the bubble sits from the decision boundary, in [0, 1]
+                        bubble_confidence = float(
+                            np.clip(
+                                abs(per_q_strip_threshold - bubble_mean)
+                                / review_params.confidence_margin,
+                                0,
+                                1,
+                            )
+                        )
                     bubble_detail = {
                         "value": field_value,
                         "x": int(x),
@@ -527,6 +553,7 @@ class ImageInstanceOps:
                 "global": round(float(global_thr), 2),
                 "global_std": round(float(global_std_thresh), 2),
                 "average_local": per_omr_threshold_avg,
+                **({"mode": "fixed"} if fixed_mode else {}),
             },
         }
 
