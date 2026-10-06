@@ -135,9 +135,11 @@ def process_dir(
 
     if omr_files:
         if not template:
-            logger.error(f"Found images, but no template in the directory tree \
+            logger.error(
+                f"Found images, but no template in the directory tree \
                 of '{curr_dir}'. \nPlace {TEMPLATE_FILENAME} in the \
-                appropriate directory.")
+                appropriate directory."
+            )
             raise Exception(
                 f"No template file found in the directory tree of {curr_dir}"
             )
@@ -167,8 +169,10 @@ def process_dir(
 
     elif not subdirs:
         # Each subdirectory should have images or should be non-leaf
-        logger.info(f"No valid images or sub-folders found in {curr_dir}.\
-            Empty directories not allowed.")
+        logger.info(
+            f"No valid images or sub-folders found in {curr_dir}.\
+            Empty directories not allowed."
+        )
 
     # recursively process sub-folders
     for d in subdirs:

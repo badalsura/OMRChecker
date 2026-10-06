@@ -329,6 +329,43 @@ def test_zone_override_reads_its_own_variant(tmp_path):
     assert engine.template.prepare_image(np.zeros((4, 4), np.uint8))[1] == {}
 
 
+def test_lazy_fallback_zone_reads_its_own_variant(tmp_path):
+    """A lazy fallback zone with its own colorDropout reads that variant."""
+    pytest.importorskip("zxingcpp")
+    spec = default_spec(questions=20, roll_digits=4, with_zones=True)
+    spec.zones = [z for z in spec.zones if z.type == "barcode"]
+    rng = random.Random(7)
+    answers = random_answers(spec, rng, blank_rate=0.0)
+    image, truth = render_sheet(
+        spec, answers, rng=rng, print_color=PINK, ink_color=BLUE_PEN
+    )
+    zone = spec.zones[0]
+    tint_region(image, (*zone.origin, *zone.dimensions), PINK)
+    image, _ = augment(image, rng, **SCAN)
+    barcode = truth["zones"][zone.name]
+
+    remove_pink = {"mode": "color", "color": PINK, "tolerance": 50}
+    path = write_template(tmp_path, spec, register=True, colorDropout=remove_pink)
+    template = json.loads(path.read_text())
+    page_zone = template["zones"].pop(zone.name)
+    grey_zone = json.loads(json.dumps(page_zone))
+    grey_zone["options"].update({"colorDropout": "grey", "lazy": True})
+    template["zones"] = {"bc_page": page_zone, "bc_grey": grey_zone}
+    template["checks"] = [
+        {
+            "name": "code",
+            "sources": ["bc_page", "bc_grey"],
+            "onMissing": "fallback",
+            "reviewOnFallback": False,
+        }
+    ]
+    path.write_text(json.dumps(template))
+    result = OMREngine(path).scan(image).to_dict()
+    assert result["checks"]["code"]["value"] == barcode
+    assert result["checks"]["code"]["chosen_source"] == "bc_grey"
+    assert result["responses"]["code"] == barcode
+
+
 def test_zone_variant_needs_color_rules(tmp_path, spec):
     path = write_template(tmp_path, spec)
     template = json.loads(path.read_text())
