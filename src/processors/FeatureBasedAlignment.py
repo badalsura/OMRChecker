@@ -19,6 +19,8 @@ from src.utils.interaction import InteractionUtils
 
 
 class FeatureBasedAlignment(ImagePreprocessor):
+    geometry = "recorded"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         options = self.options
@@ -118,12 +120,14 @@ class FeatureBasedAlignment(ImagePreprocessor):
             m, inliers = cv2.estimateAffine2D(points1, points2)
             if not self.is_transform_sane(m, inliers, file_path):
                 return None
+            self.record_geometry(lambda im: cv2.warpAffine(im, m, (width, height)))
             return cv2.warpAffine(image, m, (width, height))
 
         # Use homography
         h, inliers = cv2.findHomography(points1, points2, cv2.RANSAC)
         if not self.is_transform_sane(h, inliers, file_path):
             return None
+        self.record_geometry(lambda im: cv2.warpPerspective(im, h, (width, height)))
         return cv2.warpPerspective(image, h, (width, height))
 
     def is_transform_sane(self, matrix, inliers, file_path):

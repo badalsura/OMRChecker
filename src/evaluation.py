@@ -232,7 +232,11 @@ class EvaluationConfig:
                     f"Attempting to generate answer key from image: '{image_path}'"
                 )
                 # TODO: use a common function for below changes?
-                in_omr = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+                in_omr = cv2.imread(
+                    image_path,
+                    cv2.IMREAD_COLOR if template.needs_color else cv2.IMREAD_GRAYSCALE,
+                )
+                in_omr, _ = template.prepare_image(in_omr)
                 in_omr = template.image_instance_ops.apply_preprocessors(
                     image_path, in_omr, template
                 )

@@ -41,6 +41,14 @@ def build_parser():
     synth.add_argument("--blank-rate", type=float, default=0.05)
     synth.add_argument("--multi-rate", type=float, default=0.02)
     synth.add_argument("--erasures", type=int, default=4)
+    synth.add_argument(
+        "--print-color", help="print the form in this colour, e.g. '#E8618C'"
+    )
+    synth.add_argument("--ink-color", help="mark colour, e.g. '#1F3C9A'")
+    synth.add_argument(
+        "--dropout",
+        help="template colorDropout: a mode (red, max, ...) or JSON settings",
+    )
     parser.add_argument("--bubble-model", help="ONNX bubble classifier")
     parser.add_argument("--icr-model", help="ONNX ICR classifier")
     parser.add_argument("--workers", type=int, default=1, help="worker processes")
@@ -50,6 +58,13 @@ def build_parser():
     parser.add_argument("--report", help="write the full JSON report here")
     parser.add_argument("--quiet", action="store_true", help="no console summary")
     return parser
+
+
+def parse_dropout(value):
+    if not value:
+        return None
+    value = value.strip()
+    return json.loads(value) if value.startswith("{") else {"mode": value}
 
 
 def main(argv=None):
@@ -69,6 +84,9 @@ def main(argv=None):
             blank_rate=args.blank_rate,
             multi_rate=args.multi_rate,
             erasures=args.erasures,
+            print_color=args.print_color,
+            ink_color=args.ink_color,
+            color_dropout=parse_dropout(args.dropout),
         )
         title = f"Synthetic benchmark ({args.synthetic} sheets, preset {args.preset})"
     else:

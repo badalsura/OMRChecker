@@ -7,11 +7,13 @@ Github: https://github.com/Udayraj123
 
 """
 
+from src.color import apply_dropout, normalize_dropout
 from src.constants.common import FIELD_TYPES
 from src.core import ImageInstanceOps
 from src.logger import logger
 from src.processors.manager import PROCESSOR_MANAGER
 from src.rules import RuleSet
+from src.utils.image import ImageUtils
 from src.utils.parsing import (
     custom_sort_output_columns,
     open_template_with_defaults,
@@ -20,11 +22,13 @@ from src.utils.parsing import (
 
 
 class Template:
-    def __init__(self, template_path, tuning_config):
+    def __init__(self, template_path, tuning_config, overrides=None):
+        """overrides: top-level template keys that replace the file's (e.g. colorDropout)."""
         self.path = template_path
         self.image_instance_ops = ImageInstanceOps(tuning_config)
 
-        json_object = open_template_with_defaults(template_path)
+        json_object = open_template_with_defaults(template_path, overrides)
+        self.color_dropout = normalize_dropout(json_object.get("colorDropout"))
         (
             custom_labels_object,
             field_blocks_object,
@@ -70,6 +74,70 @@ class Template:
 
         self.validate_template_columns(non_custom_columns, all_custom_columns)
 
+    # ------------------------------------------------------------------ colour
+    def set_color_dropout(self, spec):
+        """Change the page colour dropout at runtime (dict, mode string or None)."""
+        self.color_dropout = normalize_dropout(spec)
+
+    def zone_dropout_specs(self):
+        """Distinct per-zone dropout settings that differ from the page's."""
+        specs = []
+        for zone in self.zones:
+            spec = zone.color_dropout
+            if spec is not None and spec != self.color_dropout and spec not in specs:
+                specs.append(spec)
+        return specs
+
+    @property
+    def needs_color(self):
+        """True when sheets should be decoded in colour (some dropout isn't plain grey)."""
+        return self.color_dropout.mode != "grey" or bool(self.zone_dropout_specs())
+
+    def prepare_image(self, image):
+        """
+        Turn a loaded sheet into (grey page image, {dropout spec: grey variant}).
+
+        A grey (2-D) image is used as-is with no variants. Variants are only
+        computed for zones whose colorDropout differs from the page's.
+        """
+        if image is None or image.ndim == 2:
+            return image, {}
+        grey = apply_dropout(image, self.color_dropout)
+        variants = {
+            spec: apply_dropout(image, spec) for spec in self.zone_dropout_specs()
+        }
+        return grey, variants
+
+    def read_zones_with_variants(
+        self, aligned_image, variants, engines=None, only=None
+    ):
+        """
+        Read zones; those with their own colorDropout read the matching variant
+        (registered alongside the page by apply_preprocessors' companions).
+        """
+        from src.readers import read_zone
+        from src.readers.base import skipped_zone
+
+        page_w, page_h = self.page_dimensions
+        prepared, results = {}, {}
+        for zone in self.zones if only is None else only:
+            if only is None and zone.lazy:
+                # Lazy fallback zones are read later, only if a check needs them
+                results[zone.name] = skipped_zone(zone)
+                continue
+            image = aligned_image
+            spec = zone.color_dropout
+            if variants and spec is not None and spec in variants:
+                if spec not in prepared:
+                    # The same final resize/normalise the page gets before reading
+                    variant = ImageUtils.resize_util(variants[spec], page_w, page_h)
+                    if variant.max() > variant.min():
+                        variant = ImageUtils.normalize_util(variant)
+                    prepared[spec] = variant
+                image = prepared[spec]
+            results[zone.name] = read_zone(zone, image, engines)
+        return results
+
     def parse_output_columns(self, output_columns_array):
         self.output_columns = parse_fields(f"Output Columns", output_columns_array)
 
@@ -107,15 +175,16 @@ class Template:
                 raise Exception(
                     f"Overflowing zone '{zone_name}' with origin {[x, y]} and dimensions {[w, h]} in template with dimensions {self.page_dimensions}"
                 )
-            self.zones.append(
-                Zone(
-                    zone_name,
-                    zone_object["type"],
-                    [x, y],
-                    [w, h],
-                    zone_object.get("options", {}),
-                )
+            zone = Zone(
+                zone_name,
+                zone_object["type"],
+                [x, y],
+                [w, h],
+                zone_object.get("options", {}),
             )
+            if "colorDropout" in zone.options:
+                zone.color_dropout = normalize_dropout(zone.options["colorDropout"])
+            self.zones.append(zone)
             self.all_parsed_labels.add(zone_name)
 
     def parse_custom_labels(self, custom_labels_object):
@@ -355,6 +424,8 @@ class Zone:
         self.empty_val = options.get("emptyValue", "")
         # Lazy zones are read only when a check needs them as a fallback
         self.lazy = bool(options.get("lazy", False))
+        # None: read the page image; otherwise a DropoutSpec for this zone's own variant
+        self.color_dropout = None
 
     def crop(self, image, padding=0):
         (x, y), (w, h) = self.origin, self.dimensions

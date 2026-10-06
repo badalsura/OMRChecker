@@ -36,6 +36,9 @@ CONFIG_DEFAULTS = DotMap(
             "min_marked_fill_ratio": 0.25,
             # An unmarked bubble with more of its interior filled than this is suspicious
             "max_unmarked_fill_ratio": 0.6,
+            # Flag the sheet (too_few_marks) when fewer bubbles are marked; 0 = off.
+            # Catches pens the colour dropout removed along with the print
+            "min_marked_bubbles": 0,
             # Flags that send a field to the manual review queue
             "review_flags": [
                 "multi_marked",

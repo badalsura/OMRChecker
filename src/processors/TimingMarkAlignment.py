@@ -34,6 +34,7 @@ TPS_GRID_STEP = 16
 
 class TimingMarkAlignment(ImagePreprocessor):
     needs_full_resolution = True
+    geometry = "recorded"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -102,13 +103,18 @@ class TimingMarkAlignment(ImagePreprocessor):
             return None
 
         homography = best["homography"]
-        warped = cv2.warpPerspective(
-            image,
-            homography,
-            (int(page_w), int(page_h)),
-            flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-            borderValue=255,
-        )
+
+        def warp_page(im):
+            return cv2.warpPerspective(
+                im,
+                homography,
+                (int(page_w), int(page_h)),
+                flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                borderValue=255,
+            )
+
+        warped = warp_page(image)
+        self.record_geometry(warp_page)
         if self.non_rigid and best["matched"] >= 6:
             warped = self.thin_plate_correction(warped, best)
 
@@ -313,13 +319,14 @@ class TimingMarkAlignment(ImagePreprocessor):
         map_x, map_y = np.meshgrid(
             np.arange(page_w, dtype=np.float32), np.arange(page_h, dtype=np.float32)
         )
-        return cv2.remap(
-            warped,
-            map_x + dx.astype(np.float32),
-            map_y + dy.astype(np.float32),
-            cv2.INTER_LINEAR,
-            borderValue=255,
-        )
+        map_x = map_x + dx.astype(np.float32)
+        map_y = map_y + dy.astype(np.float32)
+
+        def remap(im):
+            return cv2.remap(im, map_x, map_y, cv2.INTER_LINEAR, borderValue=255)
+
+        self.record_geometry(remap)
+        return remap(warped)
 
 
 def _tps_kernel(r):

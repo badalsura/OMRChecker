@@ -96,6 +96,32 @@ NORMALIZE_SCHEMA = {
     ]
 }
 
+# Colour dropout: how a colour scan becomes the grey image that is read
+COLOR_DROPOUT_SCHEMA = {
+    "anyOf": [
+        # Shorthand for {"mode": ...}
+        {"type": "string", "enum": ["grey", "gray", "red", "green", "blue", "max"]},
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["grey", "gray", "red", "green", "blue", "max", "color"],
+                },
+                # Colour to remove in "color" mode, e.g. "#E8618C"
+                "color": {"type": "string", "pattern": "^#?([0-9a-fA-F]{3}){1,2}$"},
+                # Lab colour distance treated as a full match (soft falloff to 1.5x)
+                "tolerance": {"type": "number", "minimum": 0, "maximum": 200},
+                # 0 = plain grey, 1 = full dropout
+                "strength": zero_to_one_number,
+            },
+            "if": {"properties": {"mode": {"const": "color"}}},
+            "then": {"required": ["color"]},
+        },
+    ]
+}
+
 # "validate": {"<field, custom label, zone or check output>": {...}}
 VALIDATION_SCHEMA = {
     "type": "object",
@@ -178,6 +204,8 @@ ZONE_SCHEMA = {
                 "fallbackNormalize": NORMALIZE_SCHEMA,
                 # Read only when a check needs this zone as a fallback
                 "lazy": {"type": "boolean"},
+                # Read this zone from a differently processed image (e.g. "grey")
+                "colorDropout": COLOR_DROPOUT_SCHEMA,
             },
         },
     },
@@ -419,6 +447,10 @@ TEMPLATE_SCHEMA = {
         "emptyValue": {
             "description": "The value to be used in case of empty bubble detected at global level.",
             "type": "string",
+        },
+        "colorDropout": {
+            **COLOR_DROPOUT_SCHEMA,
+            "description": "How a colour scan is turned into the grey image that is read (default: plain grey)",
         },
         "zones": {
             "description": "Non-bubble regions to read: barcodes, QR codes, printed text (OCR) and handwriting (ICR)",

@@ -30,25 +30,63 @@ class ImageInstanceOps:
         self.save_img_list: Any = defaultdict(list)
         # Optional learned classifier (src/ml/classifiers.py) for bubble crops
         self.bubble_classifier = None
+        # While companion images are tracked: geometric steps of the current
+        # preprocessor (see ImagePreprocessor.record_geometry)
+        self.geometry_ops = None
 
-    def apply_preprocessors(self, file_path, in_omr, template):
+    def apply_preprocessors(self, file_path, in_omr, template, companions=None):
+        """
+        Register the sheet. companions ({key: image of the same size}, e.g. colour
+        dropout variants some zones read) are updated in place to follow the same
+        geometry; a companion that cannot follow is dropped.
+        """
         tuning_config = self.tuning_config
         pre_processors = template.pre_processors
         # resize to conform to template, unless registration works on the original
         # pixels (or there is nothing to run, so reading resizes straight to the page)
         if pre_processors and not pre_processors[0].needs_full_resolution:
-            in_omr = ImageUtils.resize_util(
-                in_omr,
+            size = (
                 tuning_config.dimensions.processing_width,
                 tuning_config.dimensions.processing_height,
             )
+            in_omr = ImageUtils.resize_util(in_omr, *size)
+            for key in list(companions or {}):
+                companions[key] = ImageUtils.resize_util(companions[key], *size)
 
         # run pre_processors in sequence
         for pre_processor in template.pre_processors:
-            in_omr = pre_processor.apply_filter(in_omr, file_path)
+            if not companions:
+                in_omr = pre_processor.apply_filter(in_omr, file_path)
+            else:
+                self.geometry_ops = []
+                try:
+                    in_omr = pre_processor.apply_filter(in_omr, file_path)
+                    ops = self.geometry_ops
+                finally:
+                    self.geometry_ops = None
+                if in_omr is not None:
+                    self.follow_geometry(pre_processor, ops, companions, file_path)
             if in_omr is None:
                 break
         return in_omr
+
+    @staticmethod
+    def follow_geometry(pre_processor, ops, companions, file_path):
+        mode = getattr(pre_processor, "geometry", "unknown")
+        if mode == "none":
+            return
+        for key in list(companions):
+            image = companions[key]
+            if mode == "recorded":
+                for transform in ops:
+                    image = transform(image)
+            else:
+                # Unknown step: run it again on the companion (best effort)
+                image = pre_processor.apply_filter(image, file_path)
+            if image is None:
+                del companions[key]
+            else:
+                companions[key] = image
 
     def read_omr_response(self, template, image, name, save_dir=None):
         result = self.read_omr_response_detailed(template, image, name, save_dir)

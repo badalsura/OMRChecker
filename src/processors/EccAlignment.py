@@ -25,6 +25,8 @@ MOTION_TYPES = {
 
 
 class EccAlignment(ImagePreprocessor):
+    geometry = "recorded"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         options = self.options
@@ -49,6 +51,7 @@ class EccAlignment(ImagePreprocessor):
     def apply_filter(self, image, file_path):
         ref_h, ref_w = self.reference.shape[:2]
         image = ImageUtils.resize_util(image, ref_w, ref_h)
+        self.record_geometry(lambda im: ImageUtils.resize_util(im, ref_w, ref_h))
         small_w, small_h = int(ref_w * self.scale), int(ref_h * self.scale)
         reference_small = cv2.resize(self.reference, (small_w, small_h)).astype(
             np.float32
@@ -82,18 +85,19 @@ class EccAlignment(ImagePreprocessor):
         if self.motion == cv2.MOTION_HOMOGRAPHY:
             scale = np.diag([self.scale, self.scale, 1.0]).astype(np.float32)
             warp = np.linalg.inv(scale) @ warp @ scale
-            return cv2.warpPerspective(
-                image,
+            warp_image = cv2.warpPerspective
+        else:
+            warp[:, 2] /= self.scale
+            warp_image = cv2.warpAffine
+
+        def transform(im):
+            return warp_image(
+                im,
                 warp,
                 (ref_w, ref_h),
                 flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
                 borderValue=255,
             )
-        warp[:, 2] /= self.scale
-        return cv2.warpAffine(
-            image,
-            warp,
-            (ref_w, ref_h),
-            flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-            borderValue=255,
-        )
+
+        self.record_geometry(transform)
+        return transform(image)

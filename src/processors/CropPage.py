@@ -60,6 +60,8 @@ def angle(p_1, p_2, p_0):
 
 
 class CropPage(ImagePreprocessor):
+    geometry = "recorded"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         cropping_ops = self.options
@@ -87,6 +89,7 @@ class CropPage(ImagePreprocessor):
 
         # Warp layer 1
         image = ImageUtils.four_point_transform(image, sheet)
+        self.record_geometry(lambda im: ImageUtils.four_point_transform(im, sheet))
 
         # Return preprocessed image
         return image

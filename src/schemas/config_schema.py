@@ -55,6 +55,8 @@ CONFIG_SCHEMA = {
                     "minimum": 0,
                     "maximum": 1,
                 },
+                # Sheet-level too_few_marks when fewer bubbles are marked; 0 = off
+                "min_marked_bubbles": {"type": "integer", "minimum": 0},
                 "review_flags": {
                     "type": "array",
                     "items": {

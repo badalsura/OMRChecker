@@ -55,8 +55,15 @@ def open_config_with_defaults(config_path):
     return DotMap(user_tuning_config, _dynamic=False)
 
 
-def open_template_with_defaults(template_path):
+def open_template_with_defaults(template_path, overrides=None):
     user_template = load_json(template_path)
+    # Top-level keys replace the file's (e.g. a regrade with another colorDropout);
+    # None removes a key
+    for key, value in (overrides or {}).items():
+        if value is None:
+            user_template.pop(key, None)
+        else:
+            user_template[key] = deepcopy(value)
     user_template = OVERRIDE_MERGER.merge(deepcopy(TEMPLATE_DEFAULTS), user_template)
     validate_template_json(user_template, template_path)
     return user_template
