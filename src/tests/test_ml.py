@@ -343,3 +343,21 @@ def test_train_export_and_read_sheet_with_model(tmp_path):
     assert "model_marked_prob" in some_bubble
     correct = sum(result.responses[k] == v for k, v in truth["answers"].items())
     assert correct / len(truth["answers"]) >= 0.95
+
+
+def test_load_truth_xlsx_with_answer_string(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["File Name", "rollno", "pcode", "ANS"])
+    sheet.append(["000001.jpg", 310201010099, "01051", "CB A*D"])
+    path = tmp_path / "labels.xlsx"
+    book.save(path)
+
+    truth = ds.load_truth(path, {"ANS": ("q", 8)})
+
+    row = ds.lookup_truth(truth, "/scans/000001.jpg")
+    assert row["rollno"] == "310201010099"
+    assert row["pcode"] == "01051"
+    assert [row[f"q{i}"] for i in range(1, 9)] == ["C", "B", "", "A", "*", "D", "", ""]
+    assert "ANS" not in row

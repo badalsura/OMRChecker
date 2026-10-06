@@ -16,6 +16,10 @@ auto-accepted values (not flagged for review): every error there is a silent
 error that reaches the results. A good configuration keeps it at ~100% while the
 review rate stays low.
 
+A truth value of "*" means multi-marked without saying which bubbles: it counts
+as correct when the value is sent to review. "Flagged" covers field/zone
+needs_review and anything else on the sheet's review list (checks, validation).
+
 Sheets that fail before reading (registration errors) are counted in the sheet
 metrics but excluded from field metrics, since all of their values go to manual
 handling anyway.
@@ -25,7 +29,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from src.ml.dataset import split_field_value
+from src.ml.dataset import MULTI_MARK, split_field_value
 
 KIND_FIELD = "field"
 KIND_CUSTOM = "custom"
@@ -130,6 +134,12 @@ def evaluate_record(result, truth, column_fields=None):
     fields = result.get("fields") or {}
     zones = result.get("zones") or {}
     responses = result.get("responses") or {}
+    # Everything the sheet's review list sends to a person, including checks and
+    # validation failures that don't set needs_review on a field or zone
+    reviewed = set()
+    for review_item in result.get("review") or []:
+        reviewed.add(review_item.get("name"))
+        reviewed.update(review_item.get("fields") or [])
     items = []
     for column, expected in truth.items():
         expected = normalize(expected)
@@ -138,7 +148,7 @@ def evaluate_record(result, truth, column_fields=None):
             got = normalize(responses.get(column, field.get("value")))
             item = {
                 "kind": KIND_FIELD,
-                "flagged": bool(field.get("needs_review")),
+                "flagged": bool(field.get("needs_review")) or column in reviewed,
                 "confidence": field.get("confidence"),
                 "flags": list(field.get("flags") or []),
             }
@@ -147,7 +157,7 @@ def evaluate_record(result, truth, column_fields=None):
             got = normalize(zone.get("value"))
             item = {
                 "kind": f"zone:{zone.get('type', 'unknown')}",
-                "flagged": bool(zone.get("needs_review")),
+                "flagged": bool(zone.get("needs_review")) or column in reviewed,
                 "confidence": zone.get("confidence"),
                 "flags": list(zone.get("flags") or []),
             }
@@ -156,7 +166,9 @@ def evaluate_record(result, truth, column_fields=None):
             parts = [fields[f] for f in column_fields.get(column, []) if f in fields]
             item = {
                 "kind": KIND_CUSTOM,
-                "flagged": any(p.get("needs_review") for p in parts),
+                "flagged": any(p.get("needs_review") for p in parts)
+                or column in reviewed
+                or bool(reviewed & set(column_fields.get(column, []))),
                 "confidence": min(
                     (
                         p.get("confidence")
@@ -175,7 +187,11 @@ def evaluate_record(result, truth, column_fields=None):
                 "column": column,
                 "expected": expected,
                 "got": got,
-                "correct": got == expected,
+                # A multi-marked truth (which bubbles is not recorded) is right
+                # when the value goes to review
+                "correct": item["flagged"]
+                if expected == MULTI_MARK
+                else got == expected,
             }
         )
         items.append(item)
@@ -247,7 +263,7 @@ def compute_metrics(
                     reason["wrong"] += int(not item["correct"])
             if item["kind"] in (KIND_FIELD, KIND_CUSTOM):
                 bubble_fields.add(item["correct"], item["flagged"])
-            if item["kind"] == KIND_FIELD:
+            if item["kind"] == KIND_FIELD and item["expected"] != MULTI_MARK:
                 _bubble_counts(
                     result["fields"][item["column"]], item["expected"], bubble_counts
                 )

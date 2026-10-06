@@ -53,6 +53,8 @@ MANIFEST_COLUMNS = [
     "confidence",
 ]
 FILE_COLUMN_CANDIDATES = ("file_name", "file_id", "filename", "file", "image")
+# Truth value meaning "two or more bubbles marked; which ones is not recorded"
+MULTI_MARK = "*"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".pdf"}
 
 
@@ -137,13 +139,65 @@ def _normalize_cell(value):
     return str(value).strip()
 
 
-def load_truth(path) -> Dict[str, Dict[str, str]]:
+def _file_key(record):
+    """The record's file-name column: file_name, "File Name", Image, ..."""
+    normalized = {
+        "".join(ch for ch in str(key).lower() if ch.isalnum()): key for key in record
+    }
+    for candidate in FILE_COLUMN_CANDIDATES:
+        key = normalized.get(candidate.replace("_", ""))
+        if key is not None:
+            return key
+    return None
+
+
+def _read_xlsx(path):
+    try:
+        import openpyxl
+    except ImportError as error:  # pragma: no cover - depends on install
+        raise ValueError(f"{path}: reading .xlsx needs openpyxl") from error
+    sheet = openpyxl.load_workbook(path, read_only=True, data_only=True).active
+    rows = sheet.iter_rows(values_only=True)
+    header = [str(h).strip() if h is not None else "" for h in next(rows, [])]
+    records = []
+    for row in rows:
+        if not row or row[0] is None or not str(row[0]).strip():
+            continue
+        records.append(
+            {
+                key: ("" if value is None else str(value))
+                for key, value in zip(header, row)
+                if key
+            }
+        )
+    return records
+
+
+def expand_answer_string(value, prefix="q", count=None):
+    """One answer string ("CB A*D") -> {q1: "C", q2: "B", q3: "", q4: "A", q5: "*", ...}.
+
+    A space is a blank question and "*" a multi-marked one; questions past the
+    end of the string are blank when `count` is larger than the string.
+    """
+    value = "" if value is None else str(value)
+    count = len(value) if count is None else count
+    return {
+        f"{prefix}{index + 1}": (value[index].strip() if index < len(value) else "")
+        for index in range(count)
+    }
+
+
+def load_truth(path, answer_columns=None) -> Dict[str, Dict[str, str]]:
     """Ground truth as {file_name: {column: value}}.
 
-    CSV: a file-name column (file_name / file_id / filename / file / image) and one
-    column per output column, field label or zone name. JSON: either
-    {file_name: {column: value}}, a list of records with a file-name key, or the
-    synthetic truth format {file_name: {"answers": {...}, "zones": {...}}}.
+    CSV / XLSX: a file-name column (file_name / file_id / filename / file / image,
+    any case and spacing, e.g. "File Name") and one column per output column,
+    field label or zone name. JSON: either {file_name: {column: value}}, a list of
+    records with a file-name key, or the synthetic truth format
+    {file_name: {"answers": {...}, "zones": {...}}}.
+    `answer_columns` maps a column holding one character per question (e.g.
+    {"ANS": "q"}, optionally {"ANS": ("q", 120)}) to per-question columns, see
+    expand_answer_string. A value of "*" means multi-marked (MULTI_MARK).
     Keys are matched on the full name and on the bare file name (see lookup_truth).
     """
     path = Path(path)
@@ -157,12 +211,15 @@ def load_truth(path) -> Dict[str, Dict[str, str]]:
                 record = dict(values)
                 record.setdefault("file_name", name)
                 records.append(record)
+    elif path.suffix.lower() in (".xlsx", ".xlsm"):
+        records = _read_xlsx(path)
     else:
         with open(path, newline="", encoding="utf-8-sig") as handle:
             records = list(csv.DictReader(handle))
+    answer_columns = answer_columns or {}
     truth = {}
     for record in records:
-        file_key = next((k for k in FILE_COLUMN_CANDIDATES if k in record), None)
+        file_key = _file_key(record)
         if file_key is None:
             raise ValueError(
                 f"{path}: every truth record needs one of the columns {FILE_COLUMN_CANDIDATES}"
@@ -174,10 +231,15 @@ def load_truth(path) -> Dict[str, Dict[str, str]]:
             values.update(record.get("answers") or {})
             values.update(record.get("zones") or {})
         else:
-            values.update(
-                {k: v for k, v in record.items() if k not in FILE_COLUMN_CANDIDATES}
-            )
-        truth[str(record[file_key])] = {
+            values.update({k: v for k, v in record.items() if k != file_key})
+        for column, spec in answer_columns.items():
+            if column not in values:
+                continue
+            prefix, count = spec if isinstance(spec, (tuple, list)) else (spec, None)
+            raw = values.pop(column)
+            raw = "" if raw is None else str(raw)
+            values.update(expand_answer_string(raw, prefix, count))
+        truth[str(record[file_key]).strip()] = {
             str(k): _normalize_cell(v) for k, v in values.items()
         }
     return truth
@@ -229,6 +291,9 @@ def bubble_samples_from_result(
         if fields is not None and label not in fields:
             continue
         if label not in truth_values:
+            continue
+        if truth_values[label] == MULTI_MARK:
+            # Which bubbles are marked is not recorded
             continue
         bubbles = details.get("bubbles") or []
         marked = split_field_value(truth_values[label], [b["value"] for b in bubbles])
