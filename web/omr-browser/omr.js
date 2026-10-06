@@ -2124,7 +2124,8 @@
     }
     CropPage.prototype.apply = function (image, ctx) {
       var blurred = normalizeMinMax(gaussianBlur(image, 3, 3, 0));
-      var quad = findPageQuad(blurred, this.morphKernel);
+      // Fixed thresholds miss white-on-white or dark sheets; retry adaptively
+      var quad = findPageQuad(blurred, this.morphKernel) || findPageQuadAdaptive(blurred, this.morphKernel);
       if (!quad) {
         ctx.registration = { method: "crop_page", error: "Paper boundary not found" };
         return null;
@@ -2193,6 +2194,11 @@
       return makeImage(w, h, out);
     }
     // CropPage.find_page: truncate, close, Canny, then the largest rectangular hull
+    // CropPage.min_page_area: the page covers a fixed share of the frame at any size
+    var DEFAULT_PROCESSING_AREA = 666 * 820;
+    function minPageArea(image) {
+      return (MIN_PAGE_AREA_THRESHOLD * (image.width * image.height)) / DEFAULT_PROCESSING_AREA;
+    }
     function findPageQuad(image, morphKernel) {
       var norm = normalizeMinMax(image);
       var lut = new Uint8Array(256);
@@ -2200,37 +2206,66 @@
       var trunc = normalizeMinMax(applyLut(norm, lut));
       var closed = morphRect(morphRect(trunc, morphKernel[0], morphKernel[1], true), morphKernel[0], morphKernel[1], false);
       var edge = canny(closed, 185, 55);
-      var cc = connectedComponents(edge), runs = cc.runs, comps = cc.components;
-      if (!comps.length) return null;
-      // per component: extreme points of each row -> convex hull
-      var rowsByComp = {};
-      for (var r = 0; r < runs.count; r++) {
-        var lab = runs.label[r], yy = runs.y[r];
-        var e = rowsByComp[lab] || (rowsByComp[lab] = {});
-        var cur = e[yy];
-        if (!cur) e[yy] = [runs.x0[r], runs.x1[r]];
-        else {
-          if (runs.x0[r] < cur[0]) cur[0] = runs.x0[r];
-          if (runs.x1[r] > cur[1]) cur[1] = runs.x1[r];
+      return pageQuadFromEdges([edge], minPageArea(image), 5);
+    }
+    // CropPage.find_page_adaptive: Otsu + auto-Canny edges of the binary and blurred page
+    function findPageQuadAdaptive(image, morphKernel) {
+      var blurred = gaussianBlur(image, 5, 5, 0), t = otsuValue(blurred);
+      var binary = thresholdBinary(blurred, t, false);
+      var closed = morphRect(morphRect(binary, morphKernel[0], morphKernel[1], true), morphKernel[0], morphKernel[1], false);
+      return pageQuadFromEdges([autoCanny(closed), autoCanny(blurred)], minPageArea(image), 10);
+    }
+    // ImageUtils.auto_canny (sigma 0.93 around the median)
+    function autoCanny(img) {
+      var hist = new Uint32Array(256), d = img.data, n = d.length, i;
+      for (i = 0; i < n; i++) hist[d[i]]++;
+      function nth(k) {
+        for (var v = 0, c = 0; v < 256; v++) {
+          c += hist[v];
+          if (c > k) return v;
         }
+        return 255;
       }
+      var median = n % 2 ? nth((n - 1) / 2) : (nth(n / 2 - 1) + nth(n / 2)) / 2;
+      var lower = Math.trunc(Math.max(0, (1.0 - 0.93) * median)), upper = Math.trunc(Math.min(255, (1.0 + 0.93) * median));
+      return canny(img, lower, upper);
+    }
+    // Convex hulls of the edge contours, largest first; the first 4-corner,
+    // near-rectangular approximation among the `limit` largest is the page
+    function pageQuadFromEdges(edges, minArea, limit) {
       var hulls = [];
-      comps.forEach(function (comp) {
-        if (comp.w * comp.h < MIN_PAGE_AREA_THRESHOLD) return;
-        var rows = rowsByComp[comp.label], pts = [];
-        Object.keys(rows).forEach(function (k) {
-          var yk = Number(k);
-          pts.push([rows[k][0], yk]);
-          if (rows[k][1] !== rows[k][0]) pts.push([rows[k][1], yk]);
+      edges.forEach(function (edge) {
+        var cc = connectedComponents(edge), runs = cc.runs, comps = cc.components;
+        // per component: extreme points of each row -> convex hull
+        var rowsByComp = {};
+        for (var r = 0; r < runs.count; r++) {
+          var lab = runs.label[r], yy = runs.y[r];
+          var e = rowsByComp[lab] || (rowsByComp[lab] = {});
+          var cur = e[yy];
+          if (!cur) e[yy] = [runs.x0[r], runs.x1[r]];
+          else {
+            if (runs.x0[r] < cur[0]) cur[0] = runs.x0[r];
+            if (runs.x1[r] > cur[1]) cur[1] = runs.x1[r];
+          }
+        }
+        comps.forEach(function (comp) {
+          // a hull is never larger than its bounding box: skip what can't qualify
+          if (comp.w * comp.h < minArea) return;
+          var rows = rowsByComp[comp.label], pts = [];
+          Object.keys(rows).forEach(function (k) {
+            var yk = Number(k);
+            pts.push([rows[k][0], yk]);
+            if (rows[k][1] !== rows[k][0]) pts.push([rows[k][1], yk]);
+          });
+          var hull = convexHull(pts);
+          if (hull.length >= 3) hulls.push({ hull: hull, area: polygonArea(hull) });
         });
-        var hull = convexHull(pts);
-        if (hull.length >= 3) hulls.push({ hull: hull, area: polygonArea(hull) });
       });
       hulls.sort(function (a, b) {
         return b.area - a.area;
       });
-      for (var hi = 0; hi < hulls.length && hi < 5; hi++) {
-        if (hulls[hi].area < MIN_PAGE_AREA_THRESHOLD) continue;
+      for (var hi = 0; hi < hulls.length && hi < limit; hi++) {
+        if (hulls[hi].area < minArea) continue;
         var hull2 = hulls[hi].hull;
         var approx = approxPolyClosed(hull2, APPROX_POLY_EPSILON_FACTOR * perimeter(hull2));
         if (approx.length !== 4) continue;

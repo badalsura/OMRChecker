@@ -27,10 +27,10 @@ async function maybeEnableBarcodes() {
 // Scenarios after the first five need fixtures from the current make_fixtures.py.
 // The built-in barcode scenarios run before "zones" switches zxing-wasm on (their
 // zones also name engines: ["builtin"], as the Python fixtures do).
-const SCENARIOS = ["clean", "scan", "phone", "croppage", "fixed", "rectify", "color_red", "color_lab", "rules", "barcodes", "zones"];
+const SCENARIOS = ["clean", "scan", "phone", "croppage", "croppage_light", "fixed", "rectify", "color_red", "color_lab", "rules", "barcodes", "zones"];
 // Every output of these must match Python exactly: zones (value, flags, engine),
 // checks, validation, the response row and the whole review list
-const EXACT = ["fixed", "rectify", "color_red", "color_lab", "rules", "barcodes"];
+const EXACT = ["croppage_light", "fixed", "rectify", "color_red", "color_lab", "rules", "barcodes"];
 
 // Before any test switches zxing-wasm on: the default engine chain falls back to the
 // built-in decoder and flags the read like Python's barcode.py does

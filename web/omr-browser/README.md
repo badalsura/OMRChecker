@@ -120,7 +120,7 @@ if (result.status !== "ok") {
 | `review_params.min_marked_bubbles` | Same sheet-level `too_few_marks` review item |
 | `validate`, `checks` (normalizers, `onMissing`, `onConflict`, `priority`, `skipInvalid`, `skipFlagged`, `absorbSourceReview`), barcode `fallbackZone`, lazy zones | Port of `src/rules`: same `checks` / `validation` results, output columns and review items. A lazy fallback zone is read only when a check needs it |
 | `TimingMarkAlignment` (orientation 0/90/180/270, residual check, `nonRigid` TPS) | Same algorithm, matching OpenCV's primitives |
-| `CropPage` | Same algorithm (truncate, close, Canny, convex hulls, approxPoly, cosine check) |
+| `CropPage` | Same algorithm (truncate, close, Canny, convex hulls, approxPoly, cosine check), including the Otsu + auto-Canny retry for pages the fixed search misses |
 | `CropOnMarkers` | Same scale search and quadrant matching. NCC runs coarse-to-fine instead of exhaustively (found the same corners on every repository sample). Needs the marker image via `assets` or `assetsBaseUrl` |
 | `Levels`, `GaussianBlur`, `MedianBlur` | Supported |
 | `FeatureBasedAlignment`, `EccAlignment` | **Not supported**. `loadTemplate` rejects with `unsupported_preprocessor`; process those templates on the server |
@@ -168,6 +168,7 @@ Measured with 25 sheets per scenario (50 for phone, a third of them rotated 180Â
 | scan (timing marks) | 1150 | 100% | 100% | 0 | 125 |
 | phone (timing marks, 180Â° flips) | 2300 | 100% | 100% | 0 | 118 |
 | CropPage | 1150 | 100% | 100% | 0 | 79 |
+| CropPage on light backgrounds (16 of 25 pages found by the adaptive retry) | 1150 | 100% | 100% | 0 | 113 |
 | fixed threshold | 1150 | 100% | 100% | 0 | 135 |
 | rectifyOnBorder (local block misprints; every 4th sheet borderless, `rectify_failed`) | 1150 | 100% | 100% | 0 | 185 |
 | colour: pink print, `red` at strength 0.8, `too_few_marks`, zone with `grey` dropout | 1150 + 25 zones | 100% (zones equal) | 100% | 0 | 181 |

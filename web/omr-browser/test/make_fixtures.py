@@ -79,6 +79,7 @@ def scenario(
     render=None,
     after_render=None,
     border=0,
+    capture=None,
 ):
     """
     Render n sheets, run the Python engine, write the fixture folder.
@@ -87,7 +88,7 @@ def scenario(
     ("fieldBlocks" entries update the blocks); config: config.json contents;
     render(index, rng) -> extra render_sheet kwargs (plus "border", "zone_values");
     after_render(index, image, truth) edits the rendered sheet; border: printed
-    block borders (px).
+    block borders (px); capture(index, image, rng) replaces the preset's augment.
     """
     spec = default_spec(questions=40, with_zones=False)
     spec.block_border = border
@@ -128,7 +129,9 @@ def scenario(
         spec.block_border = border
         if after_render:
             image = after_render(index, image, truth)
-        if options:
+        if capture:
+            image = capture(index, image, rng)
+        elif options:
             flip = bool(flip_every) and index % flip_every == flip_every - 1
             image, _ = augment(image, rng, flip_180=flip, **options)
         file_id = f"{name}_{index:03d}"
@@ -188,6 +191,20 @@ def erase_first_barcode(index, image, truth):
         image[80:240, 680:1200] = 255
         truth["zones"]["sheet_id"] = truth["zones"]["sheet_id_copy"]
     return image
+
+
+def light_background(index, image, rng):
+    """The page on a light desk: CropPage's fixed search fails, its adaptive retry works."""
+    h, w = image.shape[:2]
+    pad = 120
+    src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    dst = src + pad + np.float32([[rng.uniform(-30, 30), rng.uniform(-30, 30)] for _ in range(4)])
+    background = [150, 190, 215][index % 3]
+    canvas = cv2.warpPerspective(
+        image, cv2.getPerspectiveTransform(src, dst), (w + 2 * pad, h + 2 * pad), borderValue=background
+    )
+    noise = np.random.default_rng(index).normal(0, 3, canvas.shape)
+    return np.clip(canvas + noise, 0, 255).astype(np.uint8)
 
 
 def rectify_sheet(index, rng):
@@ -292,6 +309,13 @@ SCENARIOS = {
     "croppage": dict(
         preset="scan",
         seed=15,
+        pre_processors=[{"name": "CropPage", "options": {"morphKernel": [10, 10]}}],
+    ),
+    # Light backgrounds: two sheets in three need CropPage's adaptive page search
+    "croppage_light": dict(
+        preset="clean",
+        seed=16,
+        capture=light_background,
         pre_processors=[{"name": "CropPage", "options": {"morphKernel": [10, 10]}}],
     ),
     # Colour sheets: pink print dropped by the red channel (partial strength),
