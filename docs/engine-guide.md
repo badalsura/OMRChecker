@@ -303,6 +303,129 @@ explicit checks also read it only as a fallback.
 template)` re-runs the rules on a stored result. It updates `responses`,
 `checks`, `validation`, `review` and `status`.
 
+## Colour sheets: colour dropout
+
+Forms are often printed in a light colour (pink, red, orange, light blue) so
+that a scanner can remove the print and keep only the marks. `colorDropout`
+in `template.json` says how a colour scan becomes the grey image that is read.
+Without the key, sheets are converted to plain grey and decoded in grayscale,
+as before.
+
+```json
+"colorDropout": {"mode": "red", "strength": 1.0}
+"colorDropout": {"mode": "color", "color": "#E8618C", "tolerance": 60}
+```
+
+| mode | effect |
+|---|---|
+| `grey` | plain luminance (the default) |
+| `red` | red channel: red, pink and orange print turns light; black, pencil and blue pen stay dark |
+| `green`, `blue` | that channel (`blue` removes blue and cyan print) |
+| `max` | brightest of B, G, R: every saturated colour turns light, black and pencil stay dark. Blue pen turns light too |
+| `color` | colours within `tolerance` (CIE Lab distance, lightness half weighted) of `color` turn white, with a soft falloff up to 1.5 × tolerance |
+
+`strength` (0–1) blends plain grey (0) with the dropout result (1). A string
+works as shorthand for a mode, for example `"colorDropout": "red"`.
+
+- **Per zone.** A zone can read a differently processed image:
+  `"options": {"colorDropout": "grey"}` (or any setting above). Use it for a
+  barcode or text printed in the dropout colour. The extra image is computed
+  only when some zone needs it, and it follows the page through every
+  registration step.
+- **Loading.** Files are decoded in colour only when the template has a
+  non-grey dropout (`engine.needs_color`). Otherwise the fast grayscale decode
+  is used. The CLI, `src.batch`, API scans and jobs, `OMREngine.scan_path` and
+  PDFs all follow this. `OMREngine.scan(image)` accepts a BGR image, which goes
+  through the dropout, or a grey image, which is used as-is.
+- **Regrading.** `OMREngine(path, template_overrides={"colorDropout": "grey"})`
+  reads with other settings without changing the template files.
+  `template_overrides` replaces top-level template keys, and `None` removes one.
+  `engine.set_color_dropout(spec)` changes a live engine.
+- **Pens the same colour as the print** disappear with it. Set
+  `review_params.min_marked_bubbles` to flag sheets that have fewer marked
+  bubbles than expected. They get a sheet-level review item
+  `{"kind": "sheet", "name": "too_few_marks", "flags": ["too_few_marks"]}`.
+  The default, 0, turns this off.
+- **Cost.** On a 1240 × 1754 page, `red`/`green`/`blue` take about 2 ms,
+  `max` about 5 ms and `color` about 20 ms. A colour decode also costs a few
+  ms more than a grayscale one.
+
+### Colours panel and tools API
+
+In the template editor, **Colours…** opens a panel. Load a sample sheet to:
+- see its main colours with their hex codes and share of the page;
+- click the sheet to pick a colour (eyedropper);
+- adjust mode, tolerance and strength while comparing before and after;
+- write the template's `colorDropout`.
+
+Each print colour comes with a suggested setting that removes it while black,
+pencil and blue pens stay dark.
+
+| Endpoint | Input | Returns |
+|---|---|---|
+| `POST /tools/colors` | multipart `file` (image or PDF), optional `template_id`, `k` | `{colors: [{hex, share, label_guess, suggestion}], paper_share, current}` |
+| `POST /tools/dropout-suggest` | JSON `{target: "#RRGGBB", keep: [...]}` | the best settings and how dark each colour ends up |
+| `POST /tools/dropout-preview` | `file` and `settings` (colorDropout JSON) | a PNG of what the reader sees |
+
+From Python, use `src.color.extract_palette(image)`,
+`suggest_dropout("#E8618C")` and `apply_dropout(image, settings)`.
+
+## Fixed threshold
+
+By default each sheet gets its own page and per-row thresholds. For sheets
+with stable printing and scanning, a fixed line is simpler and predictable:
+
+```json
+"threshold_params": {"mode": "fixed", "fixed_threshold": 120, "fixed_min_fill_ratio": 0.12}
+```
+
+A bubble is marked when at least `fixed_min_fill_ratio` of its interior is
+darker than `fixed_threshold`. The adaptive threshold search is skipped, and
+`ambiguous_threshold` is never raised. A bubble's confidence is its distance
+from the fill line: `|fill - min| / min(min, 1 - min)`, clipped to 1. The
+result's `thresholds` gets `"mode": "fixed"`. The editor's Page panel has the
+same switch.
+
+## Fitting blocks to a printed border
+
+When a form prints a rectangle around a block of bubbles, the engine can use
+it to correct local misplacement that full-page alignment leaves behind, such
+as paper curl, a locally stretched print or a bent page in a phone photo.
+
+```json
+"fieldBlocks": {
+  "MCQ_1": {"...": "...", "rectifyOnBorder": true, "borderPadding": 8}
+}
+```
+
+Turn it on for every block with `alignment_params.rectify_on_border: true`. A
+block's own `rectifyOnBorder` overrides that.
+
+After page alignment, the engine looks for the block's four border lines
+within `alignment_params.rectify_search_px` (default 20) of where they are
+expected. It fits a quadrilateral and maps the block's bubbles onto it.
+`borderPadding` is the gap in pixels between the bubbles and the border, either
+a number or `[x, y]`. Without it, the gap is estimated on each sheet. That
+corrects shift, rotation and skew, but not a uniform scale error.
+
+The engine keeps the page alignment for the block, and adds the field flag
+`rectify_failed`, when any of these happens:
+- the border isn't found;
+- a corner would move more than the search margin;
+- the shape isn't close to a rectangle;
+- the printed bubbles fit worse at the corrected positions.
+
+`rectify_failed` is not a review flag by default; add it to
+`review_params.review_flags` to send those fields to review. When it is on,
+rectification takes precedence over `block_snap_radius` for that block. It
+costs about 5 ms per block and nothing when off.
+
+The synthetic renderer can draw block borders (`SheetSpec.block_border`) and
+apply local warps (`render_sheet(..., block_warps={"MCQ_1": (dx, dy, angle)})`)
+for testing. It can also print the form and the marks in colour (`print_color`,
+`ink_color`). The benchmark exposes these as `--print-color`, `--ink-color` and
+`--dropout`.
+
 ## Library and batch
 
 ```python
