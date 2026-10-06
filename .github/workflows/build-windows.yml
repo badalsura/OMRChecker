@@ -1,0 +1,83 @@
+name: Build Windows portable exe
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "onedir | onefile | both"
+        default: both
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    # Python 3.8 is the newest Python that runs on Windows 7; an exe built with it
+    # (and PyInstaller 5.13) starts on Windows 7 SP1 through 11.
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      OMR_BUILD_MODE: ${{ github.event.inputs.mode || 'both' }}
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8.10"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: packaging/requirements-win7.txt
+
+      - name: Verify Windows cp38 wheels exist for every pin
+        run: python packaging/verify_wheels.py
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade "pip<25" wheel
+          python -m pip install -r packaging/requirements-win7.txt
+
+      - name: Engine smoke test from source
+        run: python packaging/omr_desktop.py --selftest
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm --clean packaging/omr.spec
+
+      - name: Smoke-test the onedir exe
+        if: env.OMR_BUILD_MODE != 'onefile'
+        shell: pwsh
+        run: |
+          dist\OMRChecker\OMRChecker.exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          dist\OMRChecker\OMRChecker.exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Headless bulk run over the bundled sample
+          $sample = "samples\sample1"
+          dist\OMRChecker\OMRChecker.exe --bulk $sample --template "$sample\template.json" --out build\bulk_out --workers 2
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (!(Test-Path build\bulk_out\results.jsonl)) { exit 1 }
+          # Server mode: start, query /health, stop
+          $p = Start-Process -FilePath dist\OMRChecker\OMRChecker.exe -ArgumentList "--no-browser","--no-window","--port","8799" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 1
+            try { $r = Invoke-RestMethod http://127.0.0.1:8799/health; if ($r.status -eq "ok") { $ok = $true; break } } catch {}
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { exit 1 }
+          Compress-Archive -Force -Path dist\OMRChecker -DestinationPath dist\OMRChecker-portable-win64.zip
+
+      - name: Smoke-test the onefile exe
+        if: env.OMR_BUILD_MODE != 'onedir'
+        shell: pwsh
+        run: |
+          dist\OMRChecker-onefile.exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OMRChecker-windows-portable
+          path: |
+            dist/OMRChecker-portable-win64.zip
+            dist/OMRChecker-onefile.exe
+          if-no-files-found: error

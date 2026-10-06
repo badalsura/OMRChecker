@@ -23,6 +23,33 @@ CONFIG_DEFAULTS = DotMap(
             "max_steps": 20,
             "stride": 1,
             "thickness": 3,
+            # Search radius (px) for snapping each field block onto its printed
+            # bubbles in both directions after registration; 0 disables it
+            "block_snap_radius": 0,
+        },
+        "review_params": {
+            # Intensity distance from the threshold that counts as fully confident
+            "confidence_margin": 20,
+            # Fields whose weakest bubble is below this confidence get flagged
+            "min_confidence": 0.35,
+            # A marked bubble with less of its interior filled than this is suspicious
+            "min_marked_fill_ratio": 0.25,
+            # An unmarked bubble with more of its interior filled than this is suspicious
+            "max_unmarked_fill_ratio": 0.6,
+            # Flags that send a field to the manual review queue
+            "review_flags": [
+                "multi_marked",
+                "ambiguous_threshold",
+                "low_confidence",
+                "weak_mark",
+                "possible_missed_mark",
+                "model_disagrees",
+            ],
+        },
+        "ml_params": {
+            # ONNX crop classifiers (see src/ml); relative paths resolve from the template folder
+            "bubble_model_path": None,
+            "icr_model_path": None,
         },
         "pdf_params": {
             "pdf_dpi": "auto",

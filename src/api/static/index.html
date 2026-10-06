@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OMR Station</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%232f6fdf'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="dot"></span>OMR Station</div>
+    <nav class="tabs" role="tablist">
+      <button data-tab="scan" class="active">Scan</button>
+      <button data-tab="review">Review queue <span id="review-badge" class="badge hidden"></span></button>
+      <button data-tab="jobs">Jobs</button>
+      <button data-tab="templates">Templates</button>
+    </nav>
+    <div class="topbar-right">
+      <button id="api-key-btn" class="ghost small" title="Set the API key">API key</button>
+      <a href="/docs" target="_blank" class="ghost small">API docs</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- SCAN -->
+    <section id="tab-scan" class="tab active">
+      <div class="scan-layout">
+        <div class="panel scan-left">
+          <label class="field">Template
+            <select id="scan-template" class="template-select"></select>
+          </label>
+          <div id="scan-drop" class="dropzone" tabindex="0">
+            <strong>Drop sheet images or PDFs here</strong>
+            <span>or click to choose files</span>
+            <input id="scan-files" type="file" multiple accept="image/*,.pdf" hidden>
+          </div>
+          <div class="stats" id="scan-stats"></div>
+          <div class="row gap">
+            <button id="scan-export" class="small ghost">Export CSV</button>
+            <button id="scan-clear" class="small ghost">Clear list</button>
+          </div>
+          <ul id="scan-list" class="sheet-list"></ul>
+        </div>
+        <div class="panel scan-detail" id="scan-detail">
+          <div class="empty-state">Pick a template, drop sheets, then select a sheet to see its results.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REVIEW -->
+    <section id="tab-review" class="tab">
+      <div class="panel review-filters row gap wrap">
+        <label class="field inline">Template <select id="rv-template" class="template-select" data-allow-all="1"></select></label>
+        <label class="field inline">Field / zone <select id="rv-name"><option value="">All</option></select></label>
+        <label class="field inline">Kind
+          <select id="rv-kind"><option value="">All</option><option value="field">Bubble fields</option><option value="zone">Zones</option></select>
+        </label>
+        <label class="field inline">Job <input id="rv-job" placeholder="any" size="12"></label>
+        <label class="field inline">Scan <input id="rv-scan" placeholder="any" size="12"></label>
+        <label class="field inline"><input type="checkbox" id="rv-wide"> Wide context</label>
+        <button id="rv-load" class="primary">Load queue</button>
+        <span class="spacer"></span>
+        <span id="rv-progress" class="muted"></span>
+      </div>
+      <div class="review-main panel" id="rv-main">
+        <div class="empty-state">Load the queue to start reviewing.</div>
+      </div>
+      <div class="keys muted">
+        <kbd>Enter</kbd> accept / save correction ·
+        type to replace the value (empty = blank) ·
+        <kbd>Tab</kbd> skip ·
+        <kbd>Shift</kbd>+<kbd>Tab</kbd> previous ·
+        <kbd>Esc</kbd> reset ·
+        <kbd>Alt</kbd>+<kbd>1-9</kbd> toggle option
+      </div>
+    </section>
+
+    <!-- JOBS -->
+    <section id="tab-jobs" class="tab">
+      <div class="panel">
+        <h2>New bulk job</h2>
+        <div class="grid-form">
+          <label class="field">Template <select id="job-template" class="template-select"></select></label>
+          <label class="field">Name <input id="job-name" placeholder="optional"></label>
+          <label class="field">Keep images
+            <select id="job-images">
+              <option value="review">Only sheets that need review</option>
+              <option value="all">All sheets</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+          <label class="field">Worker processes <input id="job-workers" type="number" min="1" placeholder="auto"></label>
+        </div>
+        <div class="row gap wrap source-row">
+          <div class="source-box">
+            <strong>Upload files</strong>
+            <div class="row gap">
+              <input id="job-files" type="file" multiple accept="image/*,.pdf">
+              <label class="small muted"><input id="job-dir-mode" type="checkbox"> pick a folder</label>
+            </div>
+          </div>
+          <div class="source-box">
+            <strong>…or a folder on the server</strong>
+            <input id="job-folder" placeholder="/scans/batch-01" size="40">
+          </div>
+        </div>
+        <div class="row gap">
+          <button id="job-start" class="primary">Start job</button>
+          <span id="job-upload-status" class="muted"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="row"><h2>Jobs</h2><span class="spacer"></span><button id="jobs-refresh" class="small ghost">Refresh</button></div>
+        <table class="table" id="jobs-table">
+          <thead><tr><th>Job</th><th>Template</th><th>State</th><th>Progress</th><th>OK</th><th>Review</th><th>Error</th><th>Sheets/s</th><th>ETA</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TEMPLATES -->
+    <section id="tab-templates" class="tab">
+      <div id="templates-home">
+        <div class="cards">
+          <div class="panel">
+            <h2>Upload a template</h2>
+            <p class="muted">template.json plus its assets (marker / reference images, config.json, evaluation.json), or one .zip of the folder.</p>
+            <label class="field">Name <input id="tpl-name" placeholder="e.g. Final exam 2026"></label>
+            <label class="field">Files <input id="tpl-files" type="file" multiple></label>
+            <button id="tpl-upload" class="primary">Upload</button>
+            <div id="tpl-upload-errors"></div>
+          </div>
+          <div class="panel">
+            <h2>Auto-generate from samples</h2>
+            <p class="muted">Upload ~20 filled sample sheets and, optionally, a labels CSV (a <code>file</code> column plus one column per field). The draft opens in the editor with the items that need verification highlighted.</p>
+            <label class="field">Name <input id="gen-name" placeholder="e.g. Admission form"></label>
+            <label class="field">Sample sheets <input id="gen-files" type="file" multiple accept="image/*,.pdf"></label>
+            <label class="field">Labels CSV <input id="gen-labels" type="file" accept=".csv,text/csv"></label>
+            <details><summary class="muted">Options (JSON)</summary><textarea id="gen-options" rows="3" placeholder='{"bubble_size": [30, 30]}'></textarea></details>
+            <button id="gen-run" class="primary">Generate draft</button>
+            <span id="gen-status" class="muted"></span>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="row"><h2>Templates</h2><span class="spacer"></span><button id="tpl-refresh" class="small ghost">Refresh</button></div>
+          <table class="table" id="tpl-table">
+            <thead><tr><th>Name</th><th>Id</th><th>Status</th><th>Blocks</th><th>Zones</th><th>Scoring</th><th>Updated</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="editor" class="hidden"></div>
+    </section>
+  </main>
+
+  <div id="toasts"></div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

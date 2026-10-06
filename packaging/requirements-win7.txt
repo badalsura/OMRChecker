@@ -1,0 +1,89 @@
+# Pinned dependencies for the portable Windows build (Windows 7 SP1 and later).
+#
+# Windows 7 runs at most CPython 3.8 (3.8.10 is the last python.org installer
+# that supports it), so every pin below is the newest release that still ships
+# a cp38 win_amd64 wheel (or a pure-Python / abi3 wheel accepting 3.8).
+# Verified against the PyPI JSON API with packaging/verify_wheels.py.
+#
+# Build with:  py -3.8 -m pip install -r packaging/requirements-win7.txt
+
+# --- core engine -------------------------------------------------------------
+numpy==1.24.4                    # last numpy for 3.8 (cp38-win_amd64)
+# cp37-abi3-win_amd64; on Python < 3.9 it requires numpy<2. Same major version as
+# the dev/Linux build, so results match (4.10.0.84 gave slightly different ICR
+# segmentation/confidences in the test suite). If cv2 fails to import on a
+# particular Windows 7 machine, 4.10.0.84 is the fallback pin.
+opencv-python-headless==5.0.0.93
+zxing-cpp==2.2.0                 # last release with cp38 wheels; Code 128, QR, DataMatrix, PDF417 ...
+PyMuPDF==1.24.11                 # cp38-abi3-win_amd64 (PDF input)
+pandas==2.0.3                    # last pandas for 3.8
+jsonschema==4.23.0
+rich==13.9.4
+dotmap==1.3.30
+deepmerge==1.1.1
+screeninfo==0.8.1
+matplotlib==3.7.5                # last matplotlib for 3.8
+Pillow==10.4.0                   # last Pillow for 3.8
+pytesseract==0.3.13              # OCR via a bundled tesseract.exe (tesserocr has no Windows wheels)
+
+# --- API / web GUI -----------------------------------------------------------
+fastapi==0.115.6
+starlette==0.41.3
+pydantic==2.10.6                 # last pydantic for 3.8
+pydantic-core==2.27.2            # cp38-win_amd64
+uvicorn==0.33.0                  # last uvicorn for 3.8
+h11==0.14.0
+python-multipart==0.0.20
+typing-extensions==4.12.2
+anyio==4.5.2
+sniffio==1.3.1
+idna==3.10
+click==8.1.8
+colorama==0.4.6
+
+# --- optional: learned bubble / ICR models -----------------------------------
+# ONNX Runtime states "supports Windows 10 and above, only". 1.19.2 is its last
+# cp38 wheel; on Windows 7 it may import only after KB3068708/KB3080149 (and the
+# KB2999226 UCRT update). The engine treats it as optional: without it bubbles
+# use classical thresholding and ICR zones go to manual review.
+onnxruntime==1.19.2 ; python_version >= "3.8"
+
+# --- build -------------------------------------------------------------------
+pyinstaller==5.13.2              # last 5.x; Python 3.8 + Win7-compatible bootloader
+pyinstaller-hooks-contrib==2024.11
+
+# --- transitive pins (resolved for CPython 3.8; keeps Windows builds reproducible)
+altgraph==0.17.5
+annotated-types==0.7.0
+attrs==25.3.0
+coloredlogs==15.0.1
+contourpy==1.1.1
+cycler==0.12.1
+flatbuffers==25.12.19
+fonttools==4.57.0
+humanfriendly==10.0
+importlib-metadata==8.5.0
+importlib-resources==6.4.5
+jsonschema-specifications==2023.12.1
+kiwisolver==1.4.7
+markdown-it-py==3.0.0
+mdurl==0.1.2
+mpmath==1.3.0
+packaging==26.2
+pkgutil-resolve-name==1.3.10
+protobuf==5.29.6
+pygments==2.19.2
+pyparsing==3.1.4
+python-dateutil==2.9.0.post0
+pytz==2026.5
+referencing==0.35.1
+rpds-py==0.20.1
+setuptools==75.3.4
+six==1.17.0
+sympy==1.13.3
+tzdata==2026.5
+zipp==3.20.2
+# Windows-only dependencies of pyinstaller / humanfriendly
+pefile==2023.2.7 ; sys_platform == "win32"
+pywin32-ctypes==0.2.3 ; sys_platform == "win32"
+pyreadline3==3.5.4 ; sys_platform == "win32"

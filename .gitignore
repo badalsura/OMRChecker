@@ -12,3 +12,12 @@ outputs/*
 **/__pycache__
 venv/
 OMRChecker.wiki/
+.coverage
+
+# Trained models and exported datasets stay out of git
+models/
+datasets/
+*.onnx
+omr_data/
+
+web/omr-browser/node_modules/

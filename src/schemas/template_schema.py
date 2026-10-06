@@ -27,6 +27,73 @@ zero_to_one_number = {
     "maximum": 1,
 }
 
+TIMING_MARK_TRACK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["marks"],
+    "properties": {
+        # Expected centres of the marks along this track, in template (page) pixels
+        "marks": {
+            "type": "array",
+            "items": two_positive_numbers,
+            "minItems": 2,
+        },
+    },
+}
+
+TIMING_MARK_OPTIONS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["tracks", "markDimensions"],
+    "properties": {
+        "tracks": {
+            "type": "object",
+            "patternProperties": {"^.*$": TIMING_MARK_TRACK_SCHEMA},
+        },
+        # [width, height] of a single timing mark in template pixels
+        "markDimensions": two_positive_numbers,
+        # Allowed relative deviation in mark size before a blob is rejected
+        "sizeTolerance": zero_to_one_number,
+        # How far (template px) a detected mark may sit from its expected position
+        "searchRadius": positive_number,
+        "minMatchedMarks": positive_integer,
+        # Mean reprojection error (template px) above which the sheet is rejected
+        "maxResidual": positive_number,
+        # Apply a thin-plate-spline refinement on top of the homography
+        "nonRigid": {"type": "boolean"},
+        # Try 90/180/270 degree rotations when the sheet is fed in wrongly
+        "detectOrientation": {"type": "boolean"},
+    },
+}
+
+ZONE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["type", "origin", "dimensions"],
+    "properties": {
+        "type": {"type": "string", "enum": ["barcode", "qrcode", "ocr", "icr"]},
+        "origin": two_positive_integers,
+        "dimensions": two_positive_integers,
+        "options": {
+            "type": "object",
+            "properties": {
+                # Barcode / QR: restrict accepted symbologies, e.g. ["Code128", "QRCode"]
+                "formats": ARRAY_OF_STRINGS,
+                # OCR / ICR: restrict characters, e.g. "0123456789"
+                "whitelist": {"type": "string"},
+                "lang": {"type": "string"},
+                "psm": {"type": "integer", "minimum": 0, "maximum": 13},
+                # ICR: number of equal-width boxed characters in the zone
+                "characterBoxes": {"type": "integer", "minimum": 1},
+                # Regex the final value must match, otherwise it is flagged for review
+                "pattern": {"type": "string"},
+                "minConfidence": zero_to_one_number,
+                "emptyValue": {"type": "string"},
+            },
+        },
+    },
+}
+
 TEMPLATE_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://github.com/Udayraj123/OMRChecker/tree/master/src/schemas/template-schema.json",
@@ -72,7 +139,9 @@ TEMPLATE_SCHEMA = {
                         "enum": [
                             "CropOnMarkers",
                             "CropPage",
+                            "EccAlignment",
                             "FeatureBasedAlignment",
+                            "TimingMarkAlignment",
                             "GaussianBlur",
                             "Levels",
                             "MedianBlur",
@@ -115,6 +184,8 @@ TEMPLATE_SCHEMA = {
                                         "2d": {"type": "boolean"},
                                         "goodMatchPercent": {"type": "number"},
                                         "maxFeatures": {"type": "integer"},
+                                        "maxScaleChange": {"type": "number"},
+                                        "minInliers": {"type": "integer"},
                                         "reference": {"type": "string"},
                                     },
                                     "required": ["reference"],
@@ -161,6 +232,44 @@ TEMPLATE_SCHEMA = {
                                         "kSize": two_positive_integers,
                                         "sigmaX": {"type": "number"},
                                     },
+                                }
+                            }
+                        },
+                    },
+                    {
+                        "if": {
+                            "properties": {"name": {"const": "TimingMarkAlignment"}}
+                        },
+                        "then": {
+                            "properties": {
+                                "options": TIMING_MARK_OPTIONS_SCHEMA,
+                            }
+                        },
+                    },
+                    {
+                        "if": {"properties": {"name": {"const": "EccAlignment"}}},
+                        "then": {
+                            "properties": {
+                                "options": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "reference": {"type": "string"},
+                                        "motion": {
+                                            "type": "string",
+                                            "enum": [
+                                                "translation",
+                                                "euclidean",
+                                                "affine",
+                                                "homography",
+                                            ],
+                                        },
+                                        "iterations": {"type": "integer", "minimum": 1},
+                                        "epsilon": {"type": "number"},
+                                        "scale": zero_to_one_number,
+                                        "minCorrelation": zero_to_one_number,
+                                    },
+                                    "required": ["reference"],
                                 }
                             }
                         },
@@ -221,6 +330,11 @@ TEMPLATE_SCHEMA = {
         "emptyValue": {
             "description": "The value to be used in case of empty bubble detected at global level.",
             "type": "string",
+        },
+        "zones": {
+            "description": "Non-bubble regions to read: barcodes, QR codes, printed text (OCR) and handwriting (ICR)",
+            "type": "object",
+            "patternProperties": {"^.*$": ZONE_SCHEMA},
         },
     },
 }

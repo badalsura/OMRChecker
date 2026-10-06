@@ -27,6 +27,18 @@ OMR stands for Optical Mark Recognition, used to detect and interpret human-mark
 
 <!-- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/gist/Udayraj123/a125b1531c61cceed5f06994329cba66/omrchecker-on-cloud.ipynb) -->
 
+## 🚀 Production engine
+
+This fork adds a production pipeline on top of the classic CLI:
+- per-answer confidence with a manual review queue
+- timing-mark registration, including upside-down sheets
+- every barcode and 2D-code format (Code 128, QR and more), printed-text OCR and boxed-handwriting ICR
+- a parallel batch runner, a REST API and web GUI, and a visual template editor
+- automatic template generation from sample sheets
+- model training scaffolding and an accuracy benchmark
+
+See **[docs/engine-guide.md](docs/engine-guide.md)**.
+
 ## 🎯 Features
 
 A full-fledged OMR checking software that can read and evaluate OMR sheets scanned at any angle and having any color.

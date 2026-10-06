@@ -25,10 +25,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python ${{ matrix.python-version }} with uv
-        uses: ./.github/actions/setup-python-with-uv
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install Tesseract OCR
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.dev.txt
 
       - name: Creating .github-pytest and coverage folders
         run: mkdir -p ./.github-pytest/coverage
@@ -36,24 +43,28 @@ jobs:
       - name: Run pytest
         run: |
           set -o pipefail
-          uv run pytest --cov-fail-under=70 --junitxml=./.github-pytest/pytest-output.xml | tee .github-pytest/pytest-coverage.txt
+          python -m pytest --cov=src --cov-fail-under=70 --junitxml=./.github-pytest/pytest-output.xml | tee .github-pytest/pytest-coverage.txt
         env:
           OMR_CHECKER_CONTAINER: true
           # Note: TZ override no longer needed as we're now setting it during test execution itself.
           # TZ: Asia/Kolkata
 
       - name: Pytest coverage comment
+        # The token is read-only on PRs from forks; the comment is informational only
+        continue-on-error: true
         uses: MishaKav/pytest-coverage-comment@v1
         with:
           pytest-coverage-path: ./.github-pytest/pytest-coverage.txt
           junitxml-path: ./.github-pytest/pytest-output.xml
 
       - name: Coverage Badge
+        if: github.event_name == 'push'
         uses: tj-actions/coverage-badge-py@v2
         with:
           output: .github-pytest/coverage/coverage.svg
 
       - name: Publish coverage report to coverage-badge branch
+        if: github.event_name == 'push'
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           branch: coverage-badge

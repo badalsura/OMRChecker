@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OMR in the Browser</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --ink: #16181d; --muted: #5d6573; --line: #e2e5ea;
+    --accent: #2457d6; --accent-ink: #ffffff; --ok: #157f3b; --ok-bg: #e3f5e9;
+    --warn: #b45309; --warn-bg: #fdf0dc; --err: #b42318; --err-bg: #fde7e5; --chip: #eef1f6;
+    --radius: 12px; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --card: #171a21; --ink: #e8eaee; --muted: #9aa3b2; --line: #2a2f3a;
+      --accent: #6d94ff; --accent-ink: #0b0d12; --ok: #4ade80; --ok-bg: #12301f;
+      --warn: #fbbf24; --warn-bg: #33270f; --err: #f87171; --err-bg: #3a1514; --chip: #222733;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --card: #171a21; --ink: #e8eaee; --muted: #9aa3b2; --line: #2a2f3a;
+    --accent: #6d94ff; --accent-ink: #0b0d12; --ok: #4ade80; --ok-bg: #12301f;
+    --warn: #fbbf24; --warn-bg: #33270f; --err: #f87171; --err-bg: #3a1514; --chip: #222733;
+    --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body { font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding-bottom: env(safe-area-inset-bottom); }
+  header { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 1180px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .bar h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .chip { background: var(--chip); color: var(--muted); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; white-space: nowrap; }
+  .chip.on { color: var(--ok); background: var(--ok-bg); }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 960px) { main { grid-template-columns: 360px minmax(0, 1fr); align-items: start; } .side { position: sticky; top: 64px; } }
+  .side { display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px; min-width: 0; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 650; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input[type=text], input[type=url], input[type=password], select {
+    width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; min-height: 40px;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > * { flex: 1 1 auto; }
+  button, .btn {
+    appearance: none; border: 1px solid var(--line); background: var(--chip); color: var(--ink); border-radius: 8px; padding: 9px 12px; font: inherit; font-weight: 550;
+    min-height: 42px; cursor: pointer; text-align: center; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  button.primary, .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btn input[type=file] { display: none; }
+  .check { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: var(--ink); font-size: 14px; }
+  .check input { width: 18px; height: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .hidden { display: none !important; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 8px; }
+  video { width: 100%; border-radius: 8px; background: #000; margin-top: 10px; max-height: 60vh; object-fit: contain; }
+  .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .badge { border-radius: 999px; padding: 4px 12px; font-weight: 650; font-size: 13px; }
+  .badge.ok { color: var(--ok); background: var(--ok-bg); }
+  .badge.needs_review { color: var(--warn); background: var(--warn-bg); }
+  .badge.error { color: var(--err); background: var(--err-bg); }
+  .stage { margin-top: 12px; border-radius: 8px; overflow: auto; background: var(--chip); max-height: 75vh; }
+  .stage canvas { display: block; width: 100%; height: auto; }
+  .stage.zoom canvas { width: auto; max-width: none; }
+  .review { margin: 10px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+  .review li { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 3px 9px; font-size: 13px; }
+  .tablewrap { overflow-x: auto; margin-top: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12.5px; position: sticky; top: 0; background: var(--card); }
+  td.v { font-weight: 650; font-variant-numeric: tabular-nums; }
+  tr.flag td { background: var(--warn-bg); }
+  .flags { color: var(--warn); font-size: 12.5px; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .toolbar > * { flex: 1 1 150px; }
+  .msg { margin-top: 10px; font-size: 13.5px; padding: 8px 10px; border-radius: 8px; background: var(--chip); word-break: break-word; }
+  .msg.err { background: var(--err-bg); color: var(--err); }
+  .msg.ok { background: var(--ok-bg); color: var(--ok); }
+  .empty { color: var(--muted); text-align: center; padding: 48px 12px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; margin-top: 8px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
+  .spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>OMR in the browser</h1>
+    <div class="chips">
+      <span class="chip" id="chipEngine">engine: loading</span>
+      <span class="chip" id="chipTemplate">no template</span>
+      <span class="chip" id="chipBarcodes">barcodes: off</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="side">
+    <section class="card" id="templateCard">
+      <h2>1 · Template</h2>
+      <label for="source">Preset template</label>
+      <select id="source">
+        <option value="example">Example sheet (timing marks, barcode, QR)</option>
+        <option value="url">From a URL…</option>
+        <option value="file">From a template.json file…</option>
+        <option value="server">From the OMR server…</option>
+      </select>
+      <div id="srcUrl" class="hidden">
+        <label for="templateUrl">template.json URL</label>
+        <input type="url" id="templateUrl" placeholder="https://example.org/templates/exam/template.json">
+        <label for="assetsUrl">Assets folder URL (CropOnMarkers marker image), optional</label>
+        <input type="url" id="assetsUrl" placeholder="https://example.org/templates/exam/">
+      </div>
+      <div id="srcFile" class="hidden">
+        <label class="btn" style="margin-top:8px">Choose template.json<input type="file" id="templateFile" accept=".json,application/json"></label>
+      </div>
+      <div id="srcServer" class="hidden">
+        <p class="muted" style="margin:8px 0 0">Uses the server settings below and <code>GET /templates/{id}</code>.</p>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="loadTemplate">Load template</button></div>
+      <dl class="kv" id="templateInfo"></dl>
+      <div id="templateMsg"></div>
+    </section>
+
+    <section class="card">
+      <h2>2 · Capture</h2>
+      <div class="row">
+        <label class="btn primary">📷 Take photo<input type="file" id="photo" accept="image/*" capture="environment"></label>
+        <label class="btn">Choose image<input type="file" id="pick" accept="image/*"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="liveBtn">Live camera</button>
+        <button id="sampleBtn">Try sample photo</button>
+      </div>
+      <div id="liveWrap" class="hidden">
+        <video id="video" playsinline muted></video>
+        <div class="row" style="margin-top:8px"><button class="primary" id="grabBtn">Capture frame</button><button id="stopBtn">Stop camera</button></div>
+      </div>
+      <label class="check"><input type="checkbox" id="useWorker" checked> Read in a background worker</label>
+      <label class="check"><input type="checkbox" id="useBarcodes" checked> Read barcodes / QR codes (zxing-wasm)</label>
+      <details>
+        <summary>Engine libraries</summary>
+        <label for="zxingScript">zxing-wasm reader script (IIFE build)</label>
+        <input type="url" id="zxingScript">
+        <label for="zxingWasm">zxing_reader.wasm</label>
+        <input type="url" id="zxingWasm">
+        <label for="maxDim">Max photo size (longest side, px)</label>
+        <input type="text" id="maxDim" value="3000" inputmode="numeric">
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>OMR server (optional)</h2>
+      <label for="apiBase">API base URL</label>
+      <input type="url" id="apiBase" placeholder="https://omr.example.org">
+      <label for="apiKey">API key</label>
+      <input type="password" id="apiKey" placeholder="X-API-Key (if the server requires one)" autocomplete="off">
+      <label for="templateId">Template id on the server</label>
+      <input type="text" id="templateId" placeholder="exam-2024">
+      <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue.</p>
+    </section>
+  </div>
+
+  <section class="card" id="resultCard">
+    <h2>3 · Result</h2>
+    <div id="resultEmpty" class="empty">Load a template, then take or choose a photo of a sheet.</div>
+    <div id="result" class="hidden">
+      <div class="status">
+        <span class="badge" id="statusBadge"></span>
+        <span id="fileLabel" class="muted"></span>
+        <span id="timing" class="muted"></span>
+      </div>
+      <div id="errorMsg"></div>
+      <ul class="review" id="reviewList"></ul>
+      <div class="stage" id="stage" title="Tap to zoom"><canvas id="canvas"></canvas></div>
+      <div class="toolbar">
+        <button class="primary" id="sendBtn" disabled>Send to server for review</button>
+        <button id="jsonBtn">Download JSON</button>
+      </div>
+      <div id="sendMsg"></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Field</th><th>Value</th><th>Confidence</th><th>Flags</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="omr.js"></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var params = new URLSearchParams(location.search);
+  var state = { engine: null, engineKind: null, templateJson: null, templateKey: null, lastBlob: null, lastName: null, lastResult: null, stream: null, busy: false, customLabels: {} };
+
+  function store(key, value) { try { localStorage.setItem("omr-demo:" + key, value); } catch (e) { /* storage blocked */ } }
+  function recall(key) { try { return localStorage.getItem("omr-demo:" + key); } catch (e) { return null; } }
+  ["apiBase", "apiKey", "templateId", "templateUrl", "assetsUrl"].forEach(function (id) {
+    var saved = params.get(id) || recall(id);
+    if (saved) $(id).value = saved;
+    $(id).addEventListener("change", function () { store(id, $(id).value.trim()); });
+  });
+  $("zxingScript").value = params.get("zxingScript") || OMR.DEFAULT_LIBS.zxingScriptUrl;
+  $("zxingWasm").value = params.get("zxingWasm") || OMR.DEFAULT_LIBS.zxingWasmUrl;
+  if (params.get("worker") === "0") $("useWorker").checked = false;
+  if (params.get("barcodes") === "0") $("useBarcodes").checked = false;
+  $("chipEngine").textContent = "engine v" + OMR.VERSION;
+  $("chipEngine").classList.add("on");
+
+  function message(el, text, kind) {
+    el.innerHTML = "";
+    if (!text) return;
+    var div = document.createElement("div");
+    div.className = "msg" + (kind ? " " + kind : "");
+    div.textContent = text;
+    el.appendChild(div);
+  }
+  function apiHeaders() {
+    var h = {};
+    var key = $("apiKey").value.trim();
+    if (key) h["X-API-Key"] = key;
+    return h;
+  }
+  function apiBase() { return $("apiBase").value.trim().replace(/\/+$/, ""); }
+
+  $("source").addEventListener("change", function () {
+    var v = $("source").value;
+    $("srcUrl").classList.toggle("hidden", v !== "url");
+    $("srcFile").classList.toggle("hidden", v !== "file");
+    $("srcServer").classList.toggle("hidden", v !== "server");
+  });
+
+  function fetchJson(url, headers) {
+    return fetch(url, { headers: headers || {} }).then(function (r) {
+      if (!r.ok) throw new Error(url + " → HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  // ---- template ----------------------------------------------------------
+  function readTemplateSource() {
+    var v = $("source").value;
+    if (v === "example") return fetchJson("examples/template.json").then(function (t) { return { json: t, assetsBaseUrl: "examples/" }; });
+    if (v === "url") {
+      var url = $("templateUrl").value.trim();
+      if (!url) return Promise.reject(new Error("Enter a template URL"));
+      var assets = $("assetsUrl").value.trim() || url.replace(/[^\/]*$/, "");
+      return fetchJson(url).then(function (t) { return { json: t, assetsBaseUrl: assets }; });
+    }
+    if (v === "file") {
+      var f = $("templateFile").files[0];
+      if (!f) return Promise.reject(new Error("Choose a template.json file"));
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function () { try { resolve({ json: JSON.parse(reader.result) }); } catch (e) { reject(e); } };
+        reader.onerror = function () { reject(new Error("Could not read the file")); };
+        reader.readAsText(f);
+      });
+    }
+    var base = apiBase(), id = $("templateId").value.trim();
+    if (!base || !id) return Promise.reject(new Error("Fill in the API base URL and template id below"));
+    return fetchJson(base + "/templates/" + encodeURIComponent(id), apiHeaders()).then(function (detail) {
+      return { json: detail, assetsBaseUrl: base + "/templates/" + encodeURIComponent(id) + "/files/" };
+    });
+  }
+
+  function barcodeOptions() {
+    return $("useBarcodes").checked ? { scriptUrl: $("zxingScript").value.trim(), wasmUrl: $("zxingWasm").value.trim() } : null;
+  }
+
+  function buildEngine() {
+    if (!state.templateJson) return Promise.reject(new Error("Load a template first"));
+    var useWorker = $("useWorker").checked && typeof Worker !== "undefined";
+    var barcodes = barcodeOptions();
+    var maxDim = parseInt($("maxDim").value, 10) || 3000;
+    var key = JSON.stringify([state.templateKey, useWorker, barcodes, maxDim]);
+    if (state.engine && state.engineKey === key) return Promise.resolve(state.engine);
+    if (state.engine && state.engine.terminate) state.engine.terminate();
+    state.engine = null;
+    var src = state.templateSource;
+    var ready;
+    if (useWorker) {
+      ready = OMR.createWorkerEngine(src.json, { workerUrl: "omr.worker.js", barcodes: barcodes, assetsBaseUrl: src.assetsBaseUrl ? new URL(src.assetsBaseUrl, location.href).href : undefined, maxDimension: maxDim });
+    } else {
+      var bc = barcodes && !OMR.barcodesAvailable() ? OMR.enableBarcodes(barcodes) : Promise.resolve();
+      ready = bc.then(function () { return OMR.loadTemplate(src.json, { assetsBaseUrl: src.assetsBaseUrl, maxDimension: maxDim }); });
+    }
+    return ready.then(function (engine) {
+      state.engine = engine;
+      state.engineKey = key;
+      state.engineKind = useWorker ? "worker" : "main";
+      var barcodesOn = useWorker ? !!(engine.info && engine.info.barcodes) : OMR.barcodesAvailable();
+      $("chipBarcodes").textContent = "barcodes: " + (barcodesOn ? "on" : "off");
+      $("chipBarcodes").classList.toggle("on", barcodesOn);
+      return engine;
+    }, function (error) {
+      if (barcodes) {
+        // keep reading bubbles even if the barcode engine can't load (zones get flagged)
+        $("useBarcodes").checked = false;
+        message($("templateMsg"), "Barcode engine unavailable (" + error.message + "); continuing without it.", "err");
+        return buildEngine();
+      }
+      throw error;
+    });
+  }
+
+  $("loadTemplate").addEventListener("click", function () {
+    message($("templateMsg"), "Loading…");
+    readTemplateSource().then(function (src) {
+      var check = OMR.checkTemplate(src.json);
+      state.templateJson = src.json;
+      state.templateSource = src;
+      state.templateKey = Math.random().toString(36).slice(2);
+      var t = src.json.template && src.json.template.fieldBlocks ? src.json.template : src.json;
+      var fieldCount = 0;
+      Object.keys(t.fieldBlocks).forEach(function (k) {
+        var labels = t.fieldBlocks[k].fieldLabels || [];
+        labels.forEach(function (l) { var m = /\.{2,3}(\d+)$/.exec(l), s = /(\d+)\.{2,3}/.exec(l); fieldCount += m && s ? (+m[1] - +s[1] + 1) : 1; });
+      });
+      var info = $("templateInfo");
+      info.innerHTML = "";
+      [["Page", t.pageDimensions.join(" × ")], ["Fields", fieldCount], ["Zones", Object.keys(t.zones || {}).length], ["Registration", (t.preProcessors || []).map(function (p) { return p.name; }).join(", ") || "none (pre-cropped)"]].forEach(function (kv) {
+        var dt = document.createElement("dt"); dt.textContent = kv[0];
+        var dd = document.createElement("dd"); dd.textContent = kv[1];
+        info.appendChild(dt); info.appendChild(dd);
+      });
+      if (!check.supported) throw new Error(check.issues.join("; "));
+      state.customLabels = OMR._internals.parseTemplate(t).customLabels;
+      return buildEngine().then(function () {
+        $("chipTemplate").textContent = "template ready";
+        $("chipTemplate").classList.add("on");
+        message($("templateMsg"), check.issues.length ? check.issues.filter(function (s) { return s.indexOf("enableBarcodes") < 0; }).join(" · ") : "", "");
+      });
+    }).catch(function (e) {
+      $("chipTemplate").textContent = "no template";
+      $("chipTemplate").classList.remove("on");
+      message($("templateMsg"), e.message, "err");
+    });
+  });
+  ["useWorker", "useBarcodes", "zxingScript", "zxingWasm", "maxDim"].forEach(function (id) {
+    $(id).addEventListener("change", function () { if (state.templateJson) buildEngine().catch(function (e) { message($("templateMsg"), e.message, "err"); }); });
+  });
+
+  // ---- capture -----------------------------------------------------------
+  function scanBlob(blob, name) {
+    if (state.busy) return;
+    state.busy = true;
+    state.lastBlob = blob;
+    state.lastName = name;
+    $("resultEmpty").classList.add("hidden");
+    $("result").classList.remove("hidden");
+    $("statusBadge").className = "badge";
+    $("statusBadge").innerHTML = '<span class="spinner"></span>';
+    $("timing").textContent = "reading…";
+    message($("sendMsg"), "");
+    buildEngine().then(function (engine) {
+      return engine.scan(blob, { fileId: name });
+    }).then(showResult).catch(function (e) {
+      showResult({ file_id: name, status: "error", error: e.message, responses: {}, fields: {}, zones: {}, review: [], timings_ms: {} });
+    }).then(function () { state.busy = false; });
+  }
+  function onFile(input) {
+    var f = input.files && input.files[0];
+    if (f) scanBlob(f, f.name || "photo.jpg");
+    input.value = "";
+  }
+  $("photo").addEventListener("change", function () { onFile($("photo")); });
+  $("pick").addEventListener("change", function () { onFile($("pick")); });
+  $("sampleBtn").addEventListener("click", function () {
+    fetch("examples/sample-phone.jpg").then(function (r) { return r.blob(); }).then(function (b) { scanBlob(b, "sample-phone.jpg"); });
+  });
+
+  $("liveBtn").addEventListener("click", function () {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("Live camera needs HTTPS and a browser with camera access; use “Take photo” instead.");
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false }).then(function (stream) {
+      state.stream = stream;
+      $("video").srcObject = stream;
+      $("video").play();
+      $("liveWrap").classList.remove("hidden");
+    }).catch(function (e) { alert("Camera unavailable: " + e.message); });
+  });
+  function stopCamera() {
+    if (state.stream) state.stream.getTracks().forEach(function (t) { t.stop(); });
+    state.stream = null;
+    $("liveWrap").classList.add("hidden");
+  }
+  $("stopBtn").addEventListener("click", stopCamera);
+  $("grabBtn").addEventListener("click", function () {
+    var v = $("video");
+    if (!v.videoWidth) return;
+    var c = document.createElement("canvas");
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext("2d").drawImage(v, 0, 0);
+    c.toBlob(function (blob) { scanBlob(blob, "camera-" + new Date().toISOString().replace(/[:.]/g, "-") + ".jpg"); }, "image/jpeg", 0.92);
+  });
+
+  // ---- result ------------------------------------------------------------
+  function showResult(result) {
+    state.lastResult = result;
+    var badge = $("statusBadge");
+    badge.className = "badge " + result.status;
+    badge.textContent = result.status === "ok" ? "OK" : result.status === "needs_review" ? "Needs review" : "Error";
+    $("fileLabel").textContent = result.file_id;
+    var t = result.timings_ms || {};
+    // in worker mode the photo is decoded on the page, outside the worker's total
+    var ms = (t.total || 0) + (state.engineKind === "worker" ? t.decode || 0 : 0);
+    $("timing").textContent = t.total !== undefined ? Math.round(ms) + " ms" + (result.registration && result.registration.orientation ? " · rotated " + result.registration.orientation + "°" : "") : "";
+    message($("errorMsg"), result.error || "", "err");
+    var list = $("reviewList");
+    list.innerHTML = "";
+    (result.review || []).forEach(function (r) {
+      var li = document.createElement("li");
+      li.textContent = r.name + ": " + r.flags.join(", ");
+      list.appendChild(li);
+    });
+    if (result.alignedImage) {
+      $("stage").classList.remove("hidden");
+      OMR.renderResult($("canvas"), result, { showAll: false });
+    } else $("stage").classList.add("hidden");
+    var rows = $("rows");
+    rows.innerHTML = "";
+    var flagged = {};
+    (result.review || []).forEach(function (r) { flagged[r.name] = r.flags; });
+    var names = Object.keys(result.responses || {}).sort(function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); });
+    names.forEach(function (name) {
+      var tr = document.createElement("tr");
+      var detail = (result.fields || {})[name] || (result.zones || {})[name];
+      var flags = detail ? detail.flags.filter(function (f) { return f !== "empty"; }) : [];
+      var needs = detail ? detail.needs_review : false;
+      var parts = state.customLabels[name];
+      if (!detail && parts) {
+        // custom label (concatenated columns): flagged if any of its fields is
+        parts.forEach(function (k) { if (flagged[k]) { needs = true; flags = flags.concat(k + ": " + flagged[k].join("/")); } });
+      }
+      if (needs) tr.className = "flag";
+      var cells = [name, result.responses[name] === "" ? "—" : result.responses[name], detail && detail.confidence !== undefined ? Math.round(detail.confidence * 100) + "%" : "", flags.join(", ")];
+      cells.forEach(function (text, i) {
+        var td = document.createElement("td");
+        td.textContent = text;
+        if (i === 1) td.className = "v";
+        if (i === 3) td.className = "flags";
+        tr.appendChild(td);
+      });
+      rows.appendChild(tr);
+    });
+    $("sendBtn").disabled = !(apiBase() && $("templateId").value.trim() && state.lastBlob);
+    $("sendBtn").textContent = result.status === "ok" ? "Send to server" : "Send to server for review";
+  }
+  $("stage").addEventListener("click", function () { $("stage").classList.toggle("zoom"); });
+
+  $("jsonBtn").addEventListener("click", function () {
+    if (!state.lastResult) return;
+    var blob = new Blob([JSON.stringify(state.lastResult, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (state.lastResult.file_id || "result").replace(/\.[^.]+$/, "") + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+
+  // POST /scans (multipart: template_id + files) on the Python API
+  $("sendBtn").addEventListener("click", function () {
+    var base = apiBase(), id = $("templateId").value.trim();
+    if (!base || !id || !state.lastBlob) return;
+    var form = new FormData();
+    form.append("template_id", id);
+    form.append("files", state.lastBlob, state.lastName || "sheet.jpg");
+    message($("sendMsg"), "Uploading…");
+    $("sendBtn").disabled = true;
+    fetch(base + "/scans", { method: "POST", body: form, headers: apiHeaders() }).then(function (r) {
+      return r.json().then(function (body) {
+        if (!r.ok) throw new Error((body && body.detail) || ("HTTP " + r.status));
+        return body;
+      });
+    }).then(function (body) {
+      var scan = body.scans && body.scans[0];
+      message($("sendMsg"), scan ? "Stored on the server as " + (scan.scan_id || scan.file_id) + " (server status: " + scan.status + ")" : "Uploaded.", "ok");
+    }).catch(function (e) {
+      message($("sendMsg"), "Upload failed: " + e.message, "err");
+    }).then(function () { $("sendBtn").disabled = false; });
+  });
+
+  if (params.get("autoload") !== "0") $("loadTemplate").click();
+})();
+</script>
+</body>
+</html>
