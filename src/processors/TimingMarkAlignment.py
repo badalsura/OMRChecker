@@ -8,7 +8,9 @@ registration feature on machine-read forms. This preprocessor:
    mapping, once per candidate orientation (0/90/180/270 degrees);
 2. detects dark, solid, mark-sized blobs with connected components;
 3. matches them to the expected mark centres from the template, fits a
-   homography with RANSAC, then re-matches with a tight radius and refits;
+   homography with RANSAC, then re-matches with a tight radius and refits,
+   starting from a few shifted and rotated guesses and rejecting fits that
+   slid one mark along a track (a mark found just past the track's end);
 4. keeps the orientation with the most matched marks and lowest residual,
    rejecting the sheet when too few marks match or the residual is too large;
 5. optionally adds a thin-plate-spline correction fitted to the remaining
@@ -28,6 +30,10 @@ DEFAULT_MIN_MATCHED_MARKS = 8
 DEFAULT_MAX_RESIDUAL = 3.0
 # Fraction of the image a page outline must cover to be trusted
 MIN_PAGE_AREA_FRACTION = 0.3
+# A fit matching this share of marks with none past the track ends is final
+GOOD_FIT_FRACTION = 0.95
+# Smaller measured tilts are left to the shifted guesses and the fit itself
+MIN_TILT_DEGREES = 0.3
 # Thin-plate-spline displacement field is evaluated on this grid step (px)
 TPS_GRID_STEP = 16
 
@@ -220,9 +226,95 @@ class TimingMarkAlignment(ImagePreprocessor):
     # --- fitting ---------------------------------------------------------
 
     def fit_orientation(self, page_corners, candidates, rotation):
-        homography = self.coarse_homography(page_corners, rotation)
-        radius_scale = self._pixels_per_unit(homography)
-        radius = self.search_radius * radius_scale
+        """Best fit for one orientation over a few shifted starting guesses.
+
+        Tracks are periodic, so a coarse guess that is off by about one mark
+        pitch (a page scanned flush with the glass and slightly rotated) can
+        lock each track onto its neighbouring mark. Starting from shifted and
+        rotated guesses and penalising marks found just past a track's ends
+        rejects those off-by-one fits.
+        """
+        coarse = self.coarse_homography(page_corners, rotation)
+        radius = self.search_radius * self._pixels_per_unit(coarse)
+        best = None
+        seen = []
+        for start in self._starting_guesses(coarse, candidates):
+            fit = self._refine(start, candidates, radius)
+            if fit is None:
+                continue
+            if any(np.allclose(fit["homography"], h, atol=1e-3) for h in seen):
+                continue
+            seen.append(fit["homography"])
+            fit["rotation"] = rotation
+            fit["beyond_ends"] = self._marks_beyond_track_ends(
+                fit["homography"], candidates, radius * 0.5
+            )
+            if best is None or self._fit_key(fit) > self._fit_key(best):
+                best = fit
+            # Nearly every mark matched and none past the ends: not slid, stop
+            if fit["beyond_ends"] == 0 and fit["matched"] >= GOOD_FIT_FRACTION * len(
+                self.expected
+            ):
+                break
+        return best
+
+    @staticmethod
+    def _fit_key(fit):
+        return (fit["matched"] - 2 * fit["beyond_ends"], -fit["residual"])
+
+    def _starting_guesses(self, coarse, candidates):
+        """The coarse mapping, turned by the tracks' measured tilt, then shifted.
+
+        A page scanned flush with the glass has no outline to find, so the
+        coarse mapping misses its tilt; the tilt comes from the direction of
+        neighbouring candidate blobs instead. Shifts of half and one mark
+        pitch cover the remaining offset.
+        """
+        page_w, page_h = self.page_dimensions
+        pitch = self._min_mark_spacing()
+        tilt = self._estimate_tilt(coarse, candidates, pitch)
+        angles = (tilt, 0.0) if abs(tilt) > MIN_TILT_DEGREES else (0.0,)
+        guesses = []
+        for angle in angles:
+            rotate = np.vstack(
+                [
+                    cv2.getRotationMatrix2D((page_w / 2, page_h / 2), angle, 1.0),
+                    [0, 0, 1],
+                ]
+            )
+            for dy in (0.0, -0.5, 0.5, -1.0, 1.0):
+                for dx in (0.0, -0.5, 0.5):
+                    shift = np.float64(
+                        [[1, 0, dx * pitch], [0, 1, dy * pitch], [0, 0, 1]]
+                    )
+                    guesses.append(coarse @ shift @ rotate)
+        return guesses
+
+    def _estimate_tilt(self, coarse, candidates, pitch):
+        """Degrees the marks are turned from the template, from neighbour directions."""
+        if len(candidates) < 6:
+            return 0.0
+        points = cv2.perspectiveTransform(
+            candidates[None].astype(np.float32), np.linalg.inv(coarse)
+        )[0]
+        distances = _squared_distances(points, points)
+        np.fill_diagonal(distances, np.inf)
+        nearest = distances.argmin(axis=1)
+        steps = points[nearest] - points
+        lengths = np.linalg.norm(steps, axis=1)
+        steps = steps[np.abs(lengths - pitch) < 0.25 * pitch]
+        if len(steps) < 6:
+            return 0.0
+        measured = _angle_mod_90(steps)
+        template_steps = np.diff(self.expected, axis=0)
+        template_steps = template_steps[
+            np.abs(np.linalg.norm(template_steps, axis=1) - pitch) < 0.25 * pitch
+        ]
+        expected = _angle_mod_90(template_steps) if len(template_steps) else 0.0
+        # Template -> image rotation; getRotationMatrix2D turns the other way
+        return float(-((measured - expected + 45) % 90 - 45))
+
+    def _refine(self, homography, candidates, radius):
         # Coarse page detection can be off; start wide and tighten after each fit
         for attempt_radius in (radius * 2.0, radius, radius * 0.5):
             pairs = self.match(homography, candidates, attempt_radius)
@@ -248,13 +340,26 @@ class TimingMarkAlignment(ImagePreprocessor):
             return None
         residual = self.residual_in_template_units(homography, template_pts, image_pts)
         return {
-            "rotation": rotation,
             "homography": homography,
             "matched": int(len(pairs)),
             "residual": float(residual),
             "template_pts": template_pts,
             "image_pts": image_pts,
         }
+
+    def _marks_beyond_track_ends(self, homography, candidates, radius):
+        """Blobs one pitch past either end of a track: the fit slid along it."""
+        beyond = []
+        for marks in self.tracks.values():
+            if len(marks) < 2:
+                continue
+            beyond.append(2 * marks[0] - marks[1])
+            beyond.append(2 * marks[-1] - marks[-2])
+        if not beyond or len(candidates) == 0:
+            return 0
+        projected = cv2.perspectiveTransform(np.float32(beyond)[None], homography)[0]
+        distances = _squared_distances(projected, candidates)
+        return int((distances.min(axis=1) <= radius * radius).sum())
 
     def _pixels_per_unit(self, homography):
         page_w, page_h = self.page_dimensions
@@ -265,16 +370,14 @@ class TimingMarkAlignment(ImagePreprocessor):
     def match(self, homography, candidates, radius):
         """Mutual nearest-neighbour matches (expected index, candidate index) within radius."""
         projected = cv2.perspectiveTransform(self.expected[None], homography)[0]
-        distances = np.linalg.norm(
-            projected[:, None, :] - candidates[None, :, :], axis=2
-        )
+        distances = _squared_distances(projected, candidates)
         nearest_candidate = distances.argmin(axis=1)
         nearest_expected = distances.argmin(axis=0)
-        pairs = [
-            (i, j)
-            for i, j in enumerate(nearest_candidate)
-            if nearest_expected[j] == i and distances[i, j] <= radius
-        ]
+        expected_index = np.arange(len(projected))
+        keep = (nearest_expected[nearest_candidate] == expected_index) & (
+            distances[expected_index, nearest_candidate] <= radius * radius
+        )
+        pairs = np.stack([expected_index[keep], nearest_candidate[keep]], axis=1)
         return np.array(pairs, dtype=np.int64).reshape(-1, 2)
 
     @staticmethod
@@ -327,6 +430,21 @@ class TimingMarkAlignment(ImagePreprocessor):
 
         self.record_geometry(remap)
         return remap(warped)
+
+
+def _squared_distances(a, b):
+    """All squared distances between two point sets, without an n*m*2 temporary."""
+    a = a.astype(np.float32)
+    b = b.astype(np.float32)
+    return np.maximum(
+        (a * a).sum(axis=1)[:, None] + (b * b).sum(axis=1)[None, :] - 2 * a @ b.T, 0
+    )
+
+
+def _angle_mod_90(steps):
+    """Median direction of step vectors, folded into [-45, 45) degrees."""
+    angles = np.degrees(np.arctan2(steps[:, 1], steps[:, 0]))
+    return float(np.median((angles + 45) % 90 - 45))
 
 
 def _tps_kernel(r):
