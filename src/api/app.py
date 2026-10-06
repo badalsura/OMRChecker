@@ -648,21 +648,29 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         reviewer = request.headers.get("x-user") or body.reviewer or DEFAULT_USER
         with ctx.scan_lock(scan_id):
             result = load_result(scan_id)
+            info = ctx.results.template_info(result)
             try:
                 resolved, events = apply_review(
-                    result, body.corrections, body.accept, reviewer
+                    result,
+                    body.corrections,
+                    body.accept,
+                    reviewer,
+                    info["empty_values"],
+                    info["custom_labels"],
                 )
             except ReviewError as error:
                 raise HTTPException(422, str(error)) from None
             audit = ctx.results.audit_rows(result, events, reviewer, "queue")
             template_id = result.get("template_id")
             if template_id and ctx.templates.exists(template_id):
+                # Responses, rule outputs (checks/validation), score and status
                 with ctx.engines.engine(template_id) as engine:
                     recompute(result, engine)
             else:
                 result["status"] = "needs_review" if result.get("review") else "ok"
             write_json_atomic(ctx.data.scan_dir(scan_id) / "result.json", result)
             ctx.index.update_after_review(result, resolved)
+            ctx.index.sync_review_items(result)
             ctx.index.add_corrections(audit)
         records = write_training_records(
             ctx.data.training, result, events, ctx.aligned_image(scan_id)
@@ -680,7 +688,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         job_id: Optional[str] = None,
         scan_id: Optional[str] = None,
         name: Optional[str] = Query(None, description="Only this field/zone name"),
-        kind: Optional[str] = Query(None, pattern="^(field|zone)$"),
+        kind: Optional[str] = Query(None, pattern="^(field|zone|check|custom_label)$"),
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
@@ -711,7 +719,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         zone = (result.get("zones") or {}).get(name)
         target = field if field is not None else zone
         if target is None:
-            return None
+            return rule_review_item(result, name)
         has_images = result.get("has_images")
         item = {
             "scan_id": scan_id,
@@ -742,6 +750,54 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         if zone is not None and zone.get("details"):
             item["details"] = zone.get("details")
         return item
+
+    def rule_review_item(result, name):
+        """A cross-field check or custom-label validation waiting for a person."""
+        scan_id = result["scan_id"]
+        entry = next(
+            (i for i in result.get("review") or [] if i.get("name") == name), None
+        )
+        check = (result.get("checks") or {}).get(name)
+        if entry is None and not isinstance(check, dict):
+            return None
+        kind = (entry or {}).get("kind") or "check"
+        validation = (result.get("validation") or {}).get(
+            (check or {}).get("output") or name
+        ) or {}
+        if isinstance(check, dict):
+            value = check.get("value", "")
+            candidates = [
+                {"source": source, "value": raw}
+                for source, raw in (check.get("sources") or {}).items()
+                if raw not in (None, "")
+            ]
+            flags = check.get("flags") or []
+        else:
+            value = (result.get("responses") or {}).get(name, "")
+            candidates = []
+            flags = (entry or {}).get("flags") or []
+        _, box = item_box(result, name)
+        return {
+            "scan_id": scan_id,
+            "file_id": result.get("file_id"),
+            "template_id": result.get("template_id"),
+            "job_id": result.get("job_id"),
+            "kind": kind,
+            "name": name,
+            "type": kind,
+            "value": value,
+            "confidence": None,
+            "flags": flags,
+            "reasons": (entry or {}).get("reasons") or validation.get("reasons") or [],
+            "fields": (entry or {}).get("fields"),
+            "candidates": candidates,
+            "crop_url": (
+                f"/scans/{scan_id}/crop?name={quote(name)}"
+                if result.get("has_images") and box
+                else None
+            ),
+            "options": None,
+        }
 
     @app.get("/review/summary", tags=["review"], dependencies=secured)
     def review_summary(template_id: Optional[str] = None, job_id: Optional[str] = None):

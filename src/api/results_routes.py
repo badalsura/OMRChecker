@@ -22,8 +22,14 @@ class BubbleToggle(BaseModel):
 class CorrectionBody(BaseModel):
     changes: Dict[str, Any] = Field(
         default_factory=dict,
-        description="{field_or_zone_name: new value}. Bubble field values are "
-        "concatenated bubble values ('' = blank, 'AB' = multi-mark).",
+        description="{name: new value} for fields, zones, custom labels (split "
+        "over their columns) and cross-field checks (by check name or output "
+        "column). Bubble field values are concatenated bubble values ('' = "
+        "blank, 'AB' = multi-mark).",
+    )
+    accept: List[str] = Field(
+        default_factory=list,
+        description="Names whose current value is right (settles their review item)",
     )
     toggle: List[BubbleToggle] = Field(
         default_factory=list,
@@ -217,6 +223,7 @@ def register(app, ctx, secured):
                 body.changes,
                 [{"field": t.field, "value": t.value} for t in body.toggle],
                 user_of(request, body.user),
+                accept=body.accept,
             )
         except ResultsError as error:
             fail(error)

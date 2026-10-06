@@ -409,7 +409,15 @@ class ResultsService:
         return overlay_payload(result, info)
 
     # ---- corrections ---------------------------------------------------------
-    def correct(self, scan_id, changes=None, toggles=None, user=None, source="results"):
+    def correct(
+        self,
+        scan_id,
+        changes=None,
+        toggles=None,
+        user=None,
+        source="results",
+        accept=None,
+    ):
         user = user or DEFAULT_USER
         with self.ctx.scan_lock(scan_id):
             result = self.load(scan_id)
@@ -424,11 +432,17 @@ class ResultsService:
                 changes[name] = toggled_value(
                     fields[name], current, value, info["empty_values"].get(name, "")
                 )
-            if not changes:
+            accept = [name for name in accept or [] if name not in changes]
+            if not changes and not accept:
                 return result, info
             try:
                 resolved, events = apply_review(
-                    result, changes, [], user, info["empty_values"]
+                    result,
+                    changes,
+                    accept,
+                    user,
+                    info["empty_values"],
+                    info["custom_labels"],
                 )
             except ReviewError as error:
                 raise ResultsError(str(error), 422) from None
@@ -493,8 +507,8 @@ class ResultsService:
         result["corrected"] = is_corrected(result)
         self.save(result)
         self.ctx.index.set_scan_state(result)
-        if resolved:
-            self.ctx.index.resolve_review_items(result["scan_id"], resolved)
+        # Rules may raise or settle items after an edit; mirror result["review"]
+        self.ctx.index.sync_review_items(result)
         if result.get("verified"):
             self.ctx.index.set_outcomes(result["scan_id"], outcome_rows(result))
         return template_id
@@ -511,10 +525,14 @@ class ResultsService:
                 self.ctx.index.set_outcomes(scan_id, [])
                 return result, []
             first_time = not result.get("verified")
+            info = self.template_info(result)
             pending = [item["name"] for item in result.get("review") or []]
-            known = set(result.get("fields") or {}) | set(result.get("zones") or {})
-            pending = [name for name in pending if name in known]
-            resolved, events = apply_review(result, {}, pending, user)
+            try:
+                resolved, events = apply_review(
+                    result, {}, pending, user, None, info["custom_labels"]
+                )
+            except ReviewError as error:
+                raise ResultsError(str(error), 422) from None
             result["verified"] = {"by": user, "at": time.time()}
             self.finish_edit(result, resolved)
         if first_time:
@@ -559,7 +577,13 @@ class ResultsService:
         for key, value in new.items():
             if key != "file_id":
                 record[key] = value
-        for key in ("read_review", "review_log", "verified", "corrected"):
+        for key in (
+            "read_review",
+            "review_log",
+            "verified",
+            "corrected",
+            "manual_values",
+        ):
             record.pop(key, None)
         record["reviewed"] = False
         record["template_version"] = info["template_version"]
@@ -774,6 +798,16 @@ def reapply_corrections(old, new):
             target["needs_review"] = False
             target["reviewed"] = True
             kept.append(name)
+    # Values typed for cross-field checks; decisions on kept items
+    checks = new.get("checks") or {}
+    for name, value in (old.get("manual_values") or {}).items():
+        if name in checks:
+            new.setdefault("manual_values", {})[name] = value
+            kept.append(name)
+    log = old.get("review_log") or {}
+    for name in kept:
+        if name in log:
+            new.setdefault("review_log", {})[name] = log[name]
     if kept:
         new["review"] = [i for i in new.get("review") or [] if i["name"] not in kept]
     return kept
@@ -781,7 +815,7 @@ def reapply_corrections(old, new):
 
 def diff_reads(old, new):
     changes = []
-    for group in ("fields", "zones"):
+    for group in ("fields", "zones", "checks"):
         before = old.get(group) or {}
         for name, item in (new.get(group) or {}).items():
             previous = before.get(name) or {}
@@ -869,6 +903,13 @@ def overlay_payload(result, info):
         )
     items = {item["name"]: item for item in fields + zones}
     responses = result.get("responses") or {}
+    checks = {
+        name: check
+        for name, check in (result.get("checks") or {}).items()
+        if isinstance(check, dict)
+    }
+    check_of = {check.get("output") or name: name for name, check in checks.items()}
+    validation = result.get("validation") or {}
     outputs, seen = [], set()
     columns = list(info.get("output_columns") or []) + [z["name"] for z in zones]
     for name in columns + sorted(responses):
@@ -880,25 +921,52 @@ def overlay_payload(result, info):
         if not members and name not in responses:
             continue
         confidences = [m["confidence"] for m in members if m["confidence"] is not None]
+        check_name = check_of.get(name)
+        check = checks.get(check_name) or {}
+        if check_name:
+            kind = "check"
+        elif parts:
+            kind = "custom_label"
+        else:
+            kind = members[0]["kind"] if members else "output"
+        value = responses.get(name, members[0]["value"] if members else "")
+        flags = {f for m in members for f in m["flags"]} | set(check.get("flags") or [])
+        reasons = (validation.get(name) or {}).get("reasons") or check.get(
+            "validation_reasons"
+        )
+        if kind == "check":
+            original = check.get("original_value", value)
+        elif parts:
+            original = (
+                "".join(str(m["original_value"]) for m in members)
+                if len(members) == len(parts)
+                else value
+            )
+        else:
+            original = members[0]["original_value"] if members else value
         outputs.append(
             {
                 "name": name,
-                "value": responses.get(name, members[0]["value"] if members else ""),
+                "kind": kind,
+                "check": check_name,
+                "value": value,
+                "original_value": original,
                 "parts": parts,
-                "flagged": any(m["flagged"] for m in members),
-                "pending": any(m["pending"] for m in members),
-                "corrected": any(m["corrected"] for m in members),
+                "flagged": any(m["flagged"] for m in members)
+                or name in flagged
+                or check_name in flagged
+                or bool(check.get("flags")),
+                "pending": any(m["pending"] for m in members)
+                or name in pending
+                or check_name in pending,
+                "corrected": any(m["corrected"] for m in members)
+                or bool(check.get("manual")),
+                "editable": kind in ("check", "custom_label") or bool(members),
                 "confidence": min(confidences) if confidences else None,
-                "flags": sorted({f for m in members for f in m["flags"]}),
+                "flags": sorted(flags),
+                "reasons": reasons or [],
             }
         )
-    checks = result.get("checks") or {}
-    for name, check in checks.items():
-        if isinstance(check, dict) and check.get("flags"):
-            for output in outputs:
-                if output["name"] == name:
-                    output["flagged"] = True
-                    output["flags"] = sorted(set(output["flags"]) | set(check["flags"]))
     return {
         "scan_id": result["scan_id"],
         "file_id": result.get("file_id"),
@@ -918,5 +986,7 @@ def overlay_payload(result, info):
         "zones": zones,
         "outputs": outputs,
         "checks": checks,
+        "validation": validation,
+        "pending": sorted(pending),
         "audit": (result.get("audit") or [])[-50:],
     }

@@ -43,7 +43,7 @@ def is_corrected(result):
         for item in (result.get(group) or {}).values():
             if original_value(item) != item.get("value"):
                 return True
-    return False
+    return bool(result.get("manual_values"))
 
 
 def field_names(template_infos, results_sample=()):
@@ -93,7 +93,17 @@ class RowBuilder:
             value = None
         pending = {item["name"] for item in result.get("review") or []}
         flags = sorted({f for m in members for f in m.get("flags") or []})
-        check = checks.get(name)
+        check, check_name = checks.get(name), name
+        if not isinstance(check, dict):
+            # a check whose output column has another name
+            check_name, check = next(
+                (
+                    (key, c)
+                    for key, c in checks.items()
+                    if isinstance(c, dict) and c.get("output") == name
+                ),
+                (name, None),
+            )
         if isinstance(check, dict) and check.get("flags"):
             flags = sorted(set(flags) | set(check["flags"]))
         confidences = [
@@ -104,8 +114,10 @@ class RowBuilder:
             "confidence": min(confidences) if confidences else None,
             "flags": flags,
             "pending": any(p in pending for p in parts)
-            or bool(isinstance(check, dict) and check.get("flags")),
-            "corrected": any(original_value(m) != m.get("value") for m in members),
+            or name in pending
+            or check_name in pending,
+            "corrected": any(original_value(m) != m.get("value") for m in members)
+            or bool(isinstance(check, dict) and check.get("manual")),
         }
 
     def meta(self, result, key):

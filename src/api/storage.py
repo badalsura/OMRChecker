@@ -239,7 +239,7 @@ def is_corrected(record):
         for item in (record.get(group) or {}).values():
             if "original_value" in item and item["original_value"] != item.get("value"):
                 return True
-    return False
+    return bool(record.get("manual_values"))
 
 
 class ScanIndex:
@@ -629,6 +629,47 @@ class ScanIndex:
                     1 if result.get("reviewed") else 0,
                     result["scan_id"],
                 ),
+            )
+            self.conn.commit()
+
+    def sync_review_items(self, result):
+        """Make the scan's queue rows match result["review"]: listed items are
+        pending (added if new), other pending rows are done."""
+        scan_id = result["scan_id"]
+        pending = {
+            item["name"]: item.get("kind") for item in result.get("review") or []
+        }
+        now = time.time()
+        with self.lock:
+            existing = {
+                row[0]: row[1]
+                for row in self.conn.execute(
+                    "SELECT name, state FROM review_items WHERE scan_id=?", (scan_id,)
+                )
+            }
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO review_items VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        scan_id,
+                        name,
+                        kind,
+                        result.get("template_id"),
+                        result.get("job_id"),
+                        "pending",
+                        now,
+                    )
+                    for name, kind in pending.items()
+                    if existing.get(name) != "pending"
+                ],
+            )
+            self.conn.executemany(
+                "UPDATE review_items SET state='done' WHERE scan_id=? AND name=?",
+                [
+                    (scan_id, name)
+                    for name, state in existing.items()
+                    if state == "pending" and name not in pending
+                ],
             )
             self.conn.commit()
 

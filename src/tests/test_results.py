@@ -436,3 +436,119 @@ def test_results_screen_is_served(tmp_path):
             response = client.get(f"/static/{name}")
             assert response.status_code == 200
             assert "export function" in response.text
+
+
+def test_corrections_rerun_template_rules(tmp_path, spec):
+    """Checks/validation re-run after edits; check and custom-label items are
+    editable in the Results screen and the review queue."""
+    template = template_json(spec)
+    template["validate"] = {"RollNo": {"length": 4, "allowGaps": False}}
+    template["checks"] = [{"name": "q_agree", "sources": ["q1", "q2"]}]
+    image, truth = sheet(spec, 60, q1="A", q2="B", roll2="")
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template)
+        result = scan(client, template_id, image)
+        scan_id = result["scan_id"]
+        kinds = {item["name"]: item["kind"] for item in result["review"]}
+        assert kinds["RollNo"] == "custom_label" and kinds["q_agree"] == "check"
+        assert result["responses"]["q_agree"] == "A"
+
+        # Both rule items show in the queue, with what the reviewer needs
+        queue = client.get("/review", params={"scan_id": scan_id}).json()["items"]
+        by_name = {item["name"]: item for item in queue}
+        assert by_name["q_agree"]["candidates"] == [
+            {"source": "q1", "value": "A"},
+            {"source": "q2", "value": "B"},
+        ]
+        assert by_name["RollNo"]["fields"] == ["roll1", "roll2", "roll3", "roll4"]
+        assert "gap at position 2" in by_name["RollNo"]["reasons"]
+        assert (
+            client.get("/review", params={"scan_id": scan_id, "kind": "check"}).json()[
+                "total"
+            ]
+            == 1
+        )
+
+        # A custom label is split over its columns; validation passes again
+        answers = truth["answers"]
+        fixed = answers["roll1"] + "7" + answers["roll3"] + answers["roll4"]
+        body = client.post(
+            f"/scans/{scan_id}/corrections",
+            json={"changes": {"RollNo": fixed}},
+            headers={"X-User": "ana"},
+        ).json()
+        outputs = {o["name"]: o for o in body["outputs"]}
+        assert outputs["RollNo"]["value"] == fixed
+        assert outputs["RollNo"]["kind"] == "custom_label"
+        assert body["validation"]["RollNo"]["ok"] is True
+        assert "RollNo" not in body["pending"]
+        roll2 = next(f for f in body["fields"] if f["name"] == "roll2")
+        assert roll2["value"] == "7" and roll2["original_value"] == ""
+        audit = client.get(f"/scans/{scan_id}/audit").json()["items"]
+        assert {(a["name"], a["kind"]) for a in audit} >= {
+            ("roll2", "field"),
+            ("RollNo", "custom_label"),
+        }
+
+        # A check is corrected by its output column; the typed value survives
+        # rules re-running after another edit
+        body = client.post(
+            f"/scans/{scan_id}/corrections", json={"changes": {"q_agree": "B"}}
+        ).json()
+        assert outputs["q_agree"]["kind"] == "check"
+        assert body["checks"]["q_agree"]["value"] == "B"
+        assert body["checks"]["q_agree"]["manual"] is True
+        assert body["pending"] == [] and body["status"] == "ok"
+        body = client.post(
+            f"/scans/{scan_id}/corrections",
+            json={"toggle": [{"field": "q5", "value": truth["answers"]["q5"]}]},
+        ).json()
+        assert body["checks"]["q_agree"]["value"] == "B"
+        assert {o["name"]: o["value"] for o in body["outputs"]}["q_agree"] == "B"
+
+        # An edit that breaks a rule again puts the item back in the queue ...
+        body = client.post(
+            f"/scans/{scan_id}/corrections",
+            json={"changes": {"RollNo": fixed[0] + " " + fixed[2:]}},
+        ).json()
+        assert "RollNo" in body["pending"] and body["status"] == "needs_review"
+        queue = client.get("/review", params={"scan_id": scan_id}).json()
+        assert [item["name"] for item in queue["items"]] == ["RollNo"]
+        # ... until a person accepts it (review queue endpoint)
+        reviewed = client.post(
+            f"/scans/{scan_id}/review", json={"accept": ["RollNo"]}
+        ).json()
+        assert reviewed["review"] == [] and reviewed["status"] == "ok"
+        assert client.get("/review", params={"scan_id": scan_id}).json()["total"] == 0
+
+        # Exports carry the rule outputs as corrected
+        record = client.post(
+            "/exports",
+            json={
+                "format": "csv",
+                "filters": {"template_id": template_id},
+                "wait": True,
+                "profile": {
+                    "fields": [{"field": "RollNo"}, {"field": "q_agree"}],
+                    "meta": [],
+                    "includeReviewStatus": False,
+                    "includeCorrected": False,
+                    "includeFieldCorrected": True,
+                },
+            },
+        ).json()
+        assert record["state"] == "completed", record
+        lines = client.get(record["download_url"]).text.lstrip("\ufeff").splitlines()
+        assert lines[0] == "RollNo,RollNo_corrected,q_agree,q_agree_corrected"
+        # RollNo is back to what was read (roll2 blank again); q_agree was typed
+        assert lines[1] == f"{fixed[0] + fixed[2:]},false,B,true"
+
+        # Unknown names are refused before anything changes
+        response = client.post(
+            f"/scans/{scan_id}/corrections", json={"changes": {"nope": "1"}}
+        )
+        assert response.status_code == 422
+        response = client.post(
+            f"/scans/{scan_id}/corrections", json={"changes": {"RollNo": "12345"}}
+        )
+        assert response.status_code == 422 and "longer" in response.text

@@ -607,14 +607,39 @@ function valueInput(item) {
   return input;
 }
 
+function acceptButton(item) {
+  if (!item.pending || r.preview) return null;
+  return el(
+    "button",
+    {
+      class: "small ghost res-accept",
+      title: "The value is right: settle this item",
+      onclick: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        correct({ accept: [item.check || item.name] });
+      },
+    },
+    "Accept"
+  );
+}
+
 function itemRow(item, indent) {
+  const label = item.kind === "check" ? "check" : item.kind === "custom_label" ? "label" : null;
   return el(
     "div",
     { class: `res-row${item.flagged ? " flagged" : ""}${item.corrected ? " corrected" : ""}${indent ? " part" : ""}${item.name === r.selected ? " selected" : ""}`, "data-names": item.name, onclick: (e) => { if (!typing(e.target)) select(item.name); } },
-    el("span", { class: "res-name", title: item.name }, item.name),
+    el("span", { class: "res-name", title: item.name }, item.name, label ? el("span", { class: "muted small" }, ` ${label}`) : null),
     valueInput(item),
     el("span", { class: "conf", style: { background: confidenceColor(item.confidence) } }, confText(item.confidence)),
-    el("div", { class: "res-flags" }, item.corrected ? el("span", { class: "chip corrected" }, `was ${item.original_value === "" ? "∅" : item.original_value}`) : null, (item.flags || []).map((f) => chip(f, "flag")))
+    el(
+      "div",
+      { class: "res-flags" },
+      acceptButton(item),
+      item.corrected ? el("span", { class: "chip corrected" }, `was ${item.original_value === "" || item.original_value === undefined ? "∅" : item.original_value}`) : null,
+      (item.flags || []).map((f) => chip(f, "flag")),
+      (item.reasons || []).length ? el("span", { class: "muted small res-reasons" }, item.reasons.join("; ")) : null
+    )
   );
 }
 
@@ -643,7 +668,14 @@ function renderSide() {
   for (const output of outputs) {
     if (output.parts) {
       const parts = output.parts.map((p) => byName[p]).filter(Boolean);
-      const head = el("summary", { class: `res-row group${output.flagged ? " flagged" : ""}${output.corrected ? " corrected" : ""}`, "data-names": [output.name, ...output.parts].join("\n") }, el("span", { class: "res-name" }, output.name), el("span", { class: "res-concat mono" }, output.value === "" ? "∅" : output.value), el("span", { class: "conf", style: { background: confidenceColor(output.confidence) } }, confText(output.confidence)), el("div", { class: "res-flags" }, (output.flags || []).map((f) => chip(f, "flag"))));
+      const joined = valueInput({ ...output, kind: "custom_label" });
+      joined.title = `Type the whole ${output.name}; it is split over ${output.parts.join(", ")} (space = blank column)`;
+      // Typing in a <summary> must not open/close the group
+      joined.addEventListener("click", (e) => e.preventDefault());
+      joined.addEventListener("keyup", (e) => {
+        if (e.key === " ") e.preventDefault();
+      });
+      const head = el("summary", { class: `res-row group${output.flagged ? " flagged" : ""}${output.corrected ? " corrected" : ""}`, "data-names": [output.name, ...output.parts].join("\n") }, el("span", { class: "res-name" }, output.name), joined, el("span", { class: "conf", style: { background: confidenceColor(output.confidence) } }, confText(output.confidence)), el("div", { class: "res-flags" }, acceptButton(output), (output.flags || []).map((f) => chip(f, "flag")), (output.reasons || []).length ? el("span", { class: "muted small res-reasons" }, output.reasons.join("; ")) : null));
       const details = el("details", { class: "res-group" }, head, parts.map((p) => itemRow(p, true)));
       if (output.flagged || output.corrected) details.open = true;
       list.append(details);
@@ -651,6 +683,8 @@ function renderSide() {
       const row = itemRow(byName[output.name]);
       for (const f of output.flags || []) if (!(byName[output.name].flags || []).includes(f)) row.querySelector(".res-flags").append(chip(f, "flag"));
       list.append(row);
+    } else if (output.editable) {
+      list.append(itemRow(output));
     } else {
       list.append(el("div", { class: "res-row" }, el("span", { class: "res-name" }, output.name), el("span", { class: "mono" }, output.value)));
     }
@@ -666,13 +700,20 @@ function renderSide() {
         { class: "res-outputs" },
         checks.map(([name, check]) => {
           const c = check && typeof check === "object" ? check : { value: check };
+          const pendingCheck = (d.pending || []).includes(name);
           return el(
             "div",
             { class: `res-row${(c.flags || []).length ? " flagged" : ""}` },
             el("span", { class: "res-name" }, name),
             el("span", { class: "mono res-concat" }, c.value === undefined || c.value === null ? "" : String(c.value)),
-            el("span", { class: "muted small" }, c.chosen_source ? `from ${c.chosen_source}` : ""),
-            el("div", { class: "res-flags" }, (c.flags || []).map((f) => chip(f, "flag"))),
+            el("span", { class: "muted small" }, c.manual ? "typed by a person" : c.chosen_source ? `from ${c.chosen_source}` : ""),
+            el(
+              "div",
+              { class: "res-flags" },
+              acceptButton({ name, pending: pendingCheck }),
+              (c.flags || []).map((f) => chip(f, "flag")),
+              (c.validation_reasons || []).length ? el("span", { class: "muted small res-reasons" }, c.validation_reasons.join("; ")) : null
+            ),
             c.sources ? el("details", { class: "small muted res-sources" }, el("summary", {}, "sources"), el("pre", {}, JSON.stringify(c.sources, null, 1))) : null
           );
         })
