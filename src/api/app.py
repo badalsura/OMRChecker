@@ -65,6 +65,7 @@ from src.api.storage import (
     write_json_atomic,
 )
 from src.api.templates import EnginePool, TemplateError, TemplateStore, draw_layout
+from src.api.tools import register_tool_routes
 from src.api.worker import SAVE_ALL, SAVE_NONE, SAVE_REVIEW, scan_and_store
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -889,6 +890,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             if result.get("responses"):
                 return sorted(result["responses"])
         return []
+
+    register_tool_routes(app, secured, read_upload, ctx)
 
     # ------------------------------------------------------------------
     # GUI
