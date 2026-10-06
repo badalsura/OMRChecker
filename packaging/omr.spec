@@ -76,6 +76,8 @@ datas += optional(collect_data_files, "fitz")
 binaries = []
 binaries += optional(collect_dynamic_libs, "onnxruntime")
 binaries += optional(collect_dynamic_libs, "zxingcpp")
+# Optional ZBar engine: pyzbar's Windows wheel ships libzbar-64.dll/libiconv.dll
+binaries += optional(collect_dynamic_libs, "pyzbar")
 
 hiddenimports = []
 # Processors and readers are discovered at run time with pkgutil. Walk the file

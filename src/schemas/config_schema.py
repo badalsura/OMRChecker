@@ -109,6 +109,23 @@ CONFIG_SCHEMA = {
                 },
             },
         },
+        "barcode_params": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "engines": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["zxing", "builtin", "opencv", "pyzbar"],
+                    },
+                    "minItems": 1,
+                    "uniqueItems": True,
+                },
+                "pyzbar": {"type": "boolean"},
+                "review_fallback_decodes": {"type": "boolean"},
+            },
+        },
         "outputs": {
             "type": "object",
             "additionalProperties": False,

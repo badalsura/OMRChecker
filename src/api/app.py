@@ -253,7 +253,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     @app.get("/capabilities", tags=["meta"], dependencies=secured)
     def capabilities():
         from src.constants.common import FIELD_TYPES
-        from src.readers.barcode import supported_formats
+        from src.readers.barcode import available_engines, supported_formats
         from src.readers.ocr import tesseract_available
         from src.schemas.template_schema import ZONE_SCHEMA
 
@@ -265,6 +265,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             onnx = False
         return {
             "barcode_formats": supported_formats(),
+            "barcode_engines": available_engines(),
             "tesseract": tesseract_available(),
             "onnxruntime": onnx,
             "models": {

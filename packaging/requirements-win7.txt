@@ -48,6 +48,12 @@ colorama==0.4.6
 # use classical thresholding and ICR zones go to manual review.
 onnxruntime==1.19.2 ; python_version >= "3.8"
 
+# --- optional: ZBar barcode engine ------------------------------------------
+# py2.py3-none-win_amd64 wheel with libzbar-64.dll bundled. Off unless config
+# barcode_params.pyzbar is true. The DLL needs the Visual C++ 2013 x64 runtime
+# (msvcr120.dll); without it pyzbar fails to import and the engine is skipped.
+pyzbar==0.1.9
+
 # --- build -------------------------------------------------------------------
 pyinstaller==5.13.2              # last 5.x; Python 3.8 + Win7-compatible bootloader
 pyinstaller-hooks-contrib==2024.11

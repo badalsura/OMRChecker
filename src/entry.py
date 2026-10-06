@@ -12,7 +12,6 @@ from csv import QUOTE_NONNUMERIC
 from pathlib import Path
 from time import time
 
-import cv2
 import pandas as pd
 from rich.table import Table
 
@@ -136,9 +135,11 @@ def process_dir(
 
     if omr_files:
         if not template:
-            logger.error(f"Found images, but no template in the directory tree \
+            logger.error(
+                f"Found images, but no template in the directory tree \
                 of '{curr_dir}'. \nPlace {TEMPLATE_FILENAME} in the \
-                appropriate directory.")
+                appropriate directory."
+            )
             raise Exception(
                 f"No template file found in the directory tree of {curr_dir}"
             )
@@ -168,8 +169,10 @@ def process_dir(
 
     elif not subdirs:
         # Each subdirectory should have images or should be non-leaf
-        logger.info(f"No valid images or sub-folders found in {curr_dir}.\
-            Empty directories not allowed.")
+        logger.info(
+            f"No valid images or sub-folders found in {curr_dir}.\
+            Empty directories not allowed."
+        )
 
     # recursively process sub-folders
     for d in subdirs:
@@ -271,7 +274,8 @@ def _process_single_image(
     )
     response_dict = detailed["omr_response"]
     final_marked, multi_marked = detailed["final_marked"], detailed["multi_marked"]
-    zone_results = read_zones(template.zones, detailed["aligned_image"])
+    zone_engines = {"barcode_params": tuning_config.barcode_params.toDict()}
+    zone_results = read_zones(template.zones, detailed["aligned_image"], zone_engines)
     for zone_name, zone_result in zone_results.items():
         response_dict[zone_name] = zone_result.value
     write_review_rows(

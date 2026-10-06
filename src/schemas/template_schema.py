@@ -66,6 +66,8 @@ TIMING_MARK_OPTIONS_SCHEMA = {
     },
 }
 
+BARCODE_ENGINES = ["zxing", "builtin", "opencv", "pyzbar"]
+
 ZONE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -89,6 +91,19 @@ ZONE_SCHEMA = {
                 "pattern": {"type": "string"},
                 "minConfidence": zero_to_one_number,
                 "emptyValue": {"type": "string"},
+                # Barcode / QR: decoder order and optional engines
+                "engines": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": BARCODE_ENGINES},
+                    "minItems": 1,
+                },
+                "pyzbar": {"type": "boolean"},
+                # Built-in decoder: Code 39 mod 43 check digit / full ASCII,
+                # ITF GS1 check digit and minimum length
+                "code39Checksum": {"type": "boolean"},
+                "code39Extended": {"enum": ["auto", True, False]},
+                "itfChecksum": {"type": "boolean"},
+                "itfMinLength": {"type": "integer", "minimum": 2},
             },
         },
     },

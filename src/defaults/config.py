@@ -55,6 +55,14 @@ CONFIG_DEFAULTS = DotMap(
             "pdf_dpi": "auto",
             "pdf_page": 1,
         },
+        "barcode_params": {
+            # Barcode/QR decoders, tried in order until one reads (src/readers/barcode.py)
+            "engines": ["zxing", "builtin", "opencv", "pyzbar"],
+            # pyzbar (ZBar) is optional: used only when installed and switched on
+            "pyzbar": False,
+            # Send zones read by an engine other than zxing to review
+            "review_fallback_decodes": False,
+        },
         "outputs": {
             "show_image_level": 0,
             "save_image_level": 0,

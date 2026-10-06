@@ -65,6 +65,18 @@ engine keeps working: bubbles use classical adaptive thresholding and ICR zones
 are flagged for review. `--selftest` reports `"onnxruntime": "unavailable (...)"`
 in that case. On Windows 10/11 it works as is.
 
+### Barcodes without native decoders: built-in and optional ZBar
+
+Barcode zones try ZXing-C++ first, then a built-in pure-NumPy decoder (Code 128,
+Code 39, ITF, EAN/UPC) and OpenCV's QR detector, so a barcode is still read if
+the zxing-cpp DLL cannot load. `--selftest` reports `"barcode_engines"`.
+
+pyzbar (ZBar) is bundled as an optional fourth engine and is **off** unless
+`barcode_params.pyzbar` is `true` in `config.json`. Its `libzbar-64.dll` needs
+the **Visual C++ 2013 x64 redistributable** (`vcredist_x64.exe`, msvcr120.dll),
+which PyInstaller does not bundle. Without it pyzbar does not load and
+`barcode_engines.pyzbar` is `false`; the other engines are unaffected.
+
 ### Windows 7 prerequisites
 
 * Windows 7 **SP1 x64** with **KB2533623** (needed by Python 3.8 itself) and

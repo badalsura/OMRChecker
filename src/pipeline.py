@@ -118,7 +118,8 @@ class OMREngine:
         self.zone_engines = {
             "icr": load_crop_classifier(
                 resolve_path(template_dir, icr_model_path or ml_params.icr_model_path)
-            )
+            ),
+            "barcode_params": self.tuning_config.barcode_params.toDict(),
         }
 
     def scan(self, image, file_id="image", keep_images=True):
