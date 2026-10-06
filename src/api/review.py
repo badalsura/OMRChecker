@@ -135,11 +135,19 @@ def recompute(result, engine):
     }
     for name, zone in (result.get("zones") or {}).items():
         omr_response[name] = zone.get("value", "")
+    # Sheet-level items (e.g. too_few_marks) are not rule items; keep them
+    sheet_items = [
+        item for item in result.get("review") or [] if item.get("kind") == "sheet"
+    ]
     try:
         if getattr(template, "rules", None) is not None:
             from src.rules import reapply_rules
 
             reapply_rules(result, template, dict(omr_response))
+            listed = {item["name"] for item in result.get("review") or []}
+            result["review"] = list(result.get("review") or []) + [
+                item for item in sheet_items if item["name"] not in listed
+            ]
         else:
             result["responses"] = get_concatenated_response(omr_response, template)
     except KeyError:
@@ -279,7 +287,8 @@ def apply_review(
     list of training events: (kind, name, predicted, label, action, item).
 
     Names may be fields, zones, cross-field checks (by check name or output
-    column) and custom labels. A corrected custom label is split over its
+    column), custom labels and sheet-level items (kind "sheet", e.g.
+    too_few_marks; these can only be accepted, which dismisses them). A corrected custom label is split over its
     bubble columns; a corrected check keeps the typed value ("manual_values")
     when rules re-run. Call recompute() afterwards to refresh responses, rule
     outputs and status.
@@ -302,9 +311,12 @@ def apply_review(
     }
     by_output = {check.get("output"): name for name, check in checks.items()}
     custom_labels = dict(custom_labels or {})
+    sheet_items = {}
     for item in (result.get("review") or []) + (result.get("read_review") or []):
         if item.get("kind") == "custom_label" and item.get("fields"):
             custom_labels.setdefault(item["name"], list(item["fields"]))
+        elif item.get("kind") == "sheet":
+            sheet_items.setdefault(item["name"], item)
 
     def canonical(name):
         if name in fields or name in zones or name in checks:
@@ -314,10 +326,16 @@ def apply_review(
     corrections = {canonical(k): v for k, v in corrections.items()}
     accept = [canonical(a) for a in accept]
     known = set(fields) | set(zones) | set(checks) | set(custom_labels)
+    known |= set(sheet_items)
     unknown = [n for n in [*corrections, *accept] if n not in known]
     if unknown:
         raise ReviewError(
             f"Unknown field, zone, check or custom label: {', '.join(sorted(unknown))}"
+        )
+    sheet_only = [n for n in corrections if n in sheet_items and n not in fields]
+    if sheet_only:
+        raise ReviewError(
+            f"{', '.join(sheet_only)}: a sheet-level item has no value; accept it to dismiss"
         )
 
     # Validate everything before changing anything; a custom label becomes
@@ -326,7 +344,7 @@ def apply_review(
     for name, label in corrections.items():
         if name in fields:
             validate_field_value(name, fields[name], label, empty_values.get(name))
-        elif name not in zones and name not in checks:
+        elif name not in zones and name not in checks and name in custom_labels:
             column_changes[name] = _distribute(
                 name, label, custom_labels[name], fields, empty_values
             )
@@ -393,6 +411,9 @@ def apply_review(
                 responses[check.get("output") or name] = label
             set_entity(check, label)
             settle("check", name, before, predicted, label, corrected)
+        elif name in sheet_items and name not in custom_labels:
+            # Dismissed; current_value() of a sheet item is "" so it stays settled
+            settle("sheet", name, dict(sheet_items[name]), "", "", False)
         else:
             predicted = responses.get(name, "")
             label = corrections[name] if corrected else predicted

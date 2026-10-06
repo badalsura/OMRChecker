@@ -660,6 +660,10 @@ function renderSide() {
   if (r.data.drift && r.data.drift.length) side.append(el("div", { class: "res-warning" }, `Re-reading now gives different values for: ${r.data.drift.join(", ")}`));
   if (d.error) side.append(el("div", { class: "res-warning error" }, d.error));
   if (r.preview) side.append(previewBox());
+  for (const item of d.sheet_review || []) {
+    const detail = item.marked_bubbles !== undefined ? ` (${item.marked_bubbles} marked, minimum ${item.min_marked_bubbles})` : "";
+    side.append(el("div", { class: "res-warning" }, el("strong", {}, item.name), detail, " ", acceptButton({ name: item.name, pending: true })));
+  }
 
   const byName = {};
   for (const item of [...d.fields, ...d.zones]) byName[item.name] = item;

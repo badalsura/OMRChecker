@@ -323,7 +323,9 @@ class ResultsService:
         with self.engines.engine(
             result, template_overrides, config_overrides, use_current
         ) as (engine, info):
-            images = ImageUtils.load_omr_image(path, engine.tuning_config)
+            images = ImageUtils.load_omr_image(
+                path, engine.tuning_config, color=engine.needs_color
+            )
             page = int(result.get("page") or 0)
             if not images or page >= len(images):
                 raise ResultsError(f"Could not read page {page + 1} of '{path}'", 422)
@@ -988,5 +990,8 @@ def overlay_payload(result, info):
         "checks": checks,
         "validation": validation,
         "pending": sorted(pending),
+        "sheet_review": [
+            item for item in result.get("review") or [] if item.get("kind") == "sheet"
+        ],
         "audit": (result.get("audit") or [])[-50:],
     }

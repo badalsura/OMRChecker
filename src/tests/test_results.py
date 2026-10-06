@@ -552,3 +552,78 @@ def test_corrections_rerun_template_rules(tmp_path, spec):
             f"/scans/{scan_id}/corrections", json={"changes": {"RollNo": "12345"}}
         )
         assert response.status_code == 422 and "longer" in response.text
+
+
+def test_sheet_level_items_are_kept_and_dismissed(tmp_path, spec):
+    """Sheet items (kind "sheet") survive rule re-runs and are settled by accepting."""
+    template = template_json(spec)
+    template["validate"] = {"RollNo": {"length": 4}}
+    config = {"review_params": {"min_marked_bubbles": 1000}}
+    image, truth = sheet(spec, 70)
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates",
+            files=[
+                ("files", ("template.json", json.dumps(template), "application/json")),
+                ("files", ("config.json", json.dumps(config), "application/json")),
+            ],
+            data={"name": "Exam S"},
+        )
+        assert response.status_code == 201, response.text
+        result = scan(client, response.json()["id"], image)
+        scan_id = result["scan_id"]
+        assert [i["name"] for i in result["review"] if i["kind"] == "sheet"] == [
+            "too_few_marks"
+        ]
+        queue = client.get(
+            "/review", params={"scan_id": scan_id, "kind": "sheet"}
+        ).json()
+        assert queue["total"] == 1
+        assert "fewer than 1000" in queue["items"][0]["reasons"][0]
+
+        # An edit re-runs the rules; the sheet item stays pending
+        q1 = truth["answers"]["q1"]
+        body = client.post(
+            f"/scans/{scan_id}/corrections",
+            json={"toggle": [{"field": "q1", "value": q1}]},
+        ).json()
+        assert [i["name"] for i in body["sheet_review"]] == ["too_few_marks"]
+        assert body["status"] == "needs_review"
+        response = client.post(
+            f"/scans/{scan_id}/corrections", json={"changes": {"too_few_marks": "x"}}
+        )
+        assert response.status_code == 422 and "accept" in response.text
+
+        body = client.post(
+            f"/scans/{scan_id}/corrections", json={"accept": ["too_few_marks"]}
+        ).json()
+        assert body["sheet_review"] == [] and body["status"] == "ok"
+        body = client.post(
+            f"/scans/{scan_id}/corrections",
+            json={"toggle": [{"field": "q1", "value": q1}]},
+        ).json()
+        assert body["sheet_review"] == [] and body["status"] == "ok"
+        assert client.get("/review", params={"scan_id": scan_id}).json()["total"] == 0
+
+
+def test_colour_template_renders_and_regrades(tmp_path, spec):
+    """A colorDropout template re-reads its source in colour; regrade can swap
+    the dropout (a whole-key override) without touching the template."""
+    template = template_json(spec)
+    template["colorDropout"] = {"mode": "red", "strength": 1}
+    image, truth = sheet(spec, 80)
+    colour = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template)
+        result = scan(client, template_id, colour)
+        scan_id = result["scan_id"]
+        rendered = client.get(f"/scans/{scan_id}/render").json()
+        assert rendered["image_source"] == "source" and rendered["width"] > 0
+        q1 = next(f for f in rendered["fields"] if f["name"] == "q1")
+        assert q1["value"] == truth["answers"]["q1"]
+        preview = client.post(
+            f"/scans/{scan_id}/regrade",
+            json={"template_overrides": {"colorDropout": "grey"}},
+        ).json()
+        assert preview["applied"] is False
+        assert preview["changes"] == []  # a grey sheet reads the same either way

@@ -688,7 +688,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         job_id: Optional[str] = None,
         scan_id: Optional[str] = None,
         name: Optional[str] = Query(None, description="Only this field/zone name"),
-        kind: Optional[str] = Query(None, pattern="^(field|zone|check|custom_label)$"),
+        kind: Optional[str] = Query(
+            None, pattern="^(field|zone|check|custom_label|sheet)$"
+        ),
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
@@ -751,6 +753,17 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             item["details"] = zone.get("details")
         return item
 
+    def sheet_reasons(entry):
+        if not entry or entry.get("kind") != "sheet":
+            return []
+        if "marked_bubbles" in entry:
+            return [
+                f"{entry['marked_bubbles']} marked bubbles, fewer than "
+                f"{entry.get('min_marked_bubbles')}: blank or misread sheet? "
+                "Accept to dismiss"
+            ]
+        return ["Sheet-level check; accept to dismiss"]
+
     def rule_review_item(result, name):
         """A cross-field check or custom-label validation waiting for a person."""
         scan_id = result["scan_id"]
@@ -788,7 +801,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "value": value,
             "confidence": None,
             "flags": flags,
-            "reasons": (entry or {}).get("reasons") or validation.get("reasons") or [],
+            "reasons": (entry or {}).get("reasons")
+            or validation.get("reasons")
+            or sheet_reasons(entry),
             "fields": (entry or {}).get("fields"),
             "candidates": candidates,
             "crop_url": (
