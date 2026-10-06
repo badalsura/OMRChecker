@@ -51,6 +51,16 @@ class SheetSpec:
     timing_tracks: Dict[str, List[List[float]]] = field(default_factory=dict)
     timing_mark: List[int] = field(default_factory=lambda: [24, 12])
     corner_marker: int = 40
+    # Printed rectangle around each block, this many px outside its bubbles (0: none)
+    block_border: int = 0
+    block_border_thickness: int = 2
+
+    def block_box(self, block):
+        """[x0, y0, x1, y1] of a block's bubbles."""
+        positions = [(x, y) for b, _, _, x, y in self.bubble_positions() if b is block]
+        xs = [p[0] for p in positions]
+        ys = [p[1] for p in positions]
+        return [min(xs), min(ys), max(xs) + self.bubble[0], max(ys) + self.bubble[1]]
 
     def bubble_positions(self):
         """Yield (block, field_label, value, x, y) for every bubble."""
@@ -217,6 +227,32 @@ def _draw_mark(img, cx, cy, w, h, rng, style):
         )
 
 
+def _block_mover(spec, block, warp):
+    """Map a template point of `block` to where a local warp prints it."""
+    if not warp:
+        return lambda x, y: (x, y)
+    dx, dy, angle = (list(warp) + [0, 0, 0])[:3]
+    x0, y0, x1, y1 = spec.block_box(block)
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    cos, sin = np.cos(np.radians(angle)), np.sin(np.radians(angle))
+
+    def move(x, y):
+        rx, ry = x - cx, y - cy
+        return (cx + rx * cos - ry * sin + dx, cy + rx * sin + ry * cos + dy)
+
+    return move
+
+
+def _compose_colour(img, layers):
+    """Grey base plus colour layers, multiplied like inks on paper -> BGR."""
+    out = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR).astype(np.float32)
+    for layer, color in layers:
+        alpha = (255.0 - layer.astype(np.float32))[:, :, None] / 255.0
+        tint = np.float32(color) / 255.0
+        out *= 1.0 - alpha * (1.0 - tint)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 def render_sheet(
     spec: SheetSpec,
     answers: Dict[str, str],
@@ -224,12 +260,30 @@ def render_sheet(
     rng=None,
     mark_style="pen",
     erasures=0,
+    print_color=None,
+    ink_color=None,
+    block_warps=None,
 ):
-    """Return (grayscale image, ground truth dict)."""
+    """
+    Return (image, ground truth dict). The image is grayscale unless print_color
+    (bubble outlines, letters, labels and block borders) or ink_color (the
+    marks) is given as BGR or "#RRGGBB"; then it is BGR.
+
+    block_warps: {block name: (dx, dy, angle_degrees)} prints those blocks
+    (bubbles, border and marks) moved and rotated about their centre, as a
+    locally misprinted or curled sheet would show them.
+    """
     rng = rng or random.Random()
     page_w, page_h = spec.page
     img = np.full((page_h, page_w), 255, np.uint8)
     bw, bh = spec.bubble
+    print_color, ink_color = _as_bgr(print_color), _as_bgr(ink_color)
+    form = np.full_like(img, 255) if print_color is not None else img
+    ink = np.full_like(img, 255) if ink_color is not None else img
+    movers = {
+        block.name: _block_mover(spec, block, (block_warps or {}).get(block.name))
+        for block in spec.blocks
+    }
 
     # Corner markers (solid squares) inset from the page edge
     m = spec.corner_marker
@@ -254,20 +308,39 @@ def render_sheet(
                 -1,
             )
 
+    positions = {}
     for block, label, value, x, y in spec.bubble_positions():
-        cx, cy = x + bw // 2, y + bh // 2
+        cx, cy = movers[block.name](x + bw // 2, y + bh // 2)
+        cx, cy = int(round(cx)), int(round(cy))
+        positions[(label, value)] = (cx - bw // 2, cy - bh // 2)
         cv2.ellipse(
-            img, (cx, cy), (bw // 2 - 2, bh // 2 - 2), 0, 0, 360, 90, 1, cv2.LINE_AA
+            form, (cx, cy), (bw // 2 - 2, bh // 2 - 2), 0, 0, 360, 90, 1, cv2.LINE_AA
         )
-        _draw_text(img, value, (cx - bw // 6, cy + bh // 6), max(bh // 3, 6), 1)
+        _draw_text(form, value, (cx - bw // 6, cy + bh // 6), max(bh // 3, 6), 1)
     for block in spec.blocks:
         first = block.field_labels[0]
-        _draw_text(img, block.name, (block.origin[0], block.origin[1] - 15), 14, 1)
+        _draw_text(form, block.name, (block.origin[0], block.origin[1] - 15), 14, 1)
         del first
-
-    positions = {
-        (label, value): (x, y) for _, label, value, x, y in spec.bubble_positions()
-    }
+        if spec.block_border > 0:
+            pad = spec.block_border
+            x0, y0, x1, y1 = spec.block_box(block)
+            corners = [
+                (x0 - pad, y0 - pad),
+                (x1 + pad, y0 - pad),
+                (x1 + pad, y1 + pad),
+                (x0 - pad, y1 + pad),
+            ]
+            moved = np.array(
+                [movers[block.name](cx, cy) for cx, cy in corners], np.float32
+            )
+            cv2.polylines(
+                form,
+                [np.round(moved).astype(np.int32)],
+                True,
+                40,
+                spec.block_border_thickness,
+                cv2.LINE_AA,
+            )
     marked = {}
     for label, answer in answers.items():
         for value in _split_answer(answer, label, spec):
@@ -277,7 +350,7 @@ def render_sheet(
                 if mark_style != "mixed"
                 else rng.choice(["pen", "pencil", "pen", "partial"])
             )
-            _draw_mark(img, x + bw // 2, y + bh // 2, bw, bh, rng, style)
+            _draw_mark(ink, x + bw // 2, y + bh // 2, bw, bh, rng, style)
             marked[(label, value)] = style
 
     # Erasures: faint smudges in unmarked bubbles (should still read as empty)
@@ -295,6 +368,11 @@ def render_sheet(
         value = zone_values.setdefault(zone.name, _default_zone_value(zone, rng))
         _draw_zone(img, zone, value, rng)
 
+    layers = [(form, print_color), (ink, ink_color)]
+    layers = [(layer, color) for layer, color in layers if color is not None]
+    if layers:
+        img = _compose_colour(img, layers)
+
     truth = {
         "answers": dict(answers),
         "zones": zone_values,
@@ -303,6 +381,14 @@ def render_sheet(
         },
     }
     return img, truth
+
+
+def _as_bgr(color):
+    if color is None or isinstance(color, (tuple, list)):
+        return color
+    text = str(color).lstrip("#")
+    r, g, b = (int(text[i : i + 2], 16) for i in (0, 2, 4))
+    return (b, g, r)
 
 
 def _split_answer(answer, label, spec):
@@ -425,11 +511,12 @@ def augment(
     dst = cv2.transform(dst[None], rot)[0]
     homography = cv2.getPerspectiveTransform(src, dst)
     bg_value = rng.randint(40, 120) if background else 255
+    colour = img.ndim == 3
     out = cv2.warpPerspective(
         img,
         homography,
         (canvas_w, canvas_h),
-        borderValue=bg_value,
+        borderValue=(bg_value, bg_value, bg_value) if colour else bg_value,
         flags=cv2.INTER_LINEAR,
     )
     if shadow > 0:
@@ -438,9 +525,8 @@ def augment(
         )
         if rng.random() < 0.5:
             gradient = gradient[::-1]
-        out = np.clip(out.astype(np.float32) * gradient[None, :], 0, 255).astype(
-            np.uint8
-        )
+        gradient = gradient[None, :, None] if colour else gradient[None, :]
+        out = np.clip(out.astype(np.float32) * gradient, 0, 255).astype(np.uint8)
     if blur > 0:
         k = rng.choice([1, 3, 3, 5]) if blur >= 1 else 1
         if k > 1:
@@ -457,5 +543,5 @@ def augment(
     if jpeg_quality:
         quality = rng.randint(*jpeg_quality)
         ok, buffer = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        out = cv2.imdecode(buffer, cv2.IMREAD_GRAYSCALE)
+        out = cv2.imdecode(buffer, cv2.IMREAD_COLOR if colour else cv2.IMREAD_GRAYSCALE)
     return out, homography
