@@ -736,16 +736,26 @@ Firefox and Node 18+.
 
 - **Supported:** TimingMarkAlignment (including rotation and `nonRigid`),
   CropPage, CropOnMarkers, Levels, the blur filters and `block_snap_radius`.
-- **Matches Python:** on synthetic clean, scanned and phone sheets and on every
-  template in `samples/`, the browser reads the same values and review flags.
-- **Speed:** about 130 ms per phone sheet in Node, and 300–450 ms per photo in
-  headless Chrome on a slow VM. That includes decoding and drawing.
-- **Optional:** barcode/QR zones use zxing-wasm, and the bubble model uses
-  onnxruntime-web; both are loaded on demand.
+  Also `colorDropout` (page and per zone, `templateOverrides`,
+  `min_marked_bubbles`), the fixed threshold mode, `rectifyOnBorder`, and
+  template `validate` / `checks` (including `fallbackZone` and lazy zones).
+- **Matches Python:** on synthetic clean, scanned, phone, colour, bordered,
+  fixed-threshold and rules sheets, and on every template in `samples/`, the
+  browser reads the same values and review flags. Checks, validation and zone
+  results are identical.
+- **Speed:** about 120 ms per phone sheet in Node, and 300–450 ms per photo in
+  headless Chrome on a slow VM. That includes decoding and drawing. Colour
+  dropout adds about 7–20 ms per sheet, plus registering one extra image for
+  each per-zone setting.
+- **Barcodes:** the built-in decoder (Code 128, Code 39, ITF, EAN/UPC) is part
+  of `omr.js`. It is the fallback after zxing-wasm, which is loaded on demand,
+  and it is the only decoder when zxing-wasm isn't loaded. The `barcode_params`
+  engine chain works as in Python, but the `opencv` and `pyzbar` engines are
+  skipped, so QR codes need zxing-wasm.
+- **Optional:** the bubble model uses onnxruntime-web, loaded on demand.
 - **Not supported:** OCR/ICR zones need a reader you register (for example
   tesseract.js); without one they are flagged for review. FeatureBasedAlignment
-  and EccAlignment don't run in the browser. Template `validate` and
-  `checks`, and the built-in and OpenCV barcode fallbacks, are not ported yet.
+  and EccAlignment don't run in the browser.
 
 Send sheets that come back `needs_review` or `error` to `POST /scans` so they
 join the review queue.
