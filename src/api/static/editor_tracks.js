@@ -675,8 +675,8 @@ export function renderAlignmentPanel(ed) {
       ),
       points.length
         ? el("button", { class: "small", title: "Save, then measure every index point on the stored sample sheets (aligned by the tracks) and use the median position and size", onclick: (e) => calibrate(ed, e.target) }, "Calibrate on samples")
-        : null,
-      ed.calibration ? calibrationTable(ed) : null,
+        : "",
+      ed.calibration ? calibrationTable(ed) : "",
       modeBtn("align-index", "+ Add index point", "Click a printed mark on the page, or drag a box around it. Small dots work too. Suggestions are circled while this is on."),
       typedIndexPoint(ed)
     );

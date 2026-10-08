@@ -28,7 +28,7 @@
     // ------------------------------------------------------------------------
     var CONFIG_DEFAULTS = {
       dimensions: { display_height: 2480, display_width: 1640, processing_height: 820, processing_width: 666 },
-      threshold_params: { GAMMA_LOW: 0.7, MIN_GAP: 30, MIN_JUMP: 25, CONFIDENT_SURPLUS: 5, JUMP_DELTA: 30, PAGE_TYPE_FOR_THRESHOLD: "white", mode: "adaptive", fixed_threshold: 120, fixed_min_fill_ratio: 0.12 },
+      threshold_params: { GAMMA_LOW: 0.7, MIN_GAP: 30, MIN_JUMP: 25, CONFIDENT_SURPLUS: 5, JUMP_DELTA: 30, PAGE_TYPE_FOR_THRESHOLD: "white", mode: "adaptive", fixed_threshold: 120, fixed_min_fill_ratio: 0.12, flatten_background: true },
       alignment_params: { auto_align: false, match_col: 5, max_steps: 20, stride: 1, thickness: 3, block_snap_radius: 0, rectify_on_border: false, rectify_search_px: 20 },
       review_params: {
         confidence_margin: 20,
@@ -3142,12 +3142,61 @@
       return failed;
     }
 
+    // Grey morphology with cv2.getStructuringElement(MORPH_ELLIPSE, (k, k)); outside pixels ignored
+    function morphEllipse(img, k, isMax) {
+      var w = img.width, h = img.height, r = k >> 1, out = new Uint8Array(w * h).fill(isMax ? 0 : 255), rows = {};
+      for (var i = 0; i < k; i++) {
+        var dy = i - r;
+        if (Math.abs(dy) > r) continue;
+        var dx = Math.round(r * Math.sqrt((r * r - dy * dy) / (r * r)));
+        var j1 = Math.max(r - dx, 0), j2 = Math.min(r + dx + 1, k), key = j1 + ":" + j2;
+        if (!rows[key]) rows[key] = rowExtreme(img.data, w, h, r - j1, j2 - 1 - r, isMax);
+        var src = rows[key];
+        for (var y = 0; y < h; y++) {
+          var sy = y + dy;
+          if (sy < 0 || sy >= h) continue;
+          var o = y * w, so = sy * w;
+          for (var x = 0; x < w; x++) {
+            var v = src[so + x];
+            if (isMax ? v > out[o + x] : v < out[o + x]) out[o + x] = v;
+          }
+        }
+      }
+      return makeImage(w, h, out);
+    }
+    // Port of ImageInstanceOps.flatten_background: the page divided by a smooth
+    // estimate of its paper brightness (closing at quarter resolution, blurred)
+    function flattenBackground(img, bubbleSize) {
+      var w = img.width, h = img.height;
+      var small = resizeArea(img, Math.max(Math.floor(w / 4), 1), Math.max(Math.floor(h / 4), 1));
+      var k = Math.max(3, Math.round((3 * bubbleSize) / 4)) | 1;
+      var bg = morphEllipse(morphEllipse(small, k, true), k, false);
+      bg = resizeLinear(gaussianBlur(bg, k, k, 0), w, h);
+      var out = new Uint8Array(w * h), d = img.data, b = bg.data;
+      for (var i = 0; i < out.length; i++) {
+        var q = (d[i] * 255) / Math.max(b[i], 1), f = Math.floor(q), v = q - f > 0.5 || (q - f === 0.5 && f % 2) ? f + 1 : f;
+        out[i] = v > 255 ? 255 : v;
+      }
+      return makeImage(w, h, out);
+    }
+
     function readBubbles(template, image, config, modelProbs) {
       var tp = config.threshold_params, rp = config.review_params, ap = config.alignment_params || {};
       var img = image;
       if (img.width !== template.pageDimensions[0] || img.height !== template.pageDimensions[1]) img = resizeLinear(img, template.pageDimensions[0], template.pageDimensions[1]);
       var mm = minMax(img);
       if (mm[1] > mm[0]) img = normalizeMinMax(img);
+      // Zones and stored images use the page as aligned
+      var alignedOut = img;
+      if (tp.flatten_background && template.fieldBlocks.length) {
+        var sizes = template.fieldBlocks.map(function (b) {
+          return Math.max(b.bubbleDimensions[0], b.bubbleDimensions[1]);
+        }).sort(function (a, b) {
+          return a - b;
+        });
+        var mid = sizes.length >> 1;
+        img = flattenBackground(img, sizes.length % 2 ? sizes[mid] : (sizes[mid - 1] + sizes[mid]) / 2);
+      }
       var snap = ap.block_snap_radius || 0;
       template.fieldBlocks.forEach(function (block) {
         block.shiftY = 0;
@@ -3242,7 +3291,7 @@
         return {
           omrResponse: omrResponse,
           fieldDetails: fieldDetails,
-          alignedImage: img,
+          alignedImage: alignedOut,
           thresholds: thresholds,
         };
       });
