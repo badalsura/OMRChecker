@@ -43,7 +43,10 @@ supported. On Windows 7 use **Chrome 109** (the last Chrome for Win7) or
 ### OCR (Tesseract)
 
 `tesserocr` has no Windows wheels, so the Windows build uses `pytesseract`,
-which runs `tesseract.exe`. To bundle it:
+which runs `tesseract.exe`. The GitHub Actions build (`build-windows.yml`)
+bundles it automatically: it installs the UB Mannheim build with Chocolatey and
+copies `tesseract.exe`, its DLLs and the English/OSD data into
+`packaging\tesseract\`. For a local build, bundle it by hand:
 
 1. Install the UB Mannheim build (https://github.com/UB-Mannheim/tesseract/wiki;
    the 5.x installers run on Windows 7 x64) and copy its install folder

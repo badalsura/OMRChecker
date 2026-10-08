@@ -109,6 +109,28 @@ jobs:
       - name: Engine smoke test from source
         run: python packaging/omr_desktop.py --selftest
 
+      - name: Bundle Tesseract (UB Mannheim build)
+        shell: pwsh
+        run: |
+          choco install tesseract -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $src = "C:\Program Files\Tesseract-OCR"
+          if (!(Test-Path "$src\tesseract.exe")) { Write-Error "tesseract.exe not found in $src"; exit 1 }
+          & "$src\tesseract.exe" --version
+          # The engine and its DLLs only: the training tools, docs and uninstaller
+          # are not needed. The bundled tessdata (packaging\tessdata, best/fast)
+          # is used first; the installer's eng/osd stay as a fallback.
+          $dst = "packaging\tesseract"
+          New-Item -ItemType Directory -Force -Path "$dst\tessdata" | Out-Null
+          Copy-Item "$src\tesseract.exe" $dst
+          Copy-Item "$src\*.dll" $dst
+          foreach ($f in @("eng.traineddata", "osd.traineddata")) {
+            if (Test-Path "$src\tessdata\$f") { Copy-Item "$src\tessdata\$f" "$dst\tessdata" }
+          }
+          if (Test-Path "$src\tessdata\configs") { Copy-Item -Recurse "$src\tessdata\configs" "$dst\tessdata" }
+          & "$dst\tesseract.exe" --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "the copied tesseract.exe does not start"; exit 1 }
+
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean packaging/omr.spec
 
@@ -138,6 +160,9 @@ jobs:
           $build = Get-Content packaging\ocr_build.json | ConvertFrom-Json
           Write-Host "OCR engines in the exe:" ($r.engines | ConvertTo-Json -Compress)
           if ($build.bundled.paddle -and -not $r.engines.paddleocr) { Write-Error "PaddleOCR models were bundled but do not load"; exit 1 }
+          # The runner has Tesseract installed too, so check the bundled copy itself
+          if (!(Test-Path dist\OMRChecker\tesseract\tesseract.exe)) { Write-Error "Tesseract is missing from the exe folder"; exit 1 }
+          if (-not $r.engines.tesseract) { Write-Error "Tesseract was bundled but is not found by the exe"; exit 1 }
           Compress-Archive -Force -Path dist\OMRChecker -DestinationPath dist\OMRChecker-portable-win64.zip
 
       - name: Smoke-test the onefile exe

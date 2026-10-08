@@ -26,3 +26,4 @@ web/omr-browser/node_modules/
 packaging/tessdata/
 packaging/ocr_build.json
 packaging/models/
+packaging/tesseract/
