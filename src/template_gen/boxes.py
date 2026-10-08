@@ -147,16 +147,20 @@ def block_from_box(gray, box, page_size, bubble_dims=None):
     x1, y1 = min(page_w, x + w), min(page_h, y + h)
     if x1 - x0 < 10 or y1 - y0 < 10:
         return None, "box too small"
-    crop = np.ascontiguousarray(gray[y0:y1, x0:x1])
-    candidates = bubbles.detect_bubble_candidates(crop, (x1 - x0, y1 - y0))
+    # Bubble sizes are judged against the whole page, then kept inside the box
+    candidates = bubbles.detect_bubble_candidates(gray, page_size)
+    if len(candidates):
+        inside = (
+            (candidates[:, 0] > x0) & (candidates[:, 0] < x1)
+            & (candidates[:, 1] > y0) & (candidates[:, 1] < y1)
+        )
+        candidates = candidates[inside]
     if len(candidates) == 0:
         return None, "no bubbles found in the box"
-    grids, _ = bubbles.group_into_grids(candidates, crop)
+    grids, _ = bubbles.group_into_grids(candidates, gray)
     if not grids:
         return None, "no regular grid of bubbles found in the box"
     grid = max(grids, key=lambda g: g.rows * g.cols)
-    grid.x0 += x0
-    grid.y0 += y0
     direction = label_ops.default_direction(grid)
     n_values = grid.cols if direction == "horizontal" else grid.rows
     n_fields = grid.rows if direction == "horizontal" else grid.cols

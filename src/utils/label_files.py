@@ -41,6 +41,7 @@ FILE_COLUMNS = (
     "scan",
     "scanfile",
 )
+AMBIGUOUS_FILE_COLUMNS = {"name", "sheet", "scan", "image"}
 ANSWER_COLUMN_NAMES = {
     "ans",
     "answer",
@@ -229,6 +230,12 @@ def parse_label_file(content, image_names, filename=None, answer_columns=None):
     if not records:
         return None, info
     key = find_file_column(header)
+    if key is not None and normalize_header(key) in AMBIGUOUS_FILE_COLUMNS:
+        # "Name" may be the student's name: use it only when it names the images
+        stems = {Path(str(n).replace("\\", "/")).stem.lower() for n in image_names}
+        values = [Path(str(r.get(key) or "").strip()).stem.lower() for r in records]
+        if sum(v in stems for v in values if v) < 0.5 * max(1, min(len(values), len(stems))):
+            key = None
     info["file_column"] = key
     data_columns = [h for h in header if h != key]
     _pad_digit_columns(data_columns, records)
