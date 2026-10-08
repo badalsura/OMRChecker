@@ -5148,6 +5148,7 @@
         ctx.registration = { error: String((error && error.message) || error) };
       }
       var reg = ctx.registration || {}, page = this.template.pageDimensions, quad = null, marks = null;
+      var blocks = null, bubbles = null, bubbleRadius = null;
       function toFrame(p) {
         return [p[0] / sx, p[1] / sy];
       }
@@ -5157,6 +5158,14 @@
           return p.name === "TimingMarkAlignment";
         })[0];
         if (tm) marks = projectPoints(reg.homography, tm.expected).map(toFrame);
+        var layout = this.previewLayout();
+        blocks = layout.blocks.map(function (corners) {
+          return projectPoints(reg.homography, corners).map(toFrame);
+        });
+        bubbles = projectPoints(reg.homography, layout.bubbles).map(toFrame);
+        // bubble radius in frame pixels, from the page width as seen in the frame
+        var top = Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]);
+        bubbleRadius = (layout.radius * top) / page[0];
       } else if (reg.corners && reg.corners.length === 4) {
         quad = reg.corners.map(toFrame);
       }
@@ -5168,8 +5177,33 @@
         expected: reg.expected_marks !== undefined ? reg.expected_marks : null,
         quad: quad,
         marks: marks,
+        blocks: blocks,
+        bubbles: bubbles,
+        bubbleRadius: bubbleRadius,
         sharpness: roundTo(laplacianVariance(gray), 1),
       };
+    };
+    // Field block outlines and bubble centres in template units, for drawing
+    // the template over a camera frame (computed once per engine)
+    Engine.prototype.previewLayout = function () {
+      if (this._previewLayout) return this._previewLayout;
+      var blocks = [], bubbles = [], sizes = [];
+      this.template.fieldBlocks.forEach(function (block) {
+        var bw = block.bubbleDimensions[0], bh = block.bubbleDimensions[1];
+        var x0 = block.origin[0], y0 = block.origin[1];
+        var x1 = x0 + block.dimensions[0], y1 = y0 + block.dimensions[1];
+        blocks.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+        block.fields.forEach(function (field) {
+          field.bubbles.forEach(function (b) {
+            bubbles.push([b.x + bw / 2, b.y + bh / 2]);
+          });
+        });
+        sizes.push(Math.min(bw, bh));
+      });
+      sizes.sort(function (a, b) { return a - b; });
+      var radius = sizes.length ? sizes[sizes.length >> 1] * 0.35 : 0;
+      this._previewLayout = { blocks: blocks, bubbles: bubbles, radius: radius };
+      return this._previewLayout;
     };
     // Variance of the 4-neighbour Laplacian: low on blurred or shaken frames
     function laplacianVariance(img) {

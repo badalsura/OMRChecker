@@ -203,4 +203,11 @@ test("live preview reports alignment and sharpness without reading", async () =>
   assert.equal(p.quad, null);
   assert.equal(p.sharpness, 0);
   assert.ok(engine.preview(striped).sharpness > 1000);
+  // template overlay: one outline per field block, one centre per bubble
+  const layout = engine.previewLayout();
+  const blocks = engine.template.fieldBlocks;
+  assert.equal(layout.blocks.length, blocks.length);
+  const bubbles = blocks.reduce((n, b) => n + b.fields.reduce((m, f) => m + f.bubbles.length, 0), 0);
+  assert.equal(layout.bubbles.length, bubbles);
+  assert.ok(layout.radius > 0);
 });

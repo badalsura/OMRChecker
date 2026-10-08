@@ -30,6 +30,15 @@ export function initScan() {
     drop.classList.remove("over");
     addFiles([...e.dataTransfer.files]);
   });
+  document.getElementById("scan-camera").addEventListener("click", () => {
+    const templateId = document.getElementById("scan-template").value;
+    if (!templateId) {
+      toast("Pick a template first", "error");
+      return;
+    }
+    const query = new URLSearchParams({ source: "server", apiBase: location.origin, templateId });
+    window.open(`/browser/demo.html?${query}`, "_blank");
+  });
   document.getElementById("scan-clear").addEventListener("click", () => {
     sheets.splice(0, sheets.length, ...sheets.filter((s) => s.state === "queued" || s.state === "reading"));
     selected = null;
