@@ -120,21 +120,29 @@ class TimingMarkAlignment(ImagePreprocessor):
         best = None
         if len(self.expected):
             candidates = self.blob_centres(image, page_corners)
+            self._candidates = candidates
             if len(candidates) < self.min_matched:
                 logger.error(
                     f"Timing marks not found in '{file_path}': {len(candidates)} candidate blobs"
                 )
                 return None
+            orientation_fits = []
             for rotation in rotations:
                 fit = self.fit_orientation(page_corners, candidates, rotation)
                 if fit is None:
                     continue
                 if self.index_points:
                     self.locate_index_points(image, fit)
+                orientation_fits.append(fit)
                 if best is None or self._orientation_key(fit) > self._orientation_key(
                     best
                 ):
                     best = fit
+            self._runner_up = max(
+                (f for f in orientation_fits if f is not best),
+                key=self._orientation_key,
+                default=None,
+            )
             if best is None or best["matched"] < self.min_matched:
                 matched = 0 if best is None else best["matched"]
                 logger.error(
@@ -142,6 +150,7 @@ class TimingMarkAlignment(ImagePreprocessor):
                 )
                 return None
         else:
+            self._runner_up = None
             for rotation in rotations:
                 fit = self.fit_index_points_only(image, page_corners, rotation)
                 if fit is not None and (
@@ -201,6 +210,72 @@ class TimingMarkAlignment(ImagePreprocessor):
         self.record_alignment_info(**self.alignment_report(image, best, tps))
         logger.info(f"Timing marks: {self.last_registration}")
         return warped
+
+    def ambiguity_review(self, best):
+        """
+        Sheet review items for a registration that a different fit explains
+        almost as well: another orientation (tracks that look the same turned
+        round) or the same orientation slid one mark pitch along a track.
+        """
+        review = []
+        runner = getattr(self, "_runner_up", None)
+        if runner is not None and self._orientations_tie(best, runner):
+            review.append(
+                {
+                    "kind": "sheet",
+                    "name": "orientation",
+                    "flags": ["orientation_ambiguous"],
+                    "orientations": [int(best["rotation"] * 90), int(runner["rotation"] * 90)],
+                }
+            )
+        slid = self._slide_ties(best)
+        if slid:
+            review.append(
+                {
+                    "kind": "sheet",
+                    "name": "registration_slide",
+                    "flags": ["registration_suspect"],
+                    "tracks": slid,
+                }
+            )
+        return review
+
+    def _orientations_tie(self, best, runner):
+        if self.index_points and best.get("index_found", 0) > runner.get(
+            "index_found", 0
+        ):
+            # Index points are asymmetric on purpose: they decided it
+            return False
+        if runner["matched"] < 0.75 * best["matched"]:
+            return False
+        return runner["residual"] <= max(2.0 * best["residual"], best["residual"] + 1.0)
+
+    def _slide_ties(self, best):
+        """Tracks along which a fit shifted by one pitch scores about as well."""
+        candidates = getattr(self, "_candidates", None)
+        if candidates is None or not len(candidates) or not len(self.expected):
+            return []
+        homography = best["homography"]
+        radius = self.search_radius * self._pixels_per_unit(homography) * 0.5
+        best_key = self._slide_key(homography, candidates, radius)
+        tied = []
+        for name, marks in self.tracks.items():
+            if len(marks) < 3:
+                continue
+            step = np.median(np.diff(marks, axis=0), axis=0)
+            for sign in (-1.0, 1.0):
+                shift = np.float64(
+                    [[1, 0, sign * step[0]], [0, 1, sign * step[1]], [0, 0, 1]]
+                )
+                if self._slide_key(homography @ shift, candidates, radius) >= best_key - 2:
+                    tied.append(name)
+                    break
+        return tied
+
+    def _slide_key(self, homography, candidates, radius):
+        matched = len(self.match(homography, candidates, radius))
+        beyond = self._marks_beyond_track_ends(homography, candidates, radius)
+        return matched - 2 * beyond
 
     def _orientation_key(self, fit):
         # Index points are asymmetric: they decide between look-alike orientations
@@ -424,9 +499,15 @@ class TimingMarkAlignment(ImagePreprocessor):
         template_pts = self.expected[pairs[:, 0]]
         image_pts = candidates[pairs[:, 1]]
         homography, inliers = cv2.findHomography(template_pts, image_pts, 0)
-        if homography is None:
+        if homography is None or not _well_conditioned(homography):
             return None
-        residual = self.residual_in_template_units(homography, template_pts, image_pts)
+        try:
+            residual = self.residual_in_template_units(
+                homography, template_pts, image_pts
+            )
+        except np.linalg.LinAlgError:
+            # A degenerate guess: this start failed, the next one may not
+            return None
         return {
             "homography": homography,
             "matched": int(len(pairs)),
@@ -765,6 +846,8 @@ class TimingMarkAlignment(ImagePreprocessor):
                         "missing": missing,
                     }
                 )
+        if len(self.expected):
+            review.extend(self.ambiguity_review(fit))
         if self.trim_margins:
             info["margin_trim"] = self.margin_trim(image, homography)
         if review:
@@ -783,6 +866,16 @@ class TimingMarkAlignment(ImagePreprocessor):
             "left": round(float(max(0.0, -mapped[:, 0].min())), 1),
             "right": round(float(max(0.0, mapped[:, 0].max() - (page_w - 1))), 1),
         }
+
+
+def _well_conditioned(homography, max_condition=1e8):
+    """False for a singular or nearly singular homography (a collapsed guess)."""
+    if not np.all(np.isfinite(homography)):
+        return False
+    try:
+        return bool(np.linalg.cond(homography) < max_condition)
+    except np.linalg.LinAlgError:
+        return False
 
 
 def _size_matches(found, expected, tolerance):

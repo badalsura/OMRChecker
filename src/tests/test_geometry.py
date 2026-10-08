@@ -58,7 +58,12 @@ def replay(geometry, image, engine):
 
 
 def assert_sampled_where_drawn(result, image):
-    """Every bubble's recorded mean is the mean of the image at its box."""
+    """Every bubble's recorded mean is the mean of the image at its box
+    (after the background flattening the reader applies by default)."""
+    from src.core import ImageInstanceOps
+
+    sizes = [max(b["w"], b["h"]) for f in result.fields.values() for b in f["bubbles"]]
+    image = ImageInstanceOps.flatten_background(image, float(np.median(sizes)))
     for field in result.fields.values():
         for bubble in field["bubbles"]:
             x, y, w, h = bubble["x"], bubble["y"], bubble["w"], bubble["h"]

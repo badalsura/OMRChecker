@@ -188,6 +188,12 @@ class ImageInstanceOps:
             )
             if print_img.max() > print_img.min():
                 print_img = ImageUtils.normalize_util(print_img)
+        # Zones (OCR, barcodes) and stored images use the page as aligned
+        aligned_out = img
+        if config.threshold_params.get("flatten_background", False):
+            sizes = [max(b.bubble_dimensions) for b in template.field_blocks]
+            if sizes:
+                img = self.flatten_background(img, float(np.median(sizes)))
         # Processing copies
         transp_layer = img.copy()
         final_marked = img.copy()
@@ -325,11 +331,17 @@ class ImageInstanceOps:
         snap_radius = config.alignment_params.block_snap_radius
         for field_block in template.field_blocks:
             field_block.shift_y = 0
-            if snap_radius:
+            radius = self.snap_radius_for(field_block, snap_radius)
+            if radius:
                 field_block.shift, field_block.shift_y = self.snap_field_block(
-                    img, field_block, snap_radius
+                    img, field_block, radius, capped=snap_radius < 0
                 )
         rectify_failed = self.rectify_field_blocks(img, template, print_img)
+        sheet_review = self.grid_fit_review(
+            print_img if print_img is not None else img,
+            template,
+            config.review_params.get("min_grid_fit", 0),
+        )
 
         final_align = None
         if config.outputs.show_image_level >= 2:
@@ -631,7 +643,8 @@ class ImageInstanceOps:
             "multi_marked": multi_marked,
             "multi_roll": multi_roll,
             "field_details": field_details,
-            "aligned_image": img,
+            "aligned_image": aligned_out,
+            "sheet_review": sheet_review,
             "print_image": print_img,
             "thresholds": {
                 "global": round(float(global_thr), 2),
@@ -695,7 +708,93 @@ class ImageInstanceOps:
         return failed
 
     @staticmethod
-    def snap_field_block(img, field_block, radius):
+    def flatten_background(img, bubble_size):
+        """
+        The page divided by a smooth estimate of its paper brightness: shadows
+        and uneven light vanish while marks keep their contrast. The estimate
+        is a closing (removes print and marks smaller than ~3 bubbles) at
+        quarter resolution, blurred and scaled back up.
+        """
+        h, w = img.shape[:2]
+        small = cv2.resize(img, (max(w // 4, 1), max(h // 4, 1)), interpolation=cv2.INTER_AREA)
+        k = int(max(3, round(3 * float(bubble_size) / 4))) | 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        background = cv2.morphologyEx(small, cv2.MORPH_CLOSE, kernel)
+        background = cv2.GaussianBlur(background, (k, k), 0)
+        background = cv2.resize(background, (w, h), interpolation=cv2.INTER_LINEAR)
+        background = np.maximum(background, 1)
+        return cv2.divide(img, background, scale=255)
+
+    @staticmethod
+    def bubble_pitch(field_block):
+        gap = getattr(field_block, "bubbles_gap", None)
+        if gap:
+            return float(gap)
+        return float(max(field_block.bubble_dimensions)) * 1.5
+
+    @classmethod
+    def snap_radius_for(cls, field_block, configured):
+        """Search radius for block snapping: -1 = 0.3 x bubble pitch."""
+        if configured is None or configured == 0:
+            return 0
+        if configured < 0:
+            return int(max(2, round(0.3 * cls.bubble_pitch(field_block))))
+        return int(configured)
+
+    @classmethod
+    def grid_fit_score(cls, img, field_block):
+        """Correlation of the block's expected bubble outlines with the page."""
+        box_w, box_h = field_block.bubble_dimensions
+        block_w, block_h = (int(v) for v in field_block.dimensions)
+        x0 = int(field_block.origin[0] + field_block.shift)
+        y0 = int(field_block.origin[1] + field_block.shift_y)
+        img_h, img_w = img.shape[:2]
+        if x0 < 0 or y0 < 0 or x0 + block_w > img_w or y0 + block_h > img_h:
+            return None
+        mask = np.zeros((block_h, block_w), dtype=np.float32)
+        count = 0
+        for strip in field_block.traverse_bubbles:
+            for bubble in strip:
+                centre = (
+                    int(bubble.x - field_block.origin[0] + bubble.dx + box_w / 2),
+                    int(bubble.y - field_block.origin[1] + bubble.dy + box_h / 2),
+                )
+                axes = (max(int(box_w / 2) - 1, 1), max(int(box_h / 2) - 1, 1))
+                cv2.ellipse(mask, centre, axes, 0, 0, 360, 1.0, 2)
+                count += 1
+        if count < 4 or not mask.any():
+            return None
+        region = 255.0 - img[y0 : y0 + block_h, x0 : x0 + block_w].astype(np.float32)
+        return float(cv2.matchTemplate(region, mask, cv2.TM_CCOEFF_NORMED)[0, 0])
+
+    @classmethod
+    def grid_fit_review(cls, img, template, minimum):
+        """
+        A sheet registered onto the wrong marks still has a small residual, but
+        its printed bubbles no longer sit where the template puts them. Flag it
+        when the blocks' median outline correlation is below `minimum`.
+        """
+        if not minimum:
+            return []
+        scores = {}
+        for block in template.field_blocks:
+            score = cls.grid_fit_score(img, block)
+            if score is not None:
+                scores[block.name] = round(score, 3)
+        if not scores or float(np.median(list(scores.values()))) >= minimum:
+            return []
+        return [
+            {
+                "kind": "sheet",
+                "name": "registration",
+                "flags": ["registration_suspect"],
+                "grid_fit": scores,
+                "min_grid_fit": minimum,
+            }
+        ]
+
+    @staticmethod
+    def snap_field_block(img, field_block, radius, capped=False):
         """Find the (dx, dy) within radius that best fits the block's printed bubbles.
 
         Correlates a mask of the expected bubble outlines and interiors with the
@@ -734,6 +833,10 @@ class ImageInstanceOps:
         # Only move when the fit is clearly better than staying put, and never to
         # the edge of the search window (the true optimum may lie beyond it)
         if best - centre_score < 0.02 or abs(dx) == radius or abs(dy) == radius:
+            return field_block.shift, 0
+        # Automatic radius: a move of 0.4 pitch or more would be the
+        # neighbouring bubble, not drift (an explicit radius is trusted)
+        if capped and np.hypot(dx, dy) >= 0.4 * ImageInstanceOps.bubble_pitch(field_block):
             return field_block.shift, 0
         return dx, dy
 

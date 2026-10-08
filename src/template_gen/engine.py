@@ -1203,6 +1203,29 @@ def generate_template(images, labels=None, options=None):
                 "mark was found: add an index point in the Alignment panel, or a "
                 "sheet fed upside down may be read upside down"
             )
+    if timing is not None and not timing["options"].get("indexPoints"):
+        track_points = [p for t in tracks.values() for p in t["marks"]]
+        if marks.collinear(track_points):
+            # One straight line of marks can't fix a page-wide fit (every
+            # sheet would fail registration): add marks off that line
+            extra = marks.spread_points(alignment["index_candidates"], page_size, track_points)
+            if len(extra) >= 2 and opts["pre_processors"] is None:
+                timing["options"]["indexPoints"] = [
+                    marks.index_point(c, f"P{i + 1}") for i, c in enumerate(extra)
+                ]
+                alignment["index_points"] = timing["options"]["indexPoints"]
+                warnings.append(
+                    "the timing marks lie on one straight line, which can't align a "
+                    f"page; added {len(extra)} index point(s) away from it: check "
+                    "them in the Alignment panel"
+                )
+            else:
+                warnings.append(
+                    "the timing marks lie on one straight line, which can't align a "
+                    "page, and no other distinct printed mark was found: add at "
+                    "least 2 index points away from the track in the Alignment "
+                    "panel, or every sheet will fail registration"
+                )
     alignment["method"] = _alignment_method(pre_processors)
     alignment["sheets"] = [
         {"sheet": i, **marks.match_counts(aligned[i], tracks, alignment["index_points"])}
@@ -1322,6 +1345,15 @@ def generate_template(images, labels=None, options=None):
                         "reason": f"self-check agreement {score:.1%}",
                     }
                 )
+    for key in ("registered", "end_to_end"):
+        failed = (checks.get(key) or {}).get("failed_sheets") or []
+        if failed:
+            warnings.append(
+                f"{len(failed)} sample sheet(s) failed to read with this template "
+                f"({'as scanned' if key == 'end_to_end' else 'after alignment'}): "
+                "the template is not ready; check the alignment first"
+            )
+            break
     lap("self_check")
 
     block_verify = []

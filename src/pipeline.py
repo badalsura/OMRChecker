@@ -290,6 +290,7 @@ class OMREngine:
         review = review_items(fields, zones, rule_review)
         review.extend(group_review_items(groups, review))
         review.extend(self._sheet_review(fields))
+        review.extend(detailed.get("sheet_review") or [])
         review.extend(recorder.info.get("review") or [])
         timings["total"] = _elapsed_ms(started)
         return ScanResult(
@@ -317,6 +318,9 @@ class OMREngine:
         """A print-kept copy is worth making: blocks are fitted and dropout is on."""
         if self.template.color_dropout.mode == "grey":
             return False
+        if self.tuning_config.review_params.get("min_grid_fit", 0):
+            # The registration check needs the printed bubble outlines
+            return True
         option = self.image_ops.alignment_option
         if option(self.template, "rectify_on_border", False) or option(
             self.template, "block_perspective", False
