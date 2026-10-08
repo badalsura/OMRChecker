@@ -234,6 +234,9 @@ def run_synthetic(
         else:
             # "spawn": the parent has used OpenCV's thread pool while rendering, and
             # forking a process with live OpenCV threads can deadlock the children
+            from src.utils.cpu import prepare_worker_environment
+
+            prepare_worker_environment()
             context = multiprocessing.get_context("spawn")
             with ProcessPoolExecutor(
                 max_workers=workers,

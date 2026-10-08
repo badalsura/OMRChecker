@@ -33,6 +33,9 @@ _ENGINES = {}
 
 
 def worker_init():
+    from src.utils.cpu import prepare_worker_environment
+
+    prepare_worker_environment()
     # Processes, not OpenCV threads, provide the parallelism
     cv2.setNumThreads(1)
     os.environ.setdefault("OMP_NUM_THREADS", "1")

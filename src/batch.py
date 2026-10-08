@@ -23,6 +23,9 @@ _ENGINES = {}
 
 
 def _worker_init(log_level=logging.WARNING):
+    from src.utils.cpu import prepare_worker_environment
+
+    prepare_worker_environment()
     # Let processes, not OpenCV threads, provide the parallelism
     cv2.setNumThreads(1)
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -102,12 +105,15 @@ def scan_files(
     if image_output_dir is not None:
         Path(image_output_dir).mkdir(parents=True, exist_ok=True)
     tasks = [(engine_args, str(path), image_output_dir) for path in file_paths]
-    workers = workers or os.cpu_count() or 1
+    from src.utils.cpu import default_workers, prepare_worker_environment
+
+    workers = workers or default_workers()
     if workers == 1:
         _worker_init()
         for task in tasks:
             yield from _scan_one(task)
         return
+    prepare_worker_environment()
     with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as pool:
         for page_results in pool.map(_scan_one, tasks, chunksize=chunksize):
             yield from page_results

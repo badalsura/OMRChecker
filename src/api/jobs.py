@@ -100,6 +100,11 @@ class JobManager:
             self.pool = None
         if self.pool is None:
             self.pool_workers = workers
+            from src.utils.cpu import prepare_worker_environment
+
+            # Spawned workers copy the parent's environment before any
+            # initializer runs: thread limits must be set here first
+            prepare_worker_environment()
             context = multiprocessing.get_context(self.settings.mp_start_method)
             self.pool = ProcessPoolExecutor(
                 max_workers=workers, mp_context=context, initializer=worker_init
