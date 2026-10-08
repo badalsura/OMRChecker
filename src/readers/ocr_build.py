@@ -24,6 +24,8 @@ def _candidates():
             roots.insert(1, Path(sys._MEIPASS))
     for root in roots:
         yield root / "ocr_build.json"
+        # Source checkout: written by packaging/fetch_ocr_models.py
+        yield root / "packaging" / "ocr_build.json"
 
 
 def build_defaults():

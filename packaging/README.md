@@ -56,6 +56,11 @@ which runs `tesseract.exe`. To bundle it:
 Without Tesseract, OCR zones go to manual review; bubbles, barcodes and QR codes
 are unaffected. `--selftest` prints `"tesseract": true/false`.
 
+Model choice (Tesseract "best" or "fast", extra languages such as Hindi,
+PaddleOCR mobile/server as default or fallback engine): run
+`python packaging/fetch_ocr_models.py` before building; see
+[ocr_models.md](ocr_models.md).
+
 ### Learned models (ONNX Runtime) on Windows 7
 
 ONNX Runtime officially supports Windows 10+ only. Its last Python 3.8 build
