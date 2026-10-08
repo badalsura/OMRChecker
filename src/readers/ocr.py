@@ -344,6 +344,14 @@ def recognize_text_detailed(
     return " ".join(words), float(np.mean(confidences)), chars
 
 
+def _utf8(item, level):
+    # tesserocr raises RuntimeError("No text returned") on an empty page
+    try:
+        return item.GetUTF8Text(level)
+    except RuntimeError:
+        return ""
+
+
 def _recognize_in_process(image, psm, whitelist, lang, tessdata=None, patterns_file=None):
     from PIL import Image
 
@@ -355,7 +363,7 @@ def _recognize_in_process(image, psm, whitelist, lang, tessdata=None, patterns_f
     iterator = api.GetIterator()
     level = tesserocr.RIL.WORD
     for word in tesserocr.iterate_level(iterator, level):
-        text = word.GetUTF8Text(level)
+        text = _utf8(word, level)
         if text and text.strip():
             words.append(text.strip())
             confidences.append(word.Confidence(level) / 100.0)
@@ -364,7 +372,7 @@ def _recognize_in_process(image, psm, whitelist, lang, tessdata=None, patterns_f
     chars = []
     symbol = tesserocr.RIL.SYMBOL
     for item in tesserocr.iterate_level(api.GetIterator(), symbol):
-        text = item.GetUTF8Text(symbol)
+        text = _utf8(item, symbol)
         if text and text.strip():
             chars.append(item.Confidence(symbol) / 100.0)
     return " ".join(words), float(np.mean(confidences)), chars

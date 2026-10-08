@@ -410,3 +410,11 @@ def reset_cache():
         _ENGINES.clear()
     if _ORT is False:
         _ORT = None
+
+
+def paddle_available(det_size="mobile", rec_size="mobile", lang="en", model_dir=None):
+    """True when onnxruntime loads and the PaddleOCR models are present; never raises."""
+    try:
+        return bool(get_engine(det_size, rec_size, lang, model_dir).available)
+    except Exception:
+        return False
