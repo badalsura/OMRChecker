@@ -2,6 +2,7 @@
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
 import { api, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
+import { alignmentSection, blockAlignmentFields } from "./editor_align.js";
 
 const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc" };
 const BLOCK_COLOR = "#2f6fdf";
@@ -983,7 +984,8 @@ export class TemplateEditor {
       ),
       raw.rectifyOnBorder
         ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })
-        : null
+        : null,
+      blockAlignmentFields(this, raw)
     );
     return box;
   }
@@ -1121,6 +1123,7 @@ export class TemplateEditor {
         )
       ),
       this.renderThreshold(),
+      alignmentSection(this),
       el("div", { class: "muted small" }, `${Object.keys(doc.fieldBlocks).length} blocks · ${this.allLabels().size} fields · ${Object.keys(doc.zones).length} zones`),
       el("h3", {}, "Advanced"),
       this.jsonArea("preProcessors (alignment / cleanup)", JSON.stringify(doc.preProcessors || [], null, 1), jsonSetter("preProcessors", [])),

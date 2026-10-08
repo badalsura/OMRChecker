@@ -17,11 +17,26 @@ class ImagePreprocessor(Processor):
         super().__init__(*args, **kwargs)
         self.page_dimensions = None
 
-    def record_geometry(self, transform):
-        """Register a pure geometric image -> image function to replay on companions."""
+    def record_geometry(self, transform, step=None):
+        """
+        Register a pure geometric image -> image function to replay on
+        companions. step describes it for the result geometry record (see
+        src/geometry.py: {"op": "warp", "matrix", "size", ...}); a step left
+        out means the sheet's geometry can't be recorded (previews then fall
+        back to re-reading the sheet).
+        """
         ops = getattr(self.image_instance_ops, "geometry_ops", None)
         if ops is not None:
             ops.append(transform)
+        recorder = getattr(self.image_instance_ops, "geometry_recorder", None)
+        if recorder is not None:
+            recorder.add(step)
+
+    def record_alignment_info(self, **info):
+        """Extra facts for the geometry record (rotation, residual, margins...)."""
+        recorder = getattr(self.image_instance_ops, "geometry_recorder", None)
+        if recorder is not None:
+            recorder.info.update(info)
 
     def apply_filter(self, image, filename):
         """Apply filter to the image and returns modified image"""

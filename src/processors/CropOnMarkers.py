@@ -170,8 +170,11 @@ class CropOnMarkers(ImagePreprocessor):
             return None
 
         corners = np.array(centres)
-        image = ImageUtils.four_point_transform(image, corners)
-        self.record_geometry(lambda im: ImageUtils.four_point_transform(im, corners))
+        image, matrix, size = ImageUtils.four_point_transform_with_matrix(image, corners)
+        self.record_geometry(
+            lambda im: ImageUtils.four_point_transform(im, corners),
+            {"op": "warp", "matrix": matrix, "size": size},
+        )
         # appendSaveImg(1,image_eroded_sub)
         # appendSaveImg(1,image_norm)
 

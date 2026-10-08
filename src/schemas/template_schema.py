@@ -41,11 +41,41 @@ TIMING_MARK_TRACK_SCHEMA = {
     },
 }
 
+INDEX_POINT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["center", "size"],
+    "properties": {
+        "name": {"type": "string"},
+        # Centre and [width, height] in template pixels
+        "center": two_positive_numbers,
+        "size": two_positive_numbers,
+        "shape": {"type": "string", "enum": ["square", "circle", "any"]},
+        # A missing required point sends the sheet to review
+        "required": {"type": "boolean"},
+    },
+}
+
+# Template-level alignment settings (override config.json alignment_params)
+ALIGNMENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "rectify_on_border": {"type": "boolean"},
+        "rectify_search_px": {"type": "integer", "minimum": 2, "maximum": 100},
+        "rectify_print_image": {"type": "string", "enum": ["auto", "grey", "darkest"]},
+        "block_perspective": {"type": "boolean"},
+        "page_outline": {"type": "boolean"},
+        "verify_bubble_fit": {"type": "boolean"},
+    },
+}
+
 TIMING_MARK_OPTIONS_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["tracks", "markDimensions"],
     "properties": {
+        # Tracks may be {} when indexPoints alone register the sheet
         "tracks": {
             "type": "object",
             "patternProperties": {"^.*$": TIMING_MARK_TRACK_SCHEMA},
@@ -59,10 +89,21 @@ TIMING_MARK_OPTIONS_SCHEMA = {
         "minMatchedMarks": positive_integer,
         # Mean reprojection error (template px) above which the sheet is rejected
         "maxResidual": positive_number,
-        # Apply a thin-plate-spline refinement on top of the homography
-        "nonRigid": {"type": "boolean"},
+        # Apply a thin-plate-spline refinement on top of the homography;
+        # "auto": only when the reference points spread across the page
+        "nonRigid": {"enum": [True, False, "auto"]},
         # Try 90/180/270 degree rotations when the sheet is fed in wrongly
         "detectOrientation": {"type": "boolean"},
+        # Index points (corner squares, dots, L-corners): fitted together with
+        # the timing marks; each keeps its own size and shape
+        "indexPoints": {"type": "array", "items": INDEX_POINT_SCHEMA},
+        # One homography from index points + timing marks + printed block corners
+        "jointFit": {"type": "boolean"},
+        # Report (and trim) scan margins outside the template page
+        "trimMargins": {"type": "boolean"},
+        # Mean residual (template px) of any page region above which the
+        # sheet goes to review
+        "maxRegionResidual": positive_number,
     },
 }
 
@@ -448,6 +489,15 @@ TEMPLATE_SCHEMA = {
                         "borderPadding": {
                             "anyOf": [positive_number, two_positive_numbers]
                         },
+                        # Two-level search: gap to a large outer frame found
+                        # first; the inner border is then searched relative to it
+                        "outerBorderPadding": {
+                            "anyOf": [positive_number, two_positive_numbers]
+                        },
+                        # Fit the block's perspective to its printed bubble
+                        # outlines when it has no printed box (overrides
+                        # alignment block_perspective)
+                        "blockPerspective": {"type": "boolean"},
                     },
                 }
             },
@@ -455,6 +505,10 @@ TEMPLATE_SCHEMA = {
         "emptyValue": {
             "description": "The value to be used in case of empty bubble detected at global level.",
             "type": "string",
+        },
+        "alignment": {
+            **ALIGNMENT_SCHEMA,
+            "description": "Alignment settings for this template (override config.json alignment_params)",
         },
         "colorDropout": {
             **COLOR_DROPOUT_SCHEMA,

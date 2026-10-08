@@ -46,6 +46,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.api import align_routes
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
 from src.api import results_routes
@@ -984,6 +985,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     register_tool_routes(app, secured, read_upload, ctx)
     # results screen: render, correct, verify, regrade, accuracy, audit
     results_routes.register(app, ctx, secured)
+    # editor: block border preview and "Test on samples" (src/api/align_routes.py)
+    align_routes.register(app, ctx, secured, read_upload)
     # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
     exports_module.register(app, ctx, secured)
 

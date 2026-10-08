@@ -166,6 +166,12 @@ def register(app, ctx, secured):
         scan_id: str,
         inline: bool = Query(False, description="Embed the image as a data URL"),
         format: str = Query("jpg", pattern="^(jpg|png)$"),
+        view: str = Query(
+            "dropout",
+            pattern="^(dropout|print)$",
+            description="dropout: the image the bubbles were read on; print: the "
+            "same page with the print kept (where block borders were searched)",
+        ),
     ):
         """
         Re-read the original file with the template version (and regrade
@@ -175,16 +181,17 @@ def register(app, ctx, secured):
         """
         try:
             result = service.load(scan_id)
-            rendered = service.render(scan_id)
+            rendered = service.render(scan_id, view=view)
             image = rendered["image"]
+            suffix = "" if view == "dropout" else f"&view={view}"
             extra = {
                 **rendered["meta"],
                 "width": int(image.shape[1]),
                 "height": int(image.shape[0]),
-                "image_url": f"/scans/{scan_id}/render/image?format={format}",
+                "image_url": f"/scans/{scan_id}/render/image?format={format}{suffix}",
             }
             if inline:
-                data = service.encoded(scan_id, format)
+                data = service.encoded(scan_id, format, view=view)
                 mime = "image/png" if format == "png" else "image/jpeg"
                 extra["image_data"] = (
                     f"data:{mime};base64," + base64.b64encode(data).decode()
@@ -198,10 +205,11 @@ def register(app, ctx, secured):
         scan_id: str,
         format: str = Query("jpg", pattern="^(jpg|png)$"),
         preview: bool = Query(False, description="The last regrade preview"),
+        view: str = Query("dropout", pattern="^(dropout|print)$"),
     ):
         try:
             service.load(scan_id)
-            data = service.encoded(scan_id, format, preview)
+            data = service.encoded(scan_id, format, preview, view)
         except ResultsError as error:
             fail(error)
         return Response(
