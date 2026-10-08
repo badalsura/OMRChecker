@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OMR Station</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/results_views.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%232f6fdf'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -62,6 +63,7 @@
         <label class="field inline">Scan <input id="rv-scan" placeholder="any" size="12"></label>
         <label class="field inline"><input type="checkbox" id="rv-wide"> Wide context</label>
         <button id="rv-load" class="primary">Load queue</button>
+        <button id="rv-accept-bulk" class="ghost" title="Accept every pending item under these filters with the value the engine read. Nothing is deleted; who and when is recorded.">Accept all as read…</button>
         <span class="spacer"></span>
         <span id="rv-progress" class="muted"></span>
       </div>
@@ -151,17 +153,29 @@
           </label>
           <label class="field">Worker processes <input id="job-workers" type="number" min="1" placeholder="auto"></label>
         </div>
+        <div id="job-workers-warning" class="small fs-warn"></div>
         <div class="row gap wrap source-row">
-          <div class="source-box">
-            <strong>Upload files</strong>
+          <div class="source-box" data-help>
+            <strong>Upload files <span class="help-i" tabindex="0" title="Copies the sheets from this computer to the server. Use it when the server is another machine, or for a few hundred sheets.">ⓘ</span></strong>
             <div class="row gap">
               <input id="job-files" type="file" multiple accept="image/*,.pdf">
               <label class="small muted"><input id="job-dir-mode" type="checkbox"> pick a folder</label>
             </div>
+            <div class="help-line small muted">Copies the sheets from this computer to the server. Use it when the server is another machine, or for a few hundred sheets.</div>
           </div>
-          <div class="source-box">
-            <strong>…or a folder on the server</strong>
-            <input id="job-folder" placeholder="/scans/batch-01" size="40">
+          <div class="source-box" data-help>
+            <strong>…or a folder on the server <span class="help-i" tabindex="0" title="Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.">ⓘ</span></strong>
+            <div class="row gap wrap">
+              <input id="job-folder" placeholder="D:\scans\batch-01" size="40" spellcheck="false" autocomplete="off">
+              <button id="job-browse" class="small" type="button" title="Pick a folder on the server">Browse…</button>
+              <select id="job-recent" class="small" title="The last 10 folders jobs were started from"><option value="">Recent folders…</option></select>
+            </div>
+            <div class="row gap wrap">
+              <label class="small"><input id="job-recursive" type="checkbox" checked> Include subfolders <span class="help-i" tabindex="0" title="Also read the sheets in every folder inside this one. Untick to read only the files directly in this folder.">ⓘ</span></label>
+              <span id="job-folder-check" class="small muted"></span>
+            </div>
+            <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.</div>
+            <div class="small muted">Examples: Windows <code>D:\scans\batch-01</code> · network share <code>\\server\scans\batch-01</code> · Linux <code>/srv/scans/batch-01</code></div>
           </div>
         </div>
         <div class="row gap">
