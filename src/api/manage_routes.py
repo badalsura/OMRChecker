@@ -68,6 +68,11 @@ class AcceptBulkBody(ReviewFilters):
         description="The pending count the user confirmed; refused (409) when "
         "more items are pending now, so nothing unseen is accepted",
     )
+    before: Optional[float] = Field(
+        None,
+        description="Only items queued at or before this server time (the 'now' "
+        "of the /review/counts the user confirmed), so later arrivals stay pending",
+    )
     user: Optional[str] = Field(None, description="Defaults to the X-User header")
 
 
@@ -307,6 +312,8 @@ def register(app, ctx, secured):
         """
         user = user_of(request, body.user)
         filters = filters_of(body)
+        if body.before is not None:
+            filters["created_before"] = body.before
         _, pending = ctx.index.pending_reviews(limit=1, **filters)
         if body.expected is not None and pending > body.expected:
             raise HTTPException(

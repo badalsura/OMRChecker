@@ -438,6 +438,7 @@ class ScanIndex:
         limit=50,
         offset=0,
         created_after=None,
+        created_before=None,
     ):
         where, params = self._filters(
             state="pending",
@@ -451,6 +452,9 @@ class ScanIndex:
             # Items queued since a client last looked (new sheets of a running job)
             where += " AND created_at > ?"
             params.append(created_after)
+        if created_before is not None:
+            where += " AND created_at <= ?"
+            params.append(created_before)
         items = self._query(
             f"SELECT * FROM review_items {where} ORDER BY created_at, scan_id, name "
             "LIMIT ? OFFSET ?",
