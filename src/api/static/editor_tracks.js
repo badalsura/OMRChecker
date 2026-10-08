@@ -37,7 +37,7 @@ function addStyles() {
       "style",
       {},
       `.al-panel{border-top:1px solid var(--line,#ddd);margin-top:10px;padding-top:6px}
-       .al-help{display:inline-block;margin-left:4px;color:var(--muted,#777);cursor:help;font-size:12px}
+       .tr-info{display:inline-block;margin-left:4px;color:var(--muted,#777);cursor:help;font-size:12px}
        .al-hint{display:none;font-size:12px;color:var(--muted,#777);margin:2px 0 6px}
        .al-field:focus-within .al-hint,.al-field:hover .al-hint{display:block}
        .al-list{list-style:none;padding:0;margin:4px 0;font-size:12.5px}
@@ -56,7 +56,7 @@ function field(label, control, help) {
   return el(
     "label",
     { class: "field al-field" },
-    el("span", {}, label, el("span", { class: "al-help", title: help }, "ⓘ")),
+    el("span", {}, label, el("span", { class: "tr-info", title: help }, "ⓘ")),
     control,
     el("div", { class: "al-hint" }, help)
   );
@@ -653,7 +653,7 @@ export function renderAlignmentPanel(ed) {
       );
     }
     box.append(
-      el("h4", {}, "Index points", el("span", { class: "al-help", title: "Extra printed marks (squares, corner markers, small dots) matched together with the tracks. Each keeps its own size and shape." }, "ⓘ")),
+      el("h4", {}, "Index points", el("span", { class: "tr-info", title: "Extra printed marks (squares, corner markers, small dots) matched together with the tracks. Each keeps its own size and shape." }, "ⓘ")),
       el(
         "ul",
         { class: "al-list" },

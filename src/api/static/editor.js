@@ -37,6 +37,9 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const FULL = "\u0000files:"; // undo entry covering template + config + evaluation
 const round1 = (v) => Math.round(v * 10) / 10;
 
+// Page-panel groups open until the user closes them
+const SIDE_GROUPS_OPEN = new Set(["options"]);
+
 export class TemplateEditor {
   constructor(root, { onClose }) {
     this.root = root;
@@ -56,6 +59,7 @@ export class TemplateEditor {
     this.resolved = new Set(); // keys of verified "Needs verification" items
     this.multi = []; // Shift+click selection of several blocks
     this.openSections = new Set(); // <details> sections kept open across re-renders
+    this.closedSections = new Set(); // page-panel groups the user closed
     this.afterEditHooks = []; // open dialogs refreshing themselves after an edit
   }
 
@@ -154,6 +158,7 @@ export class TemplateEditor {
       btn("Edit JSON", "Edit template.json, config.json and evaluation.json directly", () => openJsonEditor(this)),
       btn("Scoring…", "Answer key and marking scheme (evaluation.json)", () => openScoring(this)),
       btn("Test read…", "Save, read a sample sheet with this template and overlay the result", () => this.testInput.click()),
+      btn("?", "Keyboard and mouse shortcuts", () => this.toggleShortcuts(), "small ghost"),
       this.testInput,
       this.bgInput
     );
@@ -1090,16 +1095,54 @@ export class TemplateEditor {
     if (this.testResult) add(side, this.renderTest());
     if (this.report) add(side, this.renderReport());
     if (!o && this.multi.length < 2) add(side, this.renderPage());
-    add(side, 
+  }
+
+  // Keyboard and mouse shortcuts, opened from the toolbar's "?" button
+  toggleShortcuts() {
+    if (this.shortcutsEl) {
+      this.shortcutsEl.remove();
+      this.shortcutsEl = null;
+      return;
+    }
+    this.shortcutsEl = el(
+      "div",
+      { class: "ed-shortcuts ed-help", title: "Click to close", onclick: () => this.toggleShortcuts() },
+      el("h3", {}, "Shortcuts"),
       el(
-        "div",
-        { class: "ed-help" },
-        el("h3", {}, "Shortcuts"),
-        "Drag to move · handles resize (blocks stretch their bubble spacing) · arrows nudge (Shift ×10) · Shift+click blocks to group them · ",
-        "Del delete · Ctrl+D duplicate · Ctrl+Z / Ctrl+Shift+Z undo / redo · Ctrl+S save · B / Z draw block / zone · ",
-        "wheel zoom · drag empty space, right-drag or Space+drag to pan · Tab cycles selection · F fit"
+        "ul",
+        {},
+        [
+          "Drag to move · handles resize (blocks stretch their bubble spacing)",
+          "Arrows nudge (Shift ×10) · Shift+click blocks to group them",
+          "Del delete · Ctrl+D duplicate",
+          "Ctrl+Z / Ctrl+Shift+Z undo / redo · Ctrl+S save",
+          "B / Z draw block / zone",
+          "Wheel zoom · drag empty space, right-drag or Space+drag to pan",
+          "Tab cycles selection · F fit",
+        ].map((t) => el("li", {}, t))
       )
     );
+    this.wrap.append(this.shortcutsEl);
+  }
+
+  // A collapsible group of the page panel; open state survives re-renders
+  sideGroup(key, title, count, ...children) {
+    const id = `group-${key}`;
+    const open = this.openSections.has(id) || (!this.closedSections.has(id) && SIDE_GROUPS_OPEN.has(key));
+    const box = el("details", { class: "ed-group", open: open || undefined });
+    box.addEventListener("toggle", () => {
+      if (box.open) {
+        this.openSections.add(id);
+        this.closedSections.delete(id);
+      } else {
+        this.openSections.delete(id);
+        this.closedSections.add(id);
+      }
+    });
+    const summary = el("summary", {}, title);
+    if (count) summary.append(el("span", { class: "count" }, String(count)));
+    add(box, summary, ...children);
+    return box;
   }
 
   input(label, value, onchange, attrs = {}) {
@@ -1347,20 +1390,22 @@ export class TemplateEditor {
         )
       ),
       this.renderThreshold(),
-      alignmentSection(this),
-      el("div", { class: "muted small" }, `${Object.keys(doc.fieldBlocks).length} blocks · ${this.allLabels().size} fields · ${Object.keys(doc.zones).length} zones`),
-      el("h3", {}, "Grouped fields"),
-      groups.renderGroupList(this),
-      el("h3", {}, "Cross-field checks"),
-      renderChecks(this),
-      el("h3", {}, "Options"),
-      options.renderOutputColumns(this),
-      options.renderAlignment(this),
-      options.renderReviewParams(this),
-      options.renderModels(this),
-      options.renderPdfParams(this),
-      options.renderBarcodeDefaults(this),
-      this.renderRawJson(raw, jsonSetter, doc)
+      el("div", { class: "muted small ed-counts" }, `${Object.keys(doc.fieldBlocks).length} blocks · ${this.allLabels().size} fields · ${Object.keys(doc.zones).length} zones`),
+      this.sideGroup("alignment", "Block alignment", null, alignmentSection(this)),
+      this.sideGroup("groups", "Grouped fields", Object.keys(doc.customLabels || {}).length, groups.renderGroupList(this)),
+      this.sideGroup("checks", "Cross-field checks", (doc.checks || []).length, renderChecks(this)),
+      this.sideGroup(
+        "options",
+        "Options",
+        null,
+        options.renderOutputColumns(this),
+        options.renderAlignment(this),
+        options.renderReviewParams(this),
+        options.renderModels(this),
+        options.renderPdfParams(this),
+        options.renderBarcodeDefaults(this),
+        this.renderRawJson(raw, jsonSetter, doc)
+      )
     );
   }
 
