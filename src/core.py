@@ -1,3 +1,4 @@
+import functools
 import os
 from collections import defaultdict
 from typing import Any
@@ -17,6 +18,25 @@ from src.constants.common import (
 from src.logger import logger
 from src.utils.image import CLAHE_HELPER, ImageUtils
 from src.utils.interaction import InteractionUtils
+
+
+@functools.lru_cache(maxsize=256)
+def _ellipse_mask(h, w):
+    """Boolean inscribed-ellipse mask for an h x w bubble box (cached, read-only)."""
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(
+        mask,
+        (w // 2, h // 2),
+        (max(int(w * 0.35), 1), max(int(h * 0.35), 1)),
+        0,
+        0,
+        360,
+        255,
+        -1,
+    )
+    inside = mask > 0
+    inside.setflags(write=False)
+    return inside
 
 
 class ImageInstanceOps:
@@ -659,19 +679,7 @@ class ImageInstanceOps:
         roi = img[max(y, 0) : y + box_h, max(x, 0) : x + box_w]
         if roi.size == 0:
             return 0.0
-        h, w = roi.shape[:2]
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.ellipse(
-            mask,
-            (w // 2, h // 2),
-            (max(int(w * 0.35), 1), max(int(h * 0.35), 1)),
-            0,
-            0,
-            360,
-            255,
-            -1,
-        )
-        inside = roi[mask > 0]
+        inside = roi[_ellipse_mask(*roi.shape[:2])]
         if inside.size == 0:
             return 0.0
         return float(np.count_nonzero(inside < threshold)) / float(inside.size)
@@ -837,27 +845,32 @@ class ImageInstanceOps:
         # Sort the Q bubbleValues
         # TODO: Change var name of q_vals
         q_vals = sorted(q_vals_orig)
-        # Find the FIRST LARGE GAP and set it as threshold:
+        # Find the FIRST LARGE GAP and set it as threshold (vectorised; the first
+        # index of the largest jump, exactly as the old element-by-element loop):
         ls = (looseness + 1) // 2
         l = len(q_vals) - ls
         max1, thr1 = MIN_JUMP, global_default_threshold
-        for i in range(ls, l):
-            jump = q_vals[i + ls] - q_vals[i - ls]
-            if jump > max1:
-                max1 = jump
-                thr1 = q_vals[i - ls] + jump / 2
+        lows = np.asarray(q_vals[: max(l - ls, 0)], dtype=np.float64)
+        jumps = np.asarray(q_vals[2 * ls : l + ls], dtype=np.float64) - lows
+        if jumps.size:
+            best = int(np.argmax(jumps))
+            if jumps[best] > max1:
+                max1 = float(jumps[best])
+                thr1 = float(lows[best] + jumps[best] / 2)
 
         # NOTE: thr2 is deprecated, thus is JUMP_DELTA
         # Make use of the fact that the JUMP_DELTA(Vertical gap ofc) between
         # values at detected jumps would be atleast 20
         max2, thr2 = MIN_JUMP, global_default_threshold
         # Requires atleast 1 gray box to be present (Roll field will ensure this)
-        for i in range(ls, l):
-            jump = q_vals[i + ls] - q_vals[i - ls]
-            new_thr = q_vals[i - ls] + jump / 2
-            if jump > max2 and abs(thr1 - new_thr) > JUMP_DELTA:
-                max2 = jump
-                thr2 = new_thr
+        if jumps.size:
+            new_thrs = lows + jumps / 2
+            far = np.flatnonzero(np.abs(thr1 - new_thrs) > JUMP_DELTA)
+            if far.size:
+                best = int(far[np.argmax(jumps[far])])
+                if jumps[best] > max2:
+                    max2 = float(jumps[best])
+                    thr2 = float(new_thrs[best])
         if max1 == MIN_JUMP and len(q_vals) >= 4:
             # No single large jump (e.g. pencil and partial marks fill the gap between
             # empty and dark bubbles): fall back to Otsu's two-class split instead of
