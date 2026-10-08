@@ -5084,6 +5084,59 @@
       }
       return img;
     };
+    // Live camera preview: register one (small) gray frame without reading it.
+    // Returns where the page and its timing marks sit in the frame, and how sharp it is.
+    Engine.prototype.preview = function (gray) {
+      var ctx = {}, pre = this.preProcessors, dims = this.config.dimensions, sx = 1, sy = 1;
+      if (pre.length && !pre[0].needsFullResolution) {
+        sx = Math.trunc(dims.processing_width) / gray.width;
+        sy = Math.trunc(dims.processing_height) / gray.height;
+      }
+      var aligned = null;
+      try {
+        aligned = this.register(gray, ctx, null);
+      } catch (error) {
+        ctx.registration = { error: String((error && error.message) || error) };
+      }
+      var reg = ctx.registration || {}, page = this.template.pageDimensions, quad = null, marks = null;
+      function toFrame(p) {
+        return [p[0] / sx, p[1] / sy];
+      }
+      if (reg.homography) {
+        quad = projectPoints(reg.homography, [[0, 0], [page[0], 0], [page[0], page[1]], [0, page[1]]]).map(toFrame);
+        var tm = pre.filter(function (p) {
+          return p.name === "TimingMarkAlignment";
+        })[0];
+        if (tm) marks = projectPoints(reg.homography, tm.expected).map(toFrame);
+      } else if (reg.corners && reg.corners.length === 4) {
+        quad = reg.corners.map(toFrame);
+      }
+      return {
+        ok: !!aligned,
+        error: reg.error || null,
+        method: reg.method || null,
+        matched: reg.matched_marks !== undefined ? reg.matched_marks : null,
+        expected: reg.expected_marks !== undefined ? reg.expected_marks : null,
+        quad: quad,
+        marks: marks,
+        sharpness: roundTo(laplacianVariance(gray), 1),
+      };
+    };
+    // Variance of the 4-neighbour Laplacian: low on blurred or shaken frames
+    function laplacianVariance(img) {
+      var w = img.width, h = img.height, d = img.data, sum = 0, sq = 0, n = 0;
+      for (var y = 1; y < h - 1; y += 2) {
+        for (var x = 1; x < w - 1; x += 2) {
+          var i = y * w + x, v = d[i - 1] + d[i + 1] + d[i - w] + d[i + w] - 4 * d[i];
+          sum += v;
+          sq += v * v;
+          n++;
+        }
+      }
+      if (!n) return 0;
+      var mean = sum / n;
+      return sq / n - mean * mean;
+    }
     Engine.prototype.scan = function (source, opts) {
       var self = this;
       opts = opts || {};
@@ -5441,6 +5494,11 @@
                 return result;
               });
             });
+          },
+          // gray: {width, height, data} from a downscaled video frame
+          preview: function (gray) {
+            var data = gray.data, buf = data.byteOffset === 0 && data.buffer.byteLength === data.byteLength ? data.buffer : data.slice().buffer;
+            return call("preview", { width: gray.width, height: gray.height, data: buf }, [buf]);
           },
           terminate: function () {
             worker.terminate();

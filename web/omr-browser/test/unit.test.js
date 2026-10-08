@@ -193,3 +193,14 @@ test("group placeholders (groupOptions) follow src/utils/parsing.py", async () =
   assert.deepEqual(r.groups.both.columns.map((c) => c.state), ["empty", "empty"]);
   assert.equal(r.groups.both.flagged, false);
 });
+
+test("live preview reports alignment and sharpness without reading", async () => {
+  const engine = await OMR.loadTemplate(SMALL);
+  const flat = { width: 200, height: 120, data: new Uint8Array(200 * 120).fill(200) };
+  const striped = { width: 200, height: 120, data: new Uint8Array(200 * 120).map((_, i) => (i % 4 < 2 ? 0 : 255)) };
+  const p = engine.preview(flat);
+  assert.equal(p.ok, true);
+  assert.equal(p.quad, null);
+  assert.equal(p.sharpness, 0);
+  assert.ok(engine.preview(striped).sharpness > 1000);
+});

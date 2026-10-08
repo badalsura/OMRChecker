@@ -6,7 +6,7 @@
  * main-thread only on older Safari) and transfers the gray pixels here, or the
  * RGBA pixels when the template has a colour dropout (info.needsColor).
  *
- * Messages: {id, type: "init" | "scan" | "setColorDropout", payload}
+ * Messages: {id, type: "init" | "scan" | "preview" | "setColorDropout", payload}
  *   -> {id, result} or {id, error}
  */
 /* global importScripts, OMR */
@@ -89,6 +89,11 @@
         return { value: v };
       });
       else if (message.type === "scan") work = scan(message.payload);
+      else if (message.type === "preview") {
+        if (!engine) throw new Error("Worker engine is not initialised");
+        var frame = message.payload;
+        work = Promise.resolve({ value: engine.preview({ width: frame.width, height: frame.height, data: new Uint8Array(frame.data) }) });
+      }
       else if (message.type === "setColorDropout") {
         if (!engine) throw new Error("Worker engine is not initialised");
         engine.setColorDropout(message.payload.spec);
