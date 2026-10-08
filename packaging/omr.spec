@@ -68,6 +68,11 @@ for path in (ROOT / "samples").rglob("*"):
         datas.append((str(path), str(Path("samples") / path.relative_to(ROOT / "samples").parent)))
 # Optional bundled Tesseract (UB Mannheim build copied into packaging/tesseract)
 datas += tree("packaging/tesseract", "tesseract", skip=())
+# OCR models and choices from packaging/fetch_ocr_models.py (packaging/ocr_models.md)
+datas += tree("packaging/tessdata", "tessdata", skip=())
+datas += tree("packaging/models/paddleocr", "models/paddleocr", skip=())
+if (ROOT / "packaging" / "ocr_build.json").is_file():
+    datas.append((str(ROOT / "packaging" / "ocr_build.json"), "."))
 datas += optional(collect_data_files, "zxingcpp")
 datas += optional(collect_data_files, "onnxruntime")
 datas += optional(collect_data_files, "pymupdf")

@@ -207,7 +207,10 @@ ZONE_SCHEMA = {
     "additionalProperties": False,
     "required": ["type", "origin", "dimensions"],
     "properties": {
-        "type": {"type": "string", "enum": ["barcode", "qrcode", "ocr", "icr"]},
+        "type": {
+            "type": "string",
+            "enum": ["barcode", "qrcode", "ocr", "icr", "image"],
+        },
         "origin": two_positive_integers,
         "dimensions": two_positive_integers,
         "options": {
@@ -247,6 +250,34 @@ ZONE_SCHEMA = {
                 "lazy": {"type": "boolean"},
                 # Read this zone from a differently processed image (e.g. "grey")
                 "colorDropout": COLOR_DROPOUT_SCHEMA,
+                # OCR / ICR: turn the crop before reading; "rot90cw" for vertical
+                # text reading bottom to top, "rot90ccw" top to bottom, "auto"
+                # tries all four (src/readers/text_reader.py)
+                "direction": {
+                    "type": "string",
+                    "enum": ["horizontal", "rot90cw", "rot90ccw", "rot180", "auto"],
+                },
+                # OCR: engine for this zone and the one tried when its read is
+                # empty, low-confidence or invalid ("default": config ocr_params)
+                "engine": {
+                    "type": "string",
+                    "enum": ["default", "tesseract", "paddle"],
+                },
+                "fallbackEngine": {
+                    "type": "string",
+                    "enum": ["default", "none", "tesseract", "paddle"],
+                },
+                # OCR: retry other Tesseract layout modes on an empty / invalid read
+                "psmRetry": {"type": "boolean"},
+                # OCR: Tesseract user patterns, e.g. ["\\d\\d\\d\\d\\d\\d\\d"]
+                "userPatterns": ARRAY_OF_STRINGS,
+                # OCR: send to review when any character is below this confidence
+                "minCharConfidence": zero_to_one_number,
+                # Image zones: crop file name pattern ({file}, {zone}, {page}),
+                # base64 copy in results/API (small crops only), longer side px
+                "saveFilename": {"type": "string", "minLength": 1},
+                "embedBase64": {"type": "boolean"},
+                "maxSide": {"type": "integer", "minimum": 16},
             },
         },
     },

@@ -46,6 +46,7 @@ from src.api.worker import (
     template_hash,
     template_version,
 )
+from src.readers.image_zone import save_zone_images
 
 DEFAULT_USER = "local"
 
@@ -732,6 +733,7 @@ class ResultsService:
             )
             del history[:-20]
             scan_dir = self.ctx.data.scan_dir(scan_id)
+            save_zone_images(scanned.zone_images, scan_dir / "zones")
             if result.get("has_images") and scanned.aligned_image is not None:
                 cv2.imwrite(
                     str(scan_dir / "aligned.png"), scanned.aligned_image, PNG_FAST

@@ -50,7 +50,7 @@ from pydantic import BaseModel, Field
 from src.api import align_routes
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
-from src.api import fs_routes, manage_routes, results_routes, views_routes
+from src.api import fs_routes, manage_routes, ocr_routes, results_routes, views_routes
 from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
     ReviewError,
@@ -1006,6 +1006,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     views_routes.register(app, ctx, secured)
     fs_routes.register(app, ctx, secured)
     manage_routes.register(app, ctx, secured)
+    ocr_routes.register(app, ctx, secured)
     # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
     exports_module.register(app, ctx, secured)
 

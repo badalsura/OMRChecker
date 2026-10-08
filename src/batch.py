@@ -16,6 +16,8 @@ from pathlib import Path
 
 import cv2
 
+from src.readers.image_zone import save_zone_images
+
 # Each worker process keeps its own engines: {(template, config, eval, models): OMREngine}
 _ENGINES = {}
 
@@ -66,6 +68,8 @@ def _scan_one(task):
             cv2.imwrite(
                 str(Path(output_dir, f"{stem}_aligned.png")), result.aligned_image
             )
+        if output_dir is not None:
+            save_zone_images(result.zone_images, Path(output_dir, "ZoneImages"))
         data = result.to_dict()
         data["input_path"] = str(file_path)
         data["source_path"] = str(Path(file_path).resolve())

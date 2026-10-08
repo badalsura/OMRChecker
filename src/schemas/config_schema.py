@@ -146,6 +146,42 @@ CONFIG_SCHEMA = {
                 "review_fallback_decodes": {"type": "boolean"},
             },
         },
+        "ocr_params": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                # Engine for OCR zones without their own "engine" option
+                "default_engine": {"type": "string", "enum": ["tesseract", "paddle"]},
+                # Second engine for empty / low-confidence / invalid reads
+                "fallback_engine": {
+                    "type": "string",
+                    "enum": ["none", "tesseract", "paddle"],
+                },
+                # PaddleOCR (PP-OCRv5 on onnxruntime) model sizes and language
+                "paddle_det_model": {"type": "string", "enum": ["mobile", "server"]},
+                "paddle_rec_model": {"type": "string", "enum": ["mobile", "server"]},
+                "paddle_lang": {"type": "string", "enum": ["en", "ch", "devanagari"]},
+                "paddle_model_dir": {"type": ["string", "null"]},
+                # Tesseract traineddata set when bundled: accurate "best" or "fast"
+                "tessdata": {"type": "string", "enum": ["best", "fast"]},
+                # Tesseract languages for zones without "lang", e.g. ["eng", "hin"]
+                "langs": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^[A-Za-z_]+$"},
+                    "minItems": 1,
+                },
+                "multi_psm": {"type": "boolean"},
+                "cleanup_pass": {"type": "boolean"},
+                "disagree_to_review": {"type": "boolean"},
+                "user_patterns": {"type": "boolean"},
+                "min_char_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                # PaddleOCR as a second reader of boxed handwriting (ICR zones)
+                "icr_second_reader": {
+                    "type": "string",
+                    "enum": ["auto", "paddle", "none"],
+                },
+            },
+        },
         "outputs": {
             "type": "object",
             "additionalProperties": False,

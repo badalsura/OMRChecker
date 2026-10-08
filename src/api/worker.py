@@ -18,6 +18,7 @@ from pathlib import Path
 import cv2
 
 from src.api.storage import new_id, scan_dir_for, write_json_atomic
+from src.readers.image_zone import save_zone_images
 
 # Image persistence policies
 SAVE_ALL = "all"
@@ -182,6 +183,8 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
             save_images == SAVE_ALL
             or (save_images == SAVE_REVIEW and result.status != "ok")
         )
+        # Image zone crops (photo, signature) are always kept with the scan
+        save_zone_images(result.zone_images, scan_dir / "zones")
         if keep:
             cv2.imwrite(str(scan_dir / "aligned.png"), result.aligned_image, PNG_FAST)
             if result.marked_image is not None:
