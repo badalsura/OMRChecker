@@ -47,6 +47,9 @@ DEFAULT_OPTIONS = {
     "reference_index": None,
     # Explicit preProcessors for the template; default: chosen automatically
     "pre_processors": None,
+    # Colour removal: None = suggest from the print colour; False = off;
+    # or an explicit colorDropout value
+    "color_dropout": None,
     "self_check": True,
     "end_to_end_check": True,
     "detect_ocr": True,
@@ -359,6 +362,71 @@ def _handwriting_rows(grids, block_assignments, box_rows, icr_zones):
     return out
 
 
+def _red_pen_zones(zones_, aligned, dropout_aligned, blank, blank_dropout, good):
+    """Zones whose sheet-to-sheet writing disappears under the colour dropout."""
+    if dropout_aligned is None or blank_dropout is None or not good:
+        return set()
+    out = set()
+    for name, zone in zones_.items():
+        if zone["type"] not in ("ocr", "icr"):
+            continue
+        x, y = zone["origin"]
+        w, h = zone["dimensions"]
+        grey_ink = dropped_ink = 0
+        for i in good:
+            region = (slice(y, y + h), slice(x, x + w))
+            grey_new = blank[region].astype(np.int16) - aligned[i][region] > 60
+            drop_new = (
+                blank_dropout[region].astype(np.int16) - dropout_aligned[i][region] > 60
+            )
+            grey_ink += int(grey_new.sum())
+            dropped_ink += int((grey_new & ~drop_new).sum())
+        if grey_ink > 0.002 * w * h * len(good) and dropped_ink > 0.6 * grey_ink:
+            out.add(name)
+    return out
+
+
+def suggest_colour(colour_images, opts=None):
+    """
+    Look at the print colour of a few sheets: pink or red print gets red
+    dropout (the print vanishes, pencil and pen stay). Returns a report dict
+    with "colorDropout" when dropout should be used.
+    """
+    opts = opts or {}
+    sample = [c for c in colour_images if c is not None][:3]
+    if not sample or opts.get("color_dropout") is False:
+        return {"checked": bool(sample), "print": None}
+    if isinstance(opts.get("color_dropout"), (str, dict)):
+        return {"checked": True, "print": "given", "colorDropout": opts["color_dropout"]}
+    try:
+        from src.color import extract_palette, is_colourful, suggest_dropout
+    except ImportError:  # pragma: no cover - colour module always shipped
+        return {"checked": False, "print": None}
+    shares = {}
+    for image in sample:
+        for entry in extract_palette(image)["colors"]:
+            if not is_colourful(entry):
+                continue
+            name = entry["label_guess"]
+            shares.setdefault(name, []).append((entry["share"], entry["hex"]))
+    if not shares:
+        return {"checked": True, "print": "grey"}
+    name, found = max(shares.items(), key=lambda kv: sum(s for s, _ in kv[1]))
+    share = sum(s for s, _ in found) / len(sample)
+    hex_colour = max(found)[1]
+    report = {"checked": True, "print": name, "print_hex": hex_colour,
+              "print_share": round(float(share), 4)}
+    if name in ("pink", "red", "orange", "purple") and share >= 0.01:
+        suggestion = suggest_dropout(hex_colour)
+        mode = suggestion["settings"]["mode"]
+        if mode == "red" or name in ("pink", "red"):
+            report["colorDropout"] = {"mode": "red"}
+        elif suggestion["good"]:
+            report["colorDropout"] = dict(suggestion["settings"])
+        report["dropout_good"] = bool(suggestion["good"])
+    return report
+
+
 def candidate_pre_processors(tracks, page_infos):
     """Registration chains worth trying, most preferred first."""
     if tracks:
@@ -495,6 +563,10 @@ def generate_template(images, labels=None, options=None):
         timings[name] = round((now - step) * 1000, 1)
         step = now
 
+    colour_images = [
+        np.asarray(image) if image is not None and np.asarray(image).ndim == 3 else None
+        for image in images
+    ]
     images = [_to_gray(image) for image in images]
     if not images:
         raise ValueError("At least one image is required")
@@ -540,7 +612,23 @@ def generate_template(images, labels=None, options=None):
             )
     good = [i for i, (_, info) in enumerate(registered) if info["ok"]]
     flipped = [i for i in good if registered[i][1].get("rotated_180")]
-    if len(flipped) > len(good) / 2:
+    flip_all = len(flipped) > len(good) / 2
+    colour = suggest_colour(colour_images, opts)
+    dropout_aligned = None
+    if colour.get("colorDropout"):
+        from src.color import apply_dropout
+
+        dropout_aligned = []
+        for index, (_, info) in enumerate(registered):
+            dropped = apply_dropout(colour_images[index], colour["colorDropout"])
+            dropout_aligned.append(
+                rectify.replay_registration(
+                    dropped, page_infos[index], info, page_size, flip_all
+                )
+            )
+    for _, info in registered:
+        info.pop("_matrix", None)
+    if flip_all:
         # The reference sheet was the upside-down one: follow the majority
         aligned = [cv2.rotate(a, cv2.ROTATE_180) for a in aligned]
         for _, info in registered:
@@ -622,7 +710,23 @@ def generate_template(images, labels=None, options=None):
     lap("bubbles")
 
     # 5. Fill levels and label assignment
-    fills = bubbles.sample_fill(aligned, grids, blank)
+    blank_dropout = None
+    if dropout_aligned is not None and good:
+        # Fill levels on the image that is actually read (print removed)
+        blank_dropout = (
+            _blank_page([dropout_aligned[i] for i in good], opts["workers"])
+            if len(good) >= 2
+            else dropout_aligned[good[0]]
+        )
+        fills = bubbles.sample_fill(dropout_aligned, grids, blank_dropout)
+        grey_fills = bubbles.sample_fill(aligned, grids, blank)
+        if fills:
+            colour["fill_threshold_grey"] = round(
+                _fill_threshold(np.concatenate([f[good].ravel() for f in grey_fills])),
+                1,
+            )
+    else:
+        fills = bubbles.sample_fill(aligned, grids, blank)
     threshold = (
         _fill_threshold(np.concatenate([f[good].ravel() for f in fills]))
         if fills
@@ -901,6 +1005,20 @@ def generate_template(images, labels=None, options=None):
         "preProcessors": pre_processors,
         "fieldBlocks": field_blocks,
     }
+    if colour.get("colorDropout"):
+        template["colorDropout"] = colour["colorDropout"]
+        red_pen = _red_pen_zones(
+            template_zones, aligned, dropout_aligned, blank, blank_dropout, good
+        )
+        for name, zone in template_zones.items():
+            if zone["type"] in ("barcode", "qrcode") or name in red_pen:
+                # Barcodes are printed in black; red-pen writing would vanish
+                zone.setdefault("options", {})["colorDropout"] = "grey"
+        colour["grey_zones"] = sorted(
+            n for n, z in template_zones.items()
+            if z.get("options", {}).get("colorDropout") == "grey"
+        )
+        colour["red_pen_zones"] = sorted(red_pen)
     if custom_labels:
         template["customLabels"] = custom_labels
     if template_zones:
@@ -911,7 +1029,8 @@ def generate_template(images, labels=None, options=None):
         warnings.extend(f"schema: {e}" for e in schema_errors)
     lap("template")
 
-    # 7. Self-check
+    # 7. Self-check (raw inputs keep their colour so colorDropout applies)
+    raw_inputs = [c if c is not None else g for c, g in zip(colour_images, images)]
     checks = {}
     table = None
     if assigned or exact_truth:
@@ -926,7 +1045,7 @@ def generate_template(images, labels=None, options=None):
             trial = {**template, "preProcessors": chain}
             result = self_check(
                 trial,
-                [images[i] for i in sample],
+                [raw_inputs[i] for i in sample],
                 [table[i] for i in sample] if table else None,
                 page_size,
                 blank,
@@ -953,15 +1072,16 @@ def generate_template(images, labels=None, options=None):
         template["preProcessors"] = best[1]
         checks["pre_processor_trials"] = trials
     if opts["self_check"] and field_blocks and not schema_errors:
+        read_pages = dropout_aligned if dropout_aligned is not None else aligned
         checks["registered"] = self_check(
             template,
-            [aligned[i] for i in good],
+            [read_pages[i] for i in good],
             [table[i] for i in good] if table else None,
             page_size,
         )
         if opts["end_to_end_check"]:
             checks["end_to_end"] = self_check(
-                template, images, table, page_size, blank, end_to_end=True
+                template, raw_inputs, table, page_size, blank, end_to_end=True
             )
         per_field = checks["registered"].get("per_field", {})
         for block in block_reports:
@@ -1032,6 +1152,7 @@ def generate_template(images, labels=None, options=None):
             for i, info in enumerate(page_infos)
         ],
         "fill_threshold": round(threshold, 1),
+        "colour": colour,
         "blocks": block_reports,
         "label_agreement": round(float(np.mean(agreements)), 4) if agreements else None,
         "timing_tracks": {
