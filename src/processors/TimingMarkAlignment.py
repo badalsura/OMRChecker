@@ -40,6 +40,8 @@ TPS_GRID_STEP = 16
 # One found index point outweighs this many timing marks when choosing the
 # orientation (index points are placed asymmetrically on purpose)
 INDEX_POINT_WEIGHT = 4
+# Index points are looked for this far (template px) from where the fit puts them
+INDEX_SEARCH_UNITS = 10.0
 REGION_NAMES = {
     (0, 0): "top-left",
     (0, 1): "top",
@@ -514,7 +516,9 @@ class TimingMarkAlignment(ImagePreprocessor):
         for point in self.index_points:
             radius = radius_units
             if radius is None:
-                radius = max(self.search_radius, 0.5 * float(point["size"].max()))
+                # Close to where the fit puts it: a fit from many marks is
+                # accurate to a few px even where the page curls
+                radius = max(INDEX_SEARCH_UNITS, 0.5 * float(point["size"].max()))
             centre = cv2.perspectiveTransform(point["center"][None, None], homography)[
                 0, 0
             ]
@@ -552,6 +556,11 @@ class TimingMarkAlignment(ImagePreprocessor):
                 continue
             extent = area / float(max(bw * bh, 1))
             shape = point["shape"]
+            if shape in ("square", "circle") and not (
+                0.7 <= bw / float(max(bh, 1)) * (h / max(w, 1e-6)) <= 1.4
+                or 0.7 <= bh / float(max(bw, 1)) * (h / max(w, 1e-6)) <= 1.4
+            ):
+                continue
             if shape == "square" and extent < 0.75:
                 continue
             if shape == "circle" and not 0.6 <= extent <= 0.92:
@@ -597,6 +606,21 @@ class TimingMarkAlignment(ImagePreprocessor):
         template_pts = [fit["template_pts"]] if len(fit.get("template_pts", [])) else []
         image_pts = [fit["image_pts"]] if len(fit.get("image_pts", [])) else []
         found = fit.get("index_image_pts") or self.locate_index_points(image, fit)
+        if len(self.expected):
+            # A point far off the marks' fit is something else (a letter, a
+            # mark): count it as not found rather than bend the page to it
+            found = list(found)
+            for i, (point, position) in enumerate(zip(self.index_points, found)):
+                if position is None:
+                    continue
+                back = cv2.perspectiveTransform(
+                    np.float32([[position]]), np.linalg.inv(fit["homography"])
+                )[0, 0]
+                limit = max(self.max_residual, 0.25 * float(point["size"].max()))
+                if float(np.linalg.norm(back - point["center"])) > limit:
+                    found[i] = None
+            fit["index_image_pts"] = found
+            fit["index_found"] = int(sum(1 for p in found if p is not None))
         index_pairs = [
             (p["center"], f) for p, f in zip(self.index_points, found) if f is not None
         ]
