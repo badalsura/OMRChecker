@@ -21,3 +21,5 @@
 .rv-col-bad { background: #fbe4ee; color: #c2185b; border-radius: 3px; padding: 0 2px; }
 .rv-col-empty { opacity: 0.6; }
 button.danger.ghost { color: var(--err); }
+#job-recent { max-width: 240px; }
+#job-folder { flex: 1; min-width: 260px; }

@@ -1048,11 +1048,11 @@ export function bindToolbar() {
   // View control: aligned / full colour / original, side by side, borders
   $("res-mode").value = r.mode;
   $("res-left").value = r.left;
-  $("res-side").checked = r.side;
+  $("res-sbs").checked = r.side;
   $("res-borders").checked = r.borders;
   $("res-mode").addEventListener("change", (e) => setViewOption("mode", e.target.value));
   $("res-left").addEventListener("change", (e) => setViewOption("left", e.target.value));
-  $("res-side").addEventListener("change", (e) => setViewOption("side", e.target.checked));
+  $("res-sbs").addEventListener("change", (e) => setViewOption("side", e.target.checked));
   $("res-borders").addEventListener("change", (e) => setViewOption("borders", e.target.checked));
   syncViewControls();
 }
@@ -1060,7 +1060,7 @@ export function bindToolbar() {
 function syncViewControls() {
   $("res-mode").value = r.mode;
   $("res-left").value = r.left;
-  $("res-side").checked = r.side;
+  $("res-sbs").checked = r.side;
   $("res-borders").checked = r.borders;
   $("res-left-wrap").classList.toggle("hidden", !r.side);
 }
