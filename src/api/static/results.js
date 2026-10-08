@@ -244,6 +244,7 @@ function loadImage(src) {
 }
 
 async function open(scanId, { keepView = false, quiet = false } = {}) {
+  if (r.align && r.align.scanId !== scanId) r.align = null;
   r.busy = true;
   if (!quiet) statusLine.textContent = "Rendering…";
   r.preview = null;
@@ -1150,6 +1151,8 @@ async function alignClick(p) {
   const a = r.align;
   if (!a || !r.data || r.data.scan_id !== a.scanId) return (r.align = null);
   if (p.pane.kind !== "original") return toast("Click on the Original view");
+  // Clicks while the alignment is being sent are ignored
+  if (a.points.length >= a.names.length) return;
   a.points.push([Math.round(p.x), Math.round(p.y)]);
   draw();
   if (a.points.length < a.names.length) return alignPrompt();
@@ -1222,7 +1225,7 @@ async function typeValues(d) {
   }
   const inputs = {};
   const rows = (targets.output_columns || []).map((name) => {
-    inputs[name] = el("input", { value: (d.responses || {})[name] || "", style: "width:10em" });
+    inputs[name] = el("input", { value: (d.responses || d.outputs || {})[name] || "", style: "width:10em" });
     return el("label", { class: "field inline" }, el("span", { class: "mono" }, name), inputs[name]);
   });
   const dialog = modal(

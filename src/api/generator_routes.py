@@ -274,7 +274,12 @@ def register(app, ctx, secured, decode_image):
                 409, "No sample sheets are stored with this template (generate it again)"
             )
         size = page_size(template_id)
-        with ctx.engines.engine(template_id) as engine:
+        try:
+            engine_context = ctx.engines.engine(template_id)
+            engine = engine_context.__enter__()
+        except (SystemExit, Exception) as error:
+            raise HTTPException(422, f"Template failed to load: {error}") from None
+        try:
             aligner = next(
                 (
                     p
@@ -350,6 +355,8 @@ def register(app, ctx, secured, decode_image):
                             )
             finally:
                 aligner.joint_fit = joint
+        finally:
+            engine_context.__exit__(None, None, None)
         out = []
         for point in points:
             found = seen[point["name"]]

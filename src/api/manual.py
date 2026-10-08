@@ -37,9 +37,12 @@ def align_targets(service, result):
 
 
 def _homography(clicks, targets):
-    src = np.float32(clicks)
-    dst = np.float32(targets)
-    if len(src) != len(dst) or len(src) < 4:
+    try:
+        src = np.float32(clicks).reshape(-1, 2)
+        dst = np.float32(targets).reshape(-1, 2)
+    except (TypeError, ValueError):
+        raise ResultsError("Each point needs an x and a y", 422) from None
+    if len(src) != len(clicks) or len(src) != len(dst) or len(src) < 4:
         raise ResultsError("Click at least 4 points", 422)
     if len(src) == 4:
         matrix = cv2.getPerspectiveTransform(src, dst)

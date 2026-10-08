@@ -15,7 +15,7 @@ export async function startBorderPick(ed) {
   }
   if (!ed.printedBoxes.length) return toast("No printed rectangles found on the reference sheet", "error", 5000);
   ed.borderBlock = ed.selected.name;
-  ed.setMode("pick-border");
+  if (ed.mode !== "pick-border") ed.setMode("pick-border");
   toast("Click the printed box that belongs to this block");
   ed.draw();
 }

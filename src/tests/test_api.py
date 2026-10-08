@@ -622,6 +622,8 @@ def test_failed_sheet_aligned_by_hand_or_typed(tmp_path, spec):
         assert [pw, ph] == [blank.shape[1], blank.shape[0]]
         assert client.get(f"/scans/{sid}/views/original").status_code == 200
         corners = [[0, 0], [pw - 1, 0], [pw - 1, ph - 1], [0, ph - 1]]
+        bad = client.post(f"/scans/{sid}/manual-align", json={"points": [[0], [1], [2], [3]]})
+        assert bad.status_code == 422, bad.text
         response = client.post(f"/scans/{sid}/manual-align", json={"points": corners})
         assert response.status_code == 200, response.text
         stored = client.get(f"/scans/{sid}").json()

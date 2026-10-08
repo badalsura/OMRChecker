@@ -342,7 +342,7 @@ def recognize_text_detailed(
             if "tesserocr" not in _WARNED:
                 _WARNED.add("tesserocr")
                 logger.warning(f"tesserocr failed ({error}); using pytesseract")
-    elif "capi" not in _WARNED:
+    elif ("capi", lang, tessdata) not in _WARNED:
         capi_path = _capi_tessdata(tessdata)
         if capi_path is not None:
             from src.readers import tess_capi
@@ -351,8 +351,11 @@ def recognize_text_detailed(
                 return tess_capi.recognize(
                     image, psm, whitelist, lang, capi_path, patterns_file
                 )
-            except Exception as error:  # any failure: the executable still works
-                _WARNED.add("capi")
+            except Exception as error:  # e.g. a language missing from tessdata
+                if pytesseract is None:
+                    raise
+                # Only this language and data folder fall back to the executable
+                _WARNED.add(("capi", lang, tessdata))
                 logger.warning(f"in-process Tesseract failed ({error}); using pytesseract")
     data = pytesseract.image_to_data(
         image,

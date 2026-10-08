@@ -77,6 +77,11 @@ export class TemplateEditor {
     this.multi = [];
     this.dirty = false;
     this.testResult = null;
+    // Per-template caches and modes must not carry over from the last template
+    this.printedBoxes = null;
+    this.calibration = null;
+    this.borderBlock = null;
+    this.mode = null;
     this.errors = detail.validation_errors || [];
     this.report = detail.report_confirmed ? null : this.parseReport(detail.report);
     this.resolved = new Set(((detail.report || {}).verified_items || []).filter((k) => typeof k === "string"));
@@ -303,6 +308,7 @@ export class TemplateEditor {
     try {
       this.detail = { ...this.detail, ...(await api(`/templates/${this.id}/reference`, { method: "POST", form })) };
       this.bgMode = "reference";
+      this.printedBoxes = null;
       await this.loadBackground();
       toast("Background saved as the template reference image", "ok");
     } catch (error) {

@@ -1049,7 +1049,10 @@ def generate_template(images, labels=None, options=None):
             }
         )
 
-    field_names = {n for a in block_assignments.values() for n in a["field_labels"]}
+    # Only blocks kept in the template (held-back suggestions are not)
+    field_names = {
+        n for k, a in block_assignments.items() if k in grid_names for n in a["field_labels"]
+    }
     template_zones, zone_reports = {}, []
     zone_taken = set(field_names)
     label_columns = {}
@@ -1101,7 +1104,8 @@ def generate_template(images, labels=None, options=None):
         verify.append(
             {"kind": "zone", "name": name, "reason": f"detected {zone['formats']}"}
         )
-    for zone in _handwriting_rows(grids, block_assignments, box_rows, icr_zones):
+    kept_assignments = {k: a for k, a in block_assignments.items() if k in grid_names}
+    for zone in _handwriting_rows(grids, kept_assignments, box_rows, icr_zones):
         name = _unique(zone.pop("name"), zone_taken)
         x, y, w, h = zone["box"]
         template_zones[name] = {
@@ -1192,7 +1196,10 @@ def generate_template(images, labels=None, options=None):
     if assigned:
         composites.update(assigned["composites"])
     custom_labels = _custom_labels(
-        [block_assignments[k] for k in order], composites, field_names, template_zones
+        [block_assignments[k] for k in order if k in grid_names],
+        composites,
+        field_names,
+        template_zones,
     )
     pre_processors = opts["pre_processors"]
     candidates = [pre_processors]
@@ -1233,21 +1240,24 @@ def generate_template(images, labels=None, options=None):
             # One straight line of marks can't fix a page-wide fit (every
             # sheet would fail registration): add marks off that line
             extra = marks.spread_points(alignment["index_candidates"], page_size, track_points)
-            if len(extra) >= 2 and opts["pre_processors"] is None:
+            if len(extra) >= 4 and opts["pre_processors"] is None:
+                # Registration fits the tracks alone, so a straight track is
+                # dropped and the sheet registers on index points only
+                timing["options"]["tracks"] = {}
                 timing["options"]["indexPoints"] = [
                     marks.index_point(c, f"P{i + 1}") for i, c in enumerate(extra)
                 ]
                 alignment["index_points"] = timing["options"]["indexPoints"]
                 warnings.append(
                     "the timing marks lie on one straight line, which can't align a "
-                    f"page; added {len(extra)} index point(s) away from it: check "
-                    "them in the Alignment panel"
+                    f"page; the sheet is aligned on {len(extra)} index points away "
+                    "from it instead: check them in the Alignment panel"
                 )
             else:
                 warnings.append(
                     "the timing marks lie on one straight line, which can't align a "
                     "page, and no other distinct printed mark was found: add at "
-                    "least 2 index points away from the track in the Alignment "
+                    "least 4 index points away from the track in the Alignment "
                     "panel, or every sheet will fail registration"
                 )
     if not tracks:

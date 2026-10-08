@@ -428,7 +428,8 @@ class ImageInstanceOps:
         #     appendSaveImg(5,hist)
         #     appendSaveImg(2,hist)
 
-        model_marked_probs = self.get_model_marked_probs(img, template)
+        # Training crops come from the stored (unflattened) aligned image
+        model_marked_probs = self.get_model_marked_probs(aligned_out, template)
 
         per_omr_threshold_avg, total_q_strip_no, total_q_box_no = 0, 0, 0
         review_params = config.review_params

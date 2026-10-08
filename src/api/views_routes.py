@@ -52,6 +52,7 @@ def source_page(service, result):
             + "). Set a path remap (Results > Path remap) if the folder moved.",
             404,
         )
+    service.check_source(result, path)
     with service.engines.engine(result) as (engine, _):
         images = ImageUtils.load_omr_image(path, engine.tuning_config, color=True)
     page = int(result.get("page") or 0)
