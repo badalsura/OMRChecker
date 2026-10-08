@@ -185,6 +185,8 @@ def warp_to_aligned(geometry, src_img, filters=None):
     intensity-only preprocessors; without it they are skipped.
     """
     steps = geometry.get("steps")
+    if not steps and geometry.get("page_homography") is None:
+        steps = _fallback_steps(geometry)
     image = src_img
     if steps:
         for step in steps:
@@ -226,18 +228,26 @@ def _tps_backward(tps, points):
     return points + tps_displacement(tps, points)
 
 
+def _fallback_steps(geometry):
+    """Steps for a geometry without a replay list: a bare resize when no
+    homography was recorded (old results), else the homography (+ tps)."""
+    if geometry.get("page_homography") is None and geometry.get("source_size"):
+        return [{"op": "resize", "from": list(geometry["source_size"]),
+                 "size": list(geometry["aligned_size"])}]
+    steps = [{"op": "warp", "matrix": geometry.get("page_homography") or IDENTITY,
+              "size": geometry["aligned_size"], "inverse": False}]
+    if geometry.get("tps"):
+        steps.append(dict(geometry["tps"], op="tps"))
+    return steps
+
+
 def map_points(geometry, pts, direction="source_to_aligned"):
     """Map [[x, y], ...] between source and aligned pixels."""
     points = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
     if direction not in ("source_to_aligned", "aligned_to_source"):
         raise ValueError(f"Unknown direction '{direction}'")
     forward = direction == "source_to_aligned"
-    steps = geometry.get("steps")
-    if not steps:
-        steps = [{"op": "warp", "matrix": geometry.get("page_homography") or IDENTITY,
-                  "size": geometry["aligned_size"], "inverse": False}]
-        if geometry.get("tps"):
-            steps.append(dict(geometry["tps"], op="tps"))
+    steps = geometry.get("steps") or _fallback_steps(geometry)
     sequence = steps if forward else list(reversed(steps))
     for step in sequence:
         if step["op"] in ("resize", "warp"):

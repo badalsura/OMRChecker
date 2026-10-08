@@ -1,0 +1,25 @@
+/* Results views, review queue extras, folder picker and job housekeeping */
+.help-i { display: inline-block; color: var(--accent); cursor: help; font-weight: 400; font-size: 13px; margin-left: 2px; }
+.help-i:focus { outline: 1px dotted var(--accent); }
+.source-box .help-line { display: none; }
+.source-box.focused .help-line, .source-box:hover .help-line { display: block; }
+.fs-ok { color: var(--ok); }
+.fs-bad { color: var(--err); }
+.fs-warn { color: var(--warn); margin: 4px 0; }
+.fs-warn:empty { display: none; }
+.fs-path { margin: 8px 0 4px; padding: 4px 8px; background: var(--accent-soft); border-radius: 4px; word-break: break-all; }
+.fs-list { list-style: none; margin: 0 0 6px; padding: 0; max-height: 50vh; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.fs-list.loading { opacity: 0.5; }
+.fs-list li { display: flex; gap: 8px; align-items: center; padding: 5px 8px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.fs-list li:hover { background: var(--accent-soft); }
+.fs-list li.fs-sep { cursor: default; background: none; }
+.fs-name { flex: 1; word-break: break-all; }
+.fs-count { white-space: nowrap; }
+.toast.warn { background: var(--warn); color: #fff; }
+.chip.group-flag { background: #fbe4ee; color: #c2185b; }
+.res-row.group-flagged, summary.group-flagged { box-shadow: inset 3px 0 0 #c2185b; }
+.rv-col-bad { background: #fbe4ee; color: #c2185b; border-radius: 3px; padding: 0 2px; }
+.rv-col-empty { opacity: 0.6; }
+button.danger.ghost { color: var(--err); }
+#job-recent { max-width: 240px; }
+#job-folder { flex: 1; min-width: 260px; }

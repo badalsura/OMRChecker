@@ -1,5 +1,6 @@
 // Jobs tab: start bulk jobs (chunked uploads or a server folder) and watch progress.
-import { api, chip, chunk, el, emit, fmtDuration, state, toast, url } from "./api.js";
+import { api, chip, chunk, el, emit, fmtDuration, modal, state, toast, url } from "./api.js";
+import { includeSubfolders, initFolderPicker, onShowFolders } from "./folders.js";
 
 const UPLOAD_CHUNK = 25;
 let pollTimer = null;
@@ -12,9 +13,11 @@ export function initJobs() {
     if (e.target.checked) input.setAttribute("webkitdirectory", "");
     else input.removeAttribute("webkitdirectory");
   });
+  initFolderPicker();
 }
 
 export function onShowJobs() {
+  onShowFolders();
   refreshJobs();
 }
 
@@ -44,12 +47,16 @@ async function startJob() {
     if (folder && !files.length) {
       const form = base();
       form.append("folder", folder);
+      form.append("recursive", includeSubfolders() ? "true" : "false");
       job = await api("/jobs", { method: "POST", form });
     } else {
       const parts = chunk(files, UPLOAD_CHUNK);
       const form = base();
       form.append("start", "false");
-      if (folder) form.append("folder", folder);
+      if (folder) {
+        form.append("folder", folder);
+        form.append("recursive", includeSubfolders() ? "true" : "false");
+      }
       for (const f of parts[0]) form.append("files", f, f.webkitRelativePath ? f.webkitRelativePath.replace(/\//g, "_") : f.name);
       job = await api("/jobs", { method: "POST", form });
       let sent = parts[0].length;
@@ -66,6 +73,8 @@ async function startJob() {
     status.textContent = `Job ${job.id.slice(0, 8)} started with ${job.total_files} files`;
     document.getElementById("job-files").value = "";
     toast("Job started", "ok");
+    for (const warning of job.warnings || []) toast(warning, "warn", 8000);
+    onShowFolders();
     refreshJobs();
   } catch (error) {
     toast(error.message, "error", 6000);
@@ -125,7 +134,7 @@ export async function refreshJobs() {
                 },
                 "Cancel"
               )
-            : null
+            : el("button", { class: "small danger ghost", title: "Delete this job and its results", onclick: () => deleteJob(job) }, "Delete")
         )
       )
     );
@@ -135,4 +144,50 @@ export async function refreshJobs() {
     pollTimer = setTimeout(refreshJobs, 1500);
   }
   if (!active) emit("review-changed");
+}
+
+// Delete a job and every result it produced, after a confirmation
+function deleteJob(job) {
+  const pages = job.pages || 0;
+  const label = job.name || job.id.slice(0, 8);
+  const typed = el("input", { placeholder: "delete", size: 10, autocomplete: "off" });
+  const go = el(
+    "button",
+    {
+      class: "danger",
+      onclick: async () => {
+        if (typed.value.trim().toLowerCase() !== "delete") {
+          typed.classList.add("invalid");
+          typed.focus();
+          return;
+        }
+        go.disabled = true;
+        try {
+          const done = await api(`/jobs/${job.id}`, { method: "DELETE" });
+          dialog.close();
+          toast(`Job ${label} deleted with ${done.scans} sheet result(s)`, "ok");
+          emit("review-changed");
+          emit("results-deleted", { job_id: job.id });
+          refreshJobs();
+        } catch (error) {
+          go.disabled = false;
+          toast(error.message, "error", 6000);
+        }
+      },
+    },
+    "Delete job"
+  );
+  const dialog = modal(
+    `Delete job ${label}?`,
+    el(
+      "div",
+      {},
+      el("p", {}, `This deletes the job and its ${pages} sheet result(s): values, corrections, review items and stored images. It cannot be undone.`),
+      el("p", { class: "small muted" }, job.source === "folder" ? `The scans in ${job.folder || "the server folder"} are not touched.` : "The uploaded copies of the scans are deleted too."),
+      el("p", { class: "small muted" }, "The deletion is written to the audit log with your name."),
+      el("label", { class: "small" }, "Type ", el("code", {}, "delete"), " to confirm: ", typed)
+    ),
+    [go]
+  );
+  typed.focus();
 }
