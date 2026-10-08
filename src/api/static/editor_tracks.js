@@ -409,14 +409,10 @@ export function renderAlignmentPanel(ed) {
   const report = alignmentReport(ed);
   const method = currentMethod(ed);
   const t = timing(ed);
-  const box = el("div", { class: "al-panel" }, el("h3", {}, "Alignment"));
+  const box = el("div", { class: "al-panel" });
 
-  const methodSel = el(
-    "select",
-    { onchange: (e) => setMethod(ed, e.target.value) },
-    METHODS.map(([v, label]) => el("option", { value: v, selected: v === method }, label))
-  );
-  box.append(field("Method", methodSel, METHODS.find((m) => m[0] === method)?.[2] || ""));
+  // The method itself is chosen in the Alignment section (editor_options.js);
+  // this panel adds the track and index-point tools under it.
 
   const show = el("input", { type: "checkbox", checked: ed.showAlignment !== false, onchange: (e) => ((ed.showAlignment = e.target.checked), ed.draw()) });
   box.append(field("Show marks on the page", show, "Draws every timing mark (numbered) and index point the template uses; marks missed on a sample sheet are red."));
@@ -448,6 +444,9 @@ export function renderAlignmentPanel(ed) {
       el(
         "div",
         { class: "row gap wrap" },
+        !tracks.length && Object.keys(report.tracks || {}).length
+          ? el("button", { class: "small", title: "Fill in the tracks the generator found on the sample sheets", onclick: () => setMethod(ed, "tracks") }, "Use detected tracks")
+          : null,
         modeBtn("align-track", "+ Add track", "Drag a box over a strip of timing marks; the marks inside are found on the reference image."),
         modeBtn("align-marks", "Edit marks", "Click a mark to remove it; click empty space on a track to add a mark there.")
       )

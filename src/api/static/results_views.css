@@ -1,8 +1,9 @@
 /* Results views, review queue extras, folder picker and job housekeeping */
 .help-i { display: inline-block; color: var(--accent); cursor: help; font-weight: 400; font-size: 13px; margin-left: 2px; }
 .help-i:focus { outline: 1px dotted var(--accent); }
-.source-box .help-line { display: none; }
-.source-box.focused .help-line, .source-box:hover .help-line { display: block; }
+/* Always shown: revealing it on hover re-wrapped the row and moved the buttons */
+.source-box { flex: 1 1 320px; min-width: 0; }
+.source-box .help-line { display: block; }
 .fs-ok { color: var(--ok); }
 .fs-bad { color: var(--err); }
 .fs-warn { color: var(--warn); margin: 4px 0; }

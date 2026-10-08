@@ -118,6 +118,8 @@ class JobManager:
             "options": {
                 "save_images": options.get("save_images") or SAVE_REVIEW,
                 "workers": options.get("workers"),
+                # Per-job PDF rendering {"pdf_dpi", "pdf_page"}; None = config.json
+                "pdf_params": options.get("pdf_params"),
             },
             "name": options.get("name") or "",
             # Folder prefix rewrites used when re-reading this job's files later
@@ -264,6 +266,7 @@ class JobManager:
             "job_id": job["id"],
             "scans_root": str(self.data.scans),
             "save_images": job["options"]["save_images"],
+            "pdf_params": job["options"].get("pdf_params"),
         }
         tasks = (
             {**base, "seq": seq, "file_path": path, "file_name": Path(path).name}

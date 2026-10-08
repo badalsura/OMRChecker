@@ -47,7 +47,12 @@ from src.readers.image_zone import attach_zone_images
 from src.rules import review_items
 from src.template import Template
 from src.utils.image import ImageUtils
-from src.utils.parsing import get_concatenated_response, open_config_with_defaults
+from src.utils.parsing import (
+    describe_groups,
+    get_concatenated_response,
+    group_review_items,
+    open_config_with_defaults,
+)
 
 STATUS_OK = "ok"
 STATUS_NEEDS_REVIEW = "needs_review"
@@ -76,6 +81,8 @@ class ScanResult:
     geometry: Optional[dict] = None
     # Score details: max_score, per-section scores, verdict counts, band
     scoring: dict = field(default_factory=dict)
+    # Groups with groupOptions: per-column states (src/utils/parsing.py)
+    groups: dict = field(default_factory=dict)
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
@@ -99,6 +106,7 @@ class ScanResult:
             "checks": self.checks,
             "validation": self.validation,
             "scoring": self.scoring,
+            **({"groups": self.groups} if self.groups else {}),
         }
         if self.geometry is not None:
             out["geometry"] = self.geometry
@@ -251,9 +259,9 @@ class OMREngine:
         omr_response = dict(detailed["omr_response"])
         for name, zone_result in zone_results.items():
             omr_response[name] = zone_result.value
-        responses = get_concatenated_response(omr_response, self.template)
-
         fields = detailed["field_details"]
+        responses = get_concatenated_response(omr_response, self.template, fields)
+
         zones = {name: zone.to_dict() for name, zone in zone_results.items()}
         checks, validation, rule_review = {}, {}, []
         if self.template.rules:
@@ -278,7 +286,9 @@ class OMREngine:
             )
             score = scoring["score"]
 
+        groups = describe_groups(omr_response, self.template, fields)
         review = review_items(fields, zones, rule_review)
+        review.extend(group_review_items(groups, review))
         review.extend(self._sheet_review(fields))
         review.extend(recorder.info.get("review") or [])
         timings["total"] = _elapsed_ms(started)
@@ -291,6 +301,7 @@ class OMREngine:
             review=review,
             checks=checks,
             validation=validation,
+            groups=groups,
             score=score,
             scoring=scoring,
             thresholds=detailed["thresholds"],
@@ -370,12 +381,27 @@ class OMREngine:
             }
         ]
 
-    def scan_path(self, file_path, keep_images=True):
+    def load_images(self, file_path, pdf_params=None):
+        """
+        [(name, image)] of an image file or the selected pages of a PDF.
+
+        pdf_params (optional): per-request {"pdf_dpi", "pdf_page"} overriding
+        config.json (Scan / New Job screens); None values keep the config's.
+        """
+        config = self.tuning_config
+        overrides = {k: v for k, v in (pdf_params or {}).items() if v is not None}
+        if overrides:
+            values = config.toDict()
+            values["pdf_params"] = {**values.get("pdf_params", {}), **overrides}
+            config = DotMap(values, _dynamic=False)
+        return ImageUtils.load_omr_image(
+            Path(file_path), config, color=self.needs_color
+        )
+
+    def scan_path(self, file_path, keep_images=True, pdf_params=None):
         """Read an image or every selected page of a PDF; returns a list of results."""
         file_path = Path(file_path)
-        images = ImageUtils.load_omr_image(
-            file_path, self.tuning_config, color=self.needs_color
-        )
+        images = self.load_images(file_path, pdf_params)
         if not images:
             return [
                 ScanResult(file_path.name, STATUS_ERROR, error="File could not be read")

@@ -116,7 +116,7 @@ class TemplateStore:
         template = read_json(directory / "template.json", {}) or {}
         return {
             "id": template_id,
-            "name": meta.get("name", template_id),
+            "name": meta.get("name") or template_id,
             "status": meta.get("status", "ready"),
             "created_at": meta.get("created_at"),
             "updated_at": meta.get("updated_at"),

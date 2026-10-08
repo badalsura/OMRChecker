@@ -152,7 +152,9 @@ def recompute(result, engine):
                 item for item in sheet_items if item["name"] not in listed
             ]
         else:
-            result["responses"] = get_concatenated_response(omr_response, template)
+            result["responses"] = get_concatenated_response(
+                omr_response, template, result.get("fields") or {}
+            )
     except KeyError:
         # Template changed since the scan; keep a flat response
         result["responses"] = {**(result.get("responses") or {}), **omr_response}

@@ -308,6 +308,22 @@ TEMPLATE_SCHEMA = {
                 "^.*$": {"type": "array", "items": FIELD_STRING_TYPE}
             },
         },
+        "groupOptions": {
+            "description": "Per customLabels group: what an empty, multi-marked or flagged column becomes (one character per column). A group without an entry keeps the plain join",
+            "type": "object",
+            "patternProperties": {
+                "^.*$": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        # Placeholder for an unmarked column; null skips the column
+                        "empty": {"type": ["string", "null"]},
+                        "multi": {"type": "string"},
+                        "issue": {"type": "string"},
+                    },
+                }
+            },
+        },
         "outputColumns": {
             "type": "array",
             "items": FIELD_STRING_TYPE,

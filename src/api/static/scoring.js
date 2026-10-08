@@ -368,6 +368,9 @@ class ScoringPanel {
     });
     document.body.append(this.backdrop);
     this.render();
+    // Take focus so Esc closes the panel straight away
+    this.backdrop.tabIndex = -1;
+    this.backdrop.focus();
   }
 
   changed() {

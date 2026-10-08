@@ -39,6 +39,7 @@
             <span>or click to choose files</span>
             <input id="scan-files" type="file" multiple accept="image/*,.pdf" hidden>
           </div>
+          <div id="scan-pdf"></div>
           <div class="stats" id="scan-stats"></div>
           <div class="row gap">
             <button id="scan-export" class="small ghost">Export CSV</button>
@@ -174,6 +175,7 @@
           <label class="field">Worker processes <input id="job-workers" type="number" min="1" placeholder="auto"></label>
         </div>
         <div id="job-workers-warning" class="small fs-warn"></div>
+        <div id="job-pdf"></div>
         <div class="row gap wrap source-row">
           <div class="source-box" data-help>
             <strong>Upload files <span class="help-i" tabindex="0" title="Copies the sheets from this computer to the server. Use it when the server is another machine, or for a few hundred sheets.">ⓘ</span></strong>

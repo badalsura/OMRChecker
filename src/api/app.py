@@ -50,7 +50,7 @@ from pydantic import BaseModel, Field
 from src.api import align_routes
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
-from src.api import fs_routes, generator_routes, manage_routes, ocr_routes, results_routes, views_routes
+from src.api import editor_routes, fs_routes, generator_routes, manage_routes, ocr_routes, results_routes, views_routes
 from src.api import template_ops_routes
 from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
@@ -563,9 +563,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         template_id: str = Form(...),
         files: List[UploadFile] = File(..., description="Images or PDFs"),
         save_images: str = Form(SAVE_ALL),
+        pdf_dpi: Optional[str] = Form(None, description="PDF render DPI or 'auto'"),
+        pdf_page: Optional[str] = Form(
+            None, description="PDF pages: '1', '2-4', '3-' or 'all'"
+        ),
     ):
         """Read sheets synchronously. Use /jobs for large batches."""
         require_template(template_id)
+        pdf_params = editor_routes.parse_pdf_params(pdf_dpi, pdf_page)
         if len(files) > settings.sync_max_files:
             raise HTTPException(
                 413,
@@ -588,6 +593,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                         "seq": 0,
                         "file_name": safe_filename(upload.filename, path.name),
                         "template_version": version,
+                        "pdf_params": pdf_params,
                     }
                     stored.extend(
                         scan_and_store(
@@ -869,8 +875,13 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         workers: Optional[int] = Form(None),
         name: Optional[str] = Form(None),
         start: bool = Form(True, description="false: add more files, then /start"),
+        pdf_dpi: Optional[str] = Form(None, description="PDF render DPI or 'auto'"),
+        pdf_page: Optional[str] = Form(
+            None, description="PDF pages: '1', '2-4', '3-' or 'all'"
+        ),
     ):
         require_template(template_id)
+        pdf_params = editor_routes.parse_pdf_params(pdf_dpi, pdf_page)
         if save_images not in (SAVE_ALL, SAVE_REVIEW, SAVE_NONE):
             raise HTTPException(400, "save_images must be all, review or none")
         if not files and not folder and start:
@@ -884,7 +895,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             template_id,
             [],
             source="folder" if folder else "upload",
-            options={"save_images": save_images, "workers": workers, "name": name},
+            options={
+                "save_images": save_images,
+                "workers": workers,
+                "name": name,
+                "pdf_params": pdf_params,
+            },
             start=False,
         )
         uploaded = [
@@ -1036,6 +1052,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     # duplicate / rename / validate JSON / scoring preview (items 6, 7, 12)
     template_ops_routes.register(app, ctx, secured, template_detail)
     generator_routes.register(app, ctx, secured, decode_image)
+    # template editor helpers: installed OCR languages and models
+    editor_routes.register(app, ctx, secured)
     # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
     exports_module.register(app, ctx, secured)
 

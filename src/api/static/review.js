@@ -1,5 +1,5 @@
 // Review queue: keyboard-driven, optimistic, prefetching.
-import { api, chip, confidenceColor, el, emit, modal, on, toast, url } from "./api.js";
+import { api, chip, confidenceColor, displayName, el, emit, modal, on, toast, url } from "./api.js";
 
 const POLL_MS = 5000;
 
@@ -81,7 +81,7 @@ function fillNames(rows, total, current) {
     if (names.has(row.name)) continue;
     names.add(row.name);
     const n = rows.filter((r) => r.name === row.name).reduce((sum, r) => sum + r.n, 0);
-    select.append(el("option", { value: row.name }, `${row.name} (${n})`));
+    select.append(el("option", { value: row.name }, `${displayName(row.name, "(no name)")} (${n})`));
   }
   // Keep the chosen name even when nothing is left for it
   if (current && !names.has(current)) select.append(el("option", { value: current }, `${current} (0)`));

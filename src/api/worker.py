@@ -168,7 +168,11 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
     file_path = Path(file_path)
     started = time.time()
     try:
-        results = engine.scan_path(file_path, keep_images=save_images != SAVE_NONE)
+        results = engine.scan_path(
+            file_path,
+            keep_images=save_images != SAVE_NONE,
+            pdf_params=meta.get("pdf_params"),
+        )
     except Exception as error:  # pragma: no cover - scan_path already guards pages
         from src.pipeline import STATUS_ERROR, ScanResult
 
@@ -209,6 +213,8 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
                 # Absolute path of the original file; re-rendering reads it again
                 "source_path": source_path,
                 "template_version": meta.get("template_version"),
+                # PDF rendering chosen on the Scan / New Job screen; re-renders reuse it
+                **({"pdf_params": meta["pdf_params"]} if meta.get("pdf_params") else {}),
                 "has_images": keep,
                 "reviewed": False,
                 "review_log": {},
