@@ -31,6 +31,7 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
+from src.template_gen import boxes as boxes_mod
 from src.template_gen import bubbles
 from src.template_gen import labels as label_ops
 from src.template_gen import marks, naming, rectify, zones
@@ -50,6 +51,8 @@ DEFAULT_OPTIONS = {
     # Colour removal: None = suggest from the print colour; False = off;
     # or an explicit colorDropout value
     "color_dropout": None,
+    # Fit blocks that sit in their own printed box onto it (rectifyOnBorder)
+    "rectify_on_border": True,
     "self_check": True,
     "end_to_end_check": True,
     "detect_ocr": True,
@@ -804,6 +807,7 @@ def generate_template(images, labels=None, options=None):
 
     # 4. Bubbles -> grids
     candidates = bubbles.detect_bubble_candidates(blank, page_size)
+    all_candidates = candidates
     exclusions = mark_boxes + [z["box"] for z in symbol_zones + icr_zones]
     keep = [
         k
@@ -965,10 +969,19 @@ def generate_template(images, labels=None, options=None):
     )
     field_blocks, block_reports, block_names = {}, [], set()
     order = [k for k in _reading_order(grids) if k in block_assignments]
+    printed_boxes = boxes_mod.detect_printed_boxes(blank, page_size)
+    grid_names, bordered = {}, []
     for k in order:
         grid, assignment = grids[k], block_assignments[k]
         name = _block_name(assignment, block_names)
+        grid_names[k] = name
         field_blocks[name] = _block_template(grid, assignment, bubble_dims)
+        fit = boxes_mod.border_for_grid(grid, printed_boxes, grids)
+        if fit and opts["rectify_on_border"]:
+            # Item 14: fit this block onto its printed box, gap measured here
+            field_blocks[name]["rectifyOnBorder"] = True
+            field_blocks[name]["borderPadding"] = fit[1]
+            bordered.append(name)
         reasons = []
         if assignment.get("default_named"):
             reasons.append("labels and values guessed (no matching labels)")
@@ -1371,6 +1384,10 @@ def generate_template(images, labels=None, options=None):
         "schema_errors": schema_errors,
         "warnings": warnings,
         "info": info_notes,
+        "printed_boxes": boxes_mod.boxes_report(
+            printed_boxes, grids, grid_names, all_candidates
+        ),
+        "bordered_blocks": bordered,
         "review_thresholds": (config or {}).get("review_params"),
         "naming": naming_report,
         "alignment": alignment,
