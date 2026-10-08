@@ -187,6 +187,19 @@ export class TemplateEditor {
     return { kind: "block", name, x, y, w, h, bw, bh, values, labels, horizontal, bg, lg, nV, nF, raw };
   }
 
+  // Digit blocks whose value order differs from the page's usual one
+  // (e.g. 0-9 on most blocks, 1-9,0 on one): drawn amber
+  oddDigitOrders() {
+    const digits = Object.keys(this.doc.fieldBlocks)
+      .map((n) => this.blockInfo(n))
+      .filter((o) => o.values.length >= 9 && o.values.every((v) => /^\d$/.test(String(v))));
+    const counts = new Map();
+    for (const o of digits) counts.set(o.values.join(""), (counts.get(o.values.join("")) || 0) + 1);
+    if (counts.size < 2) return new Set();
+    const usual = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    return new Set(digits.filter((o) => o.values.join("") !== usual).map((o) => o.name));
+  }
+
   zoneInfo(name) {
     const raw = this.doc.zones[name];
     const [x, y] = raw.origin || [0, 0];
@@ -330,6 +343,8 @@ export class TemplateEditor {
     const testFields = (overlay && this.testResult.fields) || {};
     const testZones = (overlay && this.testResult.zones) || {};
 
+    const oddOrder = this.oddDigitOrders();
+    const columnPos = new Map((Array.isArray(this.doc.outputColumns) ? this.expandLabels(this.doc.outputColumns) : []).map((c, i) => [c, i + 1]));
     for (const o of this.objects()) {
       const isSel = (this.selected && this.selected.kind === o.kind && this.selected.name === o.name) || this.multi.some((m) => m.kind === o.kind && m.name === o.name);
       const hl = highlighted.has(o.name);
@@ -348,6 +363,27 @@ export class TemplateEditor {
             }
             ctx.strokeStyle = tf?.needs_review ? "#d0342c" : "rgba(31,157,85,0.95)";
             ctx.strokeRect(X(bx) + 0.5, Y(by) + 0.5, S(o.bw), S(o.bh));
+            // What each bubble means, once it is big enough to read
+            if (!tf && S(o.bh) >= 10 && o.values[v] !== undefined) {
+              ctx.fillStyle = "rgba(47,111,223,0.75)";
+              ctx.font = `${Math.min(S(o.bh) * 0.6, 16)}px system-ui, sans-serif`;
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(String(o.values[v]), X(bx + o.bw / 2), Y(by + o.bh / 2));
+              ctx.textAlign = "start";
+              ctx.textBaseline = "alphabetic";
+            }
+          }
+          // Field names along the reading direction
+          if (!tf && label && S(o.lg || o.bw) >= 18 && o.nF > 1) {
+            ctx.fillStyle = "rgba(47,111,223,0.9)";
+            ctx.font = "10px system-ui, sans-serif";
+            const tx = o.horizontal ? o.x - 4 : o.x + f * o.lg;
+            const ty = o.horizontal ? o.y + f * o.lg + o.bh * 0.7 : o.y + o.h + 12 / scale;
+            if (o.horizontal) ctx.textAlign = "end";
+            const pos = columnPos.get(label);
+            ctx.fillText(pos ? `${label} #${pos}` : label, X(tx), Y(ty));
+            ctx.textAlign = "start";
           }
           if (tf && scale > 0.35) {
             ctx.fillStyle = tf.needs_review ? "#d0342c" : "#1f6f3f";
@@ -357,8 +393,9 @@ export class TemplateEditor {
             ctx.fillText(tf.value === "" || tf.value === null || tf.value === undefined ? "·" : String(tf.value), X(lx), Y(ly));
           }
         }
-        this.strokeBox(o, isSel ? BLOCK_COLOR : hl ? HIGHLIGHT : "rgba(47,111,223,0.8)", isSel ? 2 : hl ? 2.5 : 1.25, hl && !isSel);
-        this.label(o, `${o.name}${o.labels.length ? " · " + o.labels[0] : ""}${o.nF > 1 && o.labels[o.nF - 1] ? "…" + o.labels[o.nF - 1] : ""}`, hl ? HIGHLIGHT : BLOCK_COLOR);
+        const odd = oddOrder.has(o.name);
+        this.strokeBox(o, isSel ? BLOCK_COLOR : hl || odd ? HIGHLIGHT : "rgba(47,111,223,0.8)", isSel ? 2 : hl || odd ? 2.5 : 1.25, (hl || odd) && !isSel);
+        this.label(o, `${odd ? "⚠ " : ""}${o.name}${o.labels.length ? " · " + o.labels[0] : ""}${o.nF > 1 && o.labels[o.nF - 1] ? "…" + o.labels[o.nF - 1] : ""}${odd ? ` (values ${o.values.join("")})` : ""}`, hl || odd ? HIGHLIGHT : BLOCK_COLOR);
       } else {
         const color = ZONE_COLORS[o.raw.type] || "#333";
         ctx.fillStyle = color + "18";
