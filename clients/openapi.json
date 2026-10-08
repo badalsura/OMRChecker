@@ -3885,6 +3885,251 @@
         }
       }
     },
+    "/templates/{template_id}/generator/find-track": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Find Track",
+        "description": "Find the timing marks inside a box drawn over a strip of marks.",
+        "operationId": "find_track_templates__template_id__generator_find_track_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BoxBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/find-mark": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Find Mark",
+        "description": "The printed mark under a click (or inside a box): an index point.",
+        "operationId": "find_mark_templates__template_id__generator_find_mark_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/adopt-box": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Adopt Box",
+        "description": "Turn a printed box into a field block (bubble grid found inside it).",
+        "operationId": "adopt_box_templates__template_id__generator_adopt_box_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BoxBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/test-alignment": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Test Alignment",
+        "description": "Re-run the saved template's alignment on the sample sheets kept from\ngeneration: per sheet, the status, the marks matched and the index\npoints found, read on the aligned page the engine produced.",
+        "operationId": "test_alignment_templates__template_id__generator_test_alignment_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/acknowledge": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Acknowledge",
+        "description": "Confirm (clear) generator warnings; they stay listed as confirmed.",
+        "operationId": "acknowledge_templates__template_id__generator_acknowledge_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AckBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/exports": {
       "post": {
         "tags": [
@@ -4342,6 +4587,32 @@
         "type": "object",
         "title": "AcceptBulkBody"
       },
+      "AckBody": {
+        "properties": {
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "description": "Warning texts confirmed"
+          },
+          "all": {
+            "type": "boolean",
+            "title": "All",
+            "description": "Confirm every current warning",
+            "default": false
+          },
+          "undo": {
+            "type": "boolean",
+            "title": "Undo",
+            "description": "Bring the confirmed warnings back",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "AckBody"
+      },
       "AlignBody": {
         "properties": {
           "sample": {
@@ -4587,7 +4858,7 @@
               }
             ],
             "title": "Labels",
-            "description": "CSV: a file/filename column plus one column per field"
+            "description": "CSV or .xlsx: a file-name column (any spelling, e.g. 'File Name') plus one column per field; answer strings expand to q1..qN"
           },
           "name": {
             "anyOf": [
@@ -4722,6 +4993,25 @@
           "files"
         ],
         "title": "Body_upload_template_templates_post"
+      },
+      "BoxBody": {
+        "properties": {
+          "box": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Box",
+            "description": "[x, y, w, h]"
+          }
+        },
+        "type": "object",
+        "required": [
+          "box"
+        ],
+        "title": "BoxBody"
       },
       "BubbleToggle": {
         "properties": {
@@ -4972,6 +5262,42 @@
           "name"
         ],
         "title": "ItemRef"
+      },
+      "MarkBody": {
+        "properties": {
+          "point": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Point",
+            "description": "[x, y] of a click"
+          },
+          "box": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Box",
+            "description": "[x, y, w, h] of a drawn box"
+          }
+        },
+        "type": "object",
+        "title": "MarkBody"
       },
       "NameBody": {
         "properties": {

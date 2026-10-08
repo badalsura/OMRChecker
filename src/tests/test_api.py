@@ -456,3 +456,91 @@ def test_job_pool_follows_each_jobs_worker_count():
         assert second._max_workers == 3
     finally:
         manager.pool.shutdown(wait=True)
+
+
+def _xlsx(rows):
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    for row in rows:
+        book.active.append(row)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def test_parse_labels_xlsx_and_answer_strings():
+    content = _xlsx([["File Name", "Roll"], ["b.jpg", "0123"], ["a.jpg", "0456"]])
+    info = {}
+    labels = parse_labels_csv(content, ["a.jpg", "b.jpg"], "labels.xlsx", info)
+    assert labels == [{"Roll": "0456"}, {"Roll": "0123"}]
+    assert info["file_column"] == "File Name"
+    labels = parse_labels_csv(b"file name,ANS\nx.png,AB *\n", ["x.png"], "l.csv")
+    assert labels == [{"q1": "A", "q2": "B", "q3": "", "q4": "*"}]
+
+
+def test_generator_routes(tmp_path, spec, monkeypatch):
+    import sys
+    import types
+
+    blank, _ = make_sheet(spec, seed=3)
+
+    class FakeResult:
+        def __init__(self, images):
+            self.template = spec.to_template()
+            self.reference_image = blank
+            self.config = {"review_params": {"max_unmarked_fill_ratio": 0.35}}
+            self.report = {
+                "warnings": ["timing tracks look the same upside down", "other"],
+                "needs_verification": [],
+            }
+
+    module = types.ModuleType("src.template_gen")
+    module.generate_template = lambda images, labels, options: FakeResult(images)
+    monkeypatch.setitem(sys.modules, "src.template_gen", module)
+    image, _ = make_sheet(spec, seed=4)
+    labels = _xlsx([["File-Name", "q1"], ["s1.png", "A"]])
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates/generate",
+            files=[
+                ("files", ("s1.png", png_bytes(image), "image/png")),
+                ("labels", ("labels.xlsx", labels, "application/octet-stream")),
+            ],
+        )
+        assert response.status_code == 201, response.text
+        detail = response.json()
+        tid = detail["id"]
+        assert detail["config"] == {"review_params": {"max_unmarked_fill_ratio": 0.35}}
+        assert detail["report"]["sheet_names"] == ["s1.png"]
+        assert detail["report"]["labels"]["format"] == "xlsx"
+        monkeypatch.delitem(sys.modules, "src.template_gen")
+
+        left = np.array(spec.timing_tracks["left"])
+        x0, y0 = left.min(axis=0) - 20
+        x1, y1 = left.max(axis=0) + 20
+        response = client.post(
+            f"/templates/{tid}/generator/find-track",
+            json={"box": [float(x0), float(y0), float(x1 - x0), float(y1 - y0)]},
+        )
+        assert response.status_code == 200, response.text
+        assert len(response.json()["marks"]) == len(left)
+        response = client.post(
+            f"/templates/{tid}/generator/find-mark",
+            json={"point": [float(left[0][0]), float(left[0][1])]},
+        )
+        assert response.status_code == 200, response.text
+        assert np.hypot(*(np.array(response.json()["center"]) - left[0])) < 3
+
+        response = client.post(f"/templates/{tid}/generator/test-alignment")
+        assert response.status_code == 200, response.text
+        sheet = response.json()["sheets"][0]
+        assert sheet["file"] == "s1.png" and sheet["status"] != "error"
+        assert sheet["found"] >= 0.9 * sheet["expected"] > 0
+
+        response = client.post(
+            f"/templates/{tid}/generator/acknowledge", json={"warnings": ["other"]}
+        )
+        assert response.json()["warnings"] == ["timing tracks look the same upside down"]
+        assert client.get(f"/templates/{tid}").json()["report"]["acknowledged_warnings"] == ["other"]
+        response = client.post(f"/templates/{tid}/generator/acknowledge", json={"undo": True})
+        assert len(response.json()["warnings"]) == 2

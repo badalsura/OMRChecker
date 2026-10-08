@@ -226,10 +226,10 @@
           </div>
           <div class="panel">
             <h2>Auto-generate from samples</h2>
-            <p class="muted">Upload ~20 filled sample sheets and, optionally, a labels CSV (a <code>file</code> column plus one column per field). The draft opens in the editor with the items that need verification highlighted.</p>
+            <p class="muted">Upload ~20 filled sample sheets and, optionally, a labels file: CSV or Excel (.xlsx) with a file-name column (“File Name”, “file”, … any spelling) plus one column per field. An answer-string column such as <code>ANS</code> (“CB A*D…”: space = blank, * = several marks) is split into q1, q2, … The draft opens in the editor with the items that need verification highlighted.</p>
             <label class="field">Name <input id="gen-name" placeholder="e.g. Admission form"></label>
             <label class="field">Sample sheets <input id="gen-files" type="file" multiple accept="image/*,.pdf"></label>
-            <label class="field">Labels CSV <input id="gen-labels" type="file" accept=".csv,text/csv"></label>
+            <label class="field">Labels (CSV or .xlsx) <input id="gen-labels" type="file" accept=".csv,.txt,.tsv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
             <details><summary class="muted">Options (JSON)</summary><textarea id="gen-options" rows="3" placeholder='{"bubble_size": [30, 30]}'></textarea></details>
             <button id="gen-run" class="primary">Generate draft</button>
             <span id="gen-status" class="muted"></span>

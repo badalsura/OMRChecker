@@ -50,7 +50,7 @@ from pydantic import BaseModel, Field
 from src.api import align_routes
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
-from src.api import fs_routes, manage_routes, ocr_routes, results_routes, views_routes
+from src.api import fs_routes, generator_routes, manage_routes, ocr_routes, results_routes, views_routes
 from src.api import template_ops_routes
 from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
@@ -474,7 +474,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     def generate(
         files: List[UploadFile] = File(..., description="Sample sheet images (~20)"),
         labels: Optional[UploadFile] = File(
-            None, description="CSV: a file/filename column plus one column per field"
+            None,
+            description="CSV or .xlsx: a file-name column (any spelling, e.g. "
+            "'File Name') plus one column per field; answer strings expand to q1..qN",
         ),
         name: Optional[str] = Form(None),
         options: Optional[str] = Form(None, description="JSON options"),
@@ -485,17 +487,21 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(
                 501, f"Template generation is not available: {error}"
             ) from None
-        images, names = [], []
+        images, names, uploads = [], [], []
         for upload in files:
             content = read_upload(upload)
-            image = decode_image(content, upload.filename)
+            # Colour kept so the generator can suggest colour dropout
+            image = decode_image(content, upload.filename, colour=True)
             if image is None:
                 raise HTTPException(400, f"'{upload.filename}' is not a readable image")
             images.append(image)
             names.append(upload.filename or f"image{len(names)}")
-        label_list = None
+            uploads.append((names[-1], content))
+        label_list, label_info = None, {}
         if labels is not None:
-            label_list = parse_labels_csv(read_upload(labels), names)
+            label_list = parse_labels_csv(
+                read_upload(labels), names, labels.filename, label_info
+            )
         try:
             parsed_options = json.loads(options) if options else None
         except json.JSONDecodeError:
@@ -509,7 +515,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         report = getattr(result, "report", None) or {}
         reference = getattr(result, "reference_image", None)
         report = json.loads(json.dumps(report, default=_np_default))
+        if isinstance(report, dict):
+            report["sheet_names"] = names
+            if label_info:
+                report["labels"] = json.loads(json.dumps(label_info, default=str))
         staged = [("template.json", json.dumps(template, default=_np_default).encode())]
+        generated_config = getattr(result, "config", None)
+        if isinstance(generated_config, dict) and generated_config:
+            staged.append(("config.json", json.dumps(generated_config).encode()))
         if reference is not None:
             ok, buffer = cv2.imencode(".png", reference)
             if ok:
@@ -534,6 +547,10 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             return JSONResponse(
                 status_code=422, content={"detail": str(error), "errors": error.errors}
             )
+        try:
+            generator_routes.save_samples(ctx.templates.path(template_id), uploads)
+        except OSError:
+            pass  # "Test on samples" then asks for a new generation
         detail = template_detail(template_id)
         detail["validation_errors"] = errors
         return detail
@@ -1018,6 +1035,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     ocr_routes.register(app, ctx, secured)
     # duplicate / rename / validate JSON / scoring preview (items 6, 7, 12)
     template_ops_routes.register(app, ctx, secured, template_detail)
+    generator_routes.register(app, ctx, secured, decode_image)
     # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
     exports_module.register(app, ctx, secured)
 
@@ -1057,7 +1075,7 @@ def png_response(image):
     return Response(content=buffer.tobytes(), media_type="image/png")
 
 
-def decode_image(content, filename=None):
+def decode_image(content, filename=None, colour=False):
     if (filename or "").lower().endswith(".pdf"):
         try:
             import fitz
@@ -1072,7 +1090,8 @@ def decode_image(content, filename=None):
             )
         except Exception:
             return None
-    return cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_GRAYSCALE)
+    flag = cv2.IMREAD_COLOR if colour else cv2.IMREAD_GRAYSCALE
+    return cv2.imdecode(np.frombuffer(content, np.uint8), flag)
 
 
 FILENAME_COLUMNS = (
@@ -1086,34 +1105,22 @@ FILENAME_COLUMNS = (
 )
 
 
-def parse_labels_csv(content, image_names):
-    """Map a labels CSV onto the uploaded images (by file name, else by row order)."""
-    text = content.decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
-    rows = list(reader)
-    if not rows:
-        return None
-    key = next(
-        (c for c in reader.fieldnames or [] if c.strip().lower() in FILENAME_COLUMNS),
-        None,
-    )
+def parse_labels_csv(content, image_names, filename=None, info=None):
+    """
+    Map a labels file (CSV or .xlsx) onto the uploaded images, by file name
+    (any spelling of "File Name") or else by row order. Answer strings
+    ("CB A*D", space = blank, * = multi-marked) expand to q1..qN.
+    See src/utils/label_files.py; `info` (a dict) receives what was recognised.
+    """
+    from src.utils.label_files import LabelFileError, parse_label_file
 
-    def clean(row):
-        return {k.strip(): (v or "").strip() for k, v in row.items() if k and k != key}
-
-    if key is None:
-        if len(rows) != len(image_names):
-            raise HTTPException(
-                400,
-                "labels CSV needs a 'file' column (or exactly one row per image, in order)",
-            )
-        return [clean(row) for row in rows]
-    by_name = {}
-    for row in rows:
-        file_name = Path((row.get(key) or "").strip()).name
-        by_name[file_name] = clean(row)
-        by_name.setdefault(Path(file_name).stem, clean(row))
-    return [by_name.get(Path(n).name) or by_name.get(Path(n).stem) for n in image_names]
+    try:
+        labels, details = parse_label_file(content, image_names, filename)
+    except LabelFileError as error:
+        raise HTTPException(400, str(error)) from None
+    if info is not None:
+        info.update(details)
+    return labels
 
 
 def _np_default(value):
