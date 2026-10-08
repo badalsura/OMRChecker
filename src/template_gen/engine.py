@@ -430,6 +430,19 @@ def _validation_rules(matches, composites, custom_labels, labels):
     return rules
 
 
+def _adoptable_boxes(report, blank, page_size, bubble_dims):
+    """Keep "adoptable" only for boxes holding a real grid of usual-size bubbles."""
+    for entry in report:
+        if not entry["adoptable"]:
+            continue
+        block, info = boxes_mod.block_from_box(blank, entry["box"], page_size, bubble_dims)
+        ok = block is not None and "bubbleDimensions" not in block and info["rows"] * info["cols"] >= 4
+        entry["adoptable"] = bool(ok)
+        if ok:
+            entry["grid"] = [info["rows"], info["cols"]]
+    return report
+
+
 def _alignment_method(pre_processors):
     names = [p.get("name") for p in pre_processors or []]
     if "TimingMarkAlignment" in names:
@@ -1321,6 +1334,15 @@ def generate_template(images, labels=None, options=None):
             )
     verify[:0] = block_verify
 
+    for entry in naming_report:
+        order = {"0..9": "digits 0..9", "1..9,0": "digits 1..9,0", "A..": "letters A.."}.get(
+            entry["order"], entry["order"]
+        )
+        info_notes.append(
+            f"'{entry['column']}' read from {entry['fields']} bubble column(s), "
+            f"values {order}; matched the labels on {round(entry['score'] * entry['sheets_checked'])}"
+            f" of {entry['sheets_checked']} sheets"
+        )
     if labelled:
         used = set(used_columns) | set(field_names) | set(template_zones)
         for key, subs in composites.items():
@@ -1384,8 +1406,11 @@ def generate_template(images, labels=None, options=None):
         "schema_errors": schema_errors,
         "warnings": warnings,
         "info": info_notes,
-        "printed_boxes": boxes_mod.boxes_report(
-            printed_boxes, grids, grid_names, all_candidates
+        "printed_boxes": _adoptable_boxes(
+            boxes_mod.boxes_report(printed_boxes, grids, grid_names, all_candidates),
+            blank,
+            page_size,
+            bubble_dims,
         ),
         "bordered_blocks": bordered,
         "review_thresholds": (config or {}).get("review_params"),

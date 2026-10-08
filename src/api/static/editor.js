@@ -2,6 +2,8 @@
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
 import { api, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
+import { alignmentPick, drawAlignment, renderAlignmentPanel } from "./editor_tracks.js";
+import { renderWarnings } from "./generator_warnings.js";
 
 const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc" };
 const BLOCK_COLOR = "#2f6fdf";
@@ -347,6 +349,7 @@ export class TemplateEditor {
       }
       if (isSel) this.drawHandles(o);
     }
+    drawAlignment(this); // timing tracks and index points (editor_tracks.js)
     // alignment guides
     ctx.strokeStyle = "#ff2d95";
     ctx.lineWidth = 1;
@@ -542,6 +545,11 @@ export class TemplateEditor {
       const b = this.rubber;
       this.rubber = null;
       const rect = { x: Math.round(Math.min(b.x0, b.x1)), y: Math.round(Math.min(b.y0, b.y1)), w: Math.round(Math.abs(b.x1 - b.x0)), h: Math.round(Math.abs(b.y1 - b.y0)) };
+      if (this.mode && this.mode.startsWith("align")) {
+        alignmentPick(this, rect); // Alignment panel tools (editor_tracks.js)
+        this.draw();
+        return;
+      }
       if (rect.w > 4 && rect.h > 4) {
         if (this.mode === "add-block") this.createBlock(rect);
         else this.createZone(rect);
@@ -886,7 +894,7 @@ export class TemplateEditor {
     if (o) side.append(o.kind === "block" ? this.renderBlock(o) : this.renderZone(o));
     if (this.testResult) side.append(this.renderTest());
     if (this.report) side.append(this.renderReport());
-    if (!o) side.append(this.renderPage());
+    if (!o) side.append(this.renderPage(), renderAlignmentPanel(this));
     side.append(
       el(
         "div",
@@ -1265,7 +1273,7 @@ export class TemplateEditor {
         )
       )
     );
-    if (r.warnings.length) box.append(el("h3", {}, "Warnings"), el("ul", {}, r.warnings.map((w) => el("li", {}, w))));
+    box.append(renderWarnings(this, r.warnings)); // confirm-to-clear (generator_warnings.js)
     return box;
   }
 
