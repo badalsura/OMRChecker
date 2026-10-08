@@ -125,7 +125,10 @@ def recompute(result, engine):
     score and status after edits. Values a person set or accepted stay settled:
     a rule can't flag them again while they keep that value.
     """
-    from src.evaluation import evaluate_concatenated_response
+    from src.evaluation import (
+        evaluate_concatenated_response_detailed,
+        scoring_summary,
+    )
     from src.utils.parsing import get_concatenated_response
 
     template = engine.template
@@ -157,12 +160,14 @@ def recompute(result, engine):
     honour_decisions(result)
     if engine.evaluation_config is not None:
         try:
-            result["score"] = evaluate_concatenated_response(
+            detailed = evaluate_concatenated_response_detailed(
                 result["responses"],
                 engine.evaluation_config,
                 Path(result.get("file_id", "scan")),
                 None,
             )
+            result["score"] = detailed["score"]
+            result["scoring"] = scoring_summary(detailed)
         except Exception as error:
             result["score_error"] = str(error)
     result["status"] = "needs_review" if result.get("review") else "ok"

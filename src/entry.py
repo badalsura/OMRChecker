@@ -130,6 +130,8 @@ def process_dir(
         excluded_files.extend(
             Path(exclude_file) for exclude_file in evaluation_config.get_exclude_files()
         )
+        if not evaluation_config.grade_enabled:
+            evaluation_config = None
 
     omr_files = [f for f in omr_files if f not in excluded_files]
 

@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
 from src.api import results_routes
+from src.api import template_ops_routes
 from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
     ReviewError,
@@ -331,6 +332,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "evaluation": read_json(directory / "evaluation.json"),
             "files": ctx.templates.files(template_id),
             "report": meta.get("report"),
+            "report_confirmed": meta.get("report_confirmed"),
             "validation_errors": meta.get("validation_errors", []),
             "reference_url": (
                 f"/templates/{template_id}/reference.png"
@@ -984,6 +986,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     register_tool_routes(app, secured, read_upload, ctx)
     # results screen: render, correct, verify, regrade, accuracy, audit
     results_routes.register(app, ctx, secured)
+    # duplicate / rename / validate JSON / scoring preview (items 6, 7, 12)
+    template_ops_routes.register(app, ctx, secured, template_detail)
     # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
     exports_module.register(app, ctx, secured)
 

@@ -95,6 +95,25 @@ class AnswerMatcher:
     def get_marking_scheme(self):
         return self.section_marking_scheme
 
+    def allowed_answers(self):
+        if self.answer_type == "standard":
+            return [self.answer_item]
+        if self.answer_type == "multiple-correct":
+            return list(self.answer_item)
+        return [allowed_answer for allowed_answer, _score in self.answer_item]
+
+    def option_length(self):
+        """Length of one answer option (1 for 'A'..'D', 2 for '12' style keys)."""
+        return max(1, min(len(answer) for answer in self.allowed_answers()))
+
+    def max_marks(self):
+        """Best possible marks for this question (used for bonus and max score)."""
+        return max(
+            value
+            for verdict, value in self.marking.items()
+            if verdict.startswith("correct")
+        )
+
     def get_section_explanation(self):
         answer_type = self.answer_type
         if answer_type in ["standard", "multiple-correct"]:
@@ -201,6 +220,23 @@ class EvaluationConfig:
         self.enable_evaluation_table_to_csv = options.get(
             "enable_evaluation_table_to_csv", False
         )
+        # Optional scoring options (all default to the old behaviour)
+        self.grade_enabled = bool(options.get("grade", True))
+        self.question_ranges = (
+            parse_fields("question_ranges", options["question_ranges"])
+            if options.get("question_ranges")
+            else None
+        )
+        self.drop_questions = set(
+            parse_fields("drop_questions", options.get("drop_questions") or [])
+        )
+        self.bonus_all_questions = set(
+            parse_fields("bonus_all", options.get("bonus_all") or [])
+        )
+        self.multi_marked_rule = options.get("multi_marked", "default")
+        self.legend = sorted(
+            options.get("legend") or [], key=lambda band: float(band.get("min", 0))
+        )
 
         if source_type == "csv":
             csv_path = curr_dir.joinpath(options["answer_key_csv_path"])
@@ -298,6 +334,24 @@ class EvaluationConfig:
             answers_in_order = options["answers_in_order"]
 
         self.validate_questions(answers_in_order)
+        if self.question_ranges is not None:
+            # Only these questions are graded (keeps roll numbers, phone
+            # numbers etc. out of an answer key read from a master sheet)
+            allowed = set(self.question_ranges)
+            kept = [
+                (question, answer)
+                for question, answer in zip(self.questions_in_order, answers_in_order)
+                if question in allowed
+            ]
+            self.questions_in_order = [question for question, _ in kept]
+            answers_in_order = [answer for _, answer in kept]
+        for key, names in (
+            ("drop_questions", self.drop_questions),
+            ("bonus_all", self.bonus_all_questions),
+        ):
+            unknown = sorted(names.difference(self.questions_in_order))
+            if unknown:
+                logger.warning(f"{key}: not in the answer key, ignored: {unknown}")
 
         self.section_marking_schemes, self.question_to_scheme = {}, {}
         for section_key, section_scheme in marking_schemes.items():
@@ -348,8 +402,35 @@ class EvaluationConfig:
             )
 
     def match_answer_for_question(self, current_score, question, marked_answer):
+        return self.match_answer_for_question_detailed(
+            current_score, question, marked_answer
+        )[1]
+
+    def is_multi_marked(self, answer_matcher, marked_answer):
+        """More marks than one answer option (e.g. 'AB' where answers are single letters)."""
+        if marked_answer == answer_matcher.empty_val or not marked_answer:
+            return False
+        return len(marked_answer) > answer_matcher.option_length()
+
+    def match_answer_for_question_detailed(
+        self, current_score, question, marked_answer
+    ):
+        """Returns (verdict, delta) with the optional drop/bonus/multi-mark rules."""
         answer_matcher = self.question_to_answer_matcher[question]
-        question_verdict, delta = answer_matcher.get_verdict_marking(marked_answer)
+        if question in self.drop_questions:
+            question_verdict, delta = "dropped", 0.0
+        elif question in self.bonus_all_questions:
+            question_verdict, delta = "bonus", answer_matcher.max_marks()
+        elif self.multi_marked_rule in (
+            "incorrect",
+            "unmarked",
+        ) and self.is_multi_marked(answer_matcher, marked_answer):
+            question_verdict = self.multi_marked_rule
+            delta = answer_matcher.marking[question_verdict]
+        else:
+            question_verdict, delta = answer_matcher.get_verdict_marking(
+                marked_answer
+            )
         self.conditionally_add_explanation(
             answer_matcher,
             delta,
@@ -358,7 +439,21 @@ class EvaluationConfig:
             question,
             current_score,
         )
-        return delta
+        return question_verdict, delta
+
+    def max_score(self):
+        return sum(
+            self.question_to_answer_matcher[question].max_marks()
+            for question in self.questions_in_order
+            if question not in self.drop_questions
+        )
+
+    def band_for(self, score):
+        label = None
+        for band in self.legend:
+            if score >= float(band.get("min", 0)):
+                label = band.get("label")
+        return label
 
     def conditionally_print_explanation(self):
         if self.should_explain_scoring:
@@ -535,18 +630,72 @@ class EvaluationConfig:
 def evaluate_concatenated_response(
     concatenated_response, evaluation_config, file_path, evaluation_output_dir
 ):
+    return evaluate_concatenated_response_detailed(
+        concatenated_response, evaluation_config, file_path, evaluation_output_dir
+    )["score"]
+
+
+def verdict_kind(question_verdict):
+    """'correct-AB' -> 'correct'."""
+    return question_verdict.split("-")[0]
+
+
+def evaluate_concatenated_response_detailed(
+    concatenated_response, evaluation_config, file_path, evaluation_output_dir
+):
+    """
+    Score one sheet. Returns {score, max_score, sections, section_max, counts,
+    band, questions}; questions lists {question, marked, answer, verdict, delta,
+    section} in key order.
+    """
     evaluation_config.prepare_and_validate_omr_response(concatenated_response)
     current_score = 0.0
+    sections, section_max, counts, questions = {}, {}, {}, []
     for question in evaluation_config.questions_in_order:
         marked_answer = concatenated_response[question]
-        delta = evaluation_config.match_answer_for_question(
+        (
+            question_verdict,
+            delta,
+        ) = evaluation_config.match_answer_for_question_detailed(
             current_score, question, marked_answer
         )
         current_score += delta
+        answer_matcher = evaluation_config.question_to_answer_matcher[question]
+        section = answer_matcher.get_marking_scheme().section_key
+        sections[section] = sections.get(section, 0.0) + delta
+        if question not in evaluation_config.drop_questions:
+            section_max[section] = (
+                section_max.get(section, 0.0) + answer_matcher.max_marks()
+            )
+        kind = verdict_kind(question_verdict)
+        counts[kind] = counts.get(kind, 0) + 1
+        questions.append(
+            {
+                "question": question,
+                "marked": marked_answer,
+                "answer": answer_matcher.answer_item,
+                "verdict": kind,
+                "delta": delta,
+                "section": section,
+            }
+        )
 
     evaluation_config.conditionally_print_explanation()
     evaluation_config.conditionally_save_explanation_csv(
         file_path, evaluation_output_dir
     )
 
-    return current_score
+    return {
+        "score": current_score,
+        "max_score": sum(section_max.values()),
+        "sections": sections,
+        "section_max": section_max,
+        "counts": counts,
+        "band": evaluation_config.band_for(current_score),
+        "questions": questions,
+    }
+
+
+def scoring_summary(detailed):
+    """The part of a detailed evaluation stored with each result."""
+    return {key: value for key, value in detailed.items() if key != "questions"}

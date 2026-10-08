@@ -131,6 +131,11 @@ class RowBuilder:
             return result.get("scan_id")
         if key == "verified_by":
             return (result.get("verified") or {}).get("by")
+        if key.startswith("score_section:"):
+            sections = (result.get("scoring") or {}).get("sections") or {}
+            return sections.get(key[len("score_section:") :])
+        if key == "score_band":
+            return (result.get("scoring") or {}).get("band")
         if key == "source_path":
             return result.get("source_path") or result.get("input_path")
         return result.get(key)

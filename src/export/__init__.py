@@ -68,8 +68,25 @@ def plan_columns(profile, template_infos, sample=()):
     for info in template_infos:
         custom_labels.update(info.get("custom_labels") or {})
     names = field_names(template_infos, sample)
-    columns, warnings = profile.columns(names, custom_labels)
+    columns, warnings = profile.columns(
+        names, custom_labels, score_sections=score_sections(sample)
+    )
     return columns, warnings, custom_labels
+
+
+def score_sections(sample):
+    """(section names, has bands) from the stored scoring of sample results."""
+    sections, bands = [], False
+    for result in sample:
+        scoring = result.get("scoring") or {}
+        for name in scoring.get("sections") or {}:
+            if name not in sections:
+                sections.append(name)
+        bands = bands or bool(scoring.get("band"))
+    # A single DEFAULT section is just the total score
+    if sections == ["DEFAULT"]:
+        sections = []
+    return sections, bands
 
 
 def export_results(

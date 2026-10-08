@@ -25,6 +25,40 @@ marking_object_properties = {
     },
 }
 
+# Optional scoring options shared by both source types (all additive; when
+# absent, scoring behaves exactly as before)
+SCORING_OPTION_PROPERTIES = {
+    # false keeps the answer key but switches scoring off
+    "grade": {"type": "boolean", "default": True},
+    # only these questions are graded, e.g. ["q1..50"]: keeps roll numbers and
+    # phone numbers out of a key read from a master sheet
+    "question_ranges": {"type": "array", "items": FIELD_STRING_TYPE},
+    # dropped questions give 0 marks to everyone and don't count in the maximum
+    "drop_questions": {"type": "array", "items": FIELD_STRING_TYPE},
+    # everyone gets the full marks of these questions, whatever they marked
+    "bonus_all": {"type": "array", "items": FIELD_STRING_TYPE},
+    # how a multi-marked answer (e.g. 'AB' for a single-letter key) is scored:
+    # default/weighted = look it up in the answer (weights), else incorrect
+    "multi_marked": {
+        "type": "string",
+        "enum": ["default", "incorrect", "unmarked", "weighted"],
+    },
+    # score bands, e.g. [{"min": 0, "label": "Fail"}, {"min": 40, "label": "Pass"}]
+    "legend": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["label"],
+            "additionalProperties": False,
+            "properties": {
+                "label": {"type": "string"},
+                "min": {"type": "number"},
+                "color": {"type": "string"},
+            },
+        },
+    },
+}
+
 EVALUATION_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://github.com/Udayraj123/OMRChecker/tree/master/src/schemas/evaluation-schema.json",
@@ -82,6 +116,7 @@ EVALUATION_SCHEMA = {
                             "answer_key_csv_path": {"type": "string"},
                             "answer_key_image_path": {"type": "string"},
                             "questions_in_order": ARRAY_OF_STRINGS,
+                            **SCORING_OPTION_PROPERTIES,
                         },
                     }
                 }
@@ -142,6 +177,7 @@ EVALUATION_SCHEMA = {
                                 "type": "boolean",
                                 "default": False,
                             },
+                            **SCORING_OPTION_PROPERTIES,
                         },
                     }
                 }

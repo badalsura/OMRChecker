@@ -2,6 +2,7 @@
 // with (re-rendered by the server, drawn here), correct it by clicking bubbles
 // or typing, verify it, regrade it with overrides, and read the accuracy.
 import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, state, toast, url } from "./api.js";
+import { scoreSummary } from "./score_view.js";
 
 const PAGE = 100;
 const r = {
@@ -654,7 +655,8 @@ function renderSide() {
   const verified = d.verified;
   side.append(
     el("div", { class: "res-head" }, el("strong", { class: "res-file", title: d.source_path || "" }, d.file_id || d.scan_id), el("div", { class: "row gap wrap" }, chip(d.status, d.status), d.corrected ? el("span", { class: "chip corrected" }, "corrected") : null, verified ? el("span", { class: "chip ok" }, `verified by ${verified.by}`) : el("span", { class: "chip" }, "not verified"), d.score !== null && d.score !== undefined ? el("span", { class: "chip" }, `score ${d.score}`) : null)),
-    el("div", { class: "muted small res-path" }, d.resolved_path || d.source_path || "")
+    el("div", { class: "muted small res-path" }, d.resolved_path || d.source_path || ""),
+    scoreSummary(d.scoring)
   );
   for (const warning of r.data.warnings || []) side.append(el("div", { class: "res-warning" }, warning));
   if (r.data.drift && r.data.drift.length) side.append(el("div", { class: "res-warning" }, `Re-reading now gives different values for: ${r.data.drift.join(", ")}`));
