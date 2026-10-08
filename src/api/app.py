@@ -902,6 +902,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         recursive: bool = Form(True),
         save_images: str = Form(SAVE_REVIEW),
         workers: Optional[int] = Form(None),
+        prefetch: Optional[int] = Form(
+            None, ge=0, le=10000, description="Files read into memory ahead of the workers (0 = off)"
+        ),
         name: Optional[str] = Form(None),
         start: bool = Form(True, description="false: add more files, then /start"),
         pdf_dpi: Optional[str] = Form(None, description="PDF render DPI or 'auto'"),
@@ -927,6 +930,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             options={
                 "save_images": save_images,
                 "workers": workers,
+                "prefetch": prefetch,
                 "name": name,
                 "pdf_params": pdf_params,
             },

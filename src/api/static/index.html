@@ -178,6 +178,7 @@
             </select>
           </label>
           <label class="field">Worker processes <input id="job-workers" type="number" min="1" placeholder="auto"></label>
+          <label class="field" title="Files read into memory ahead of the workers, so they never wait on the disk. About 0.2 MB per JPEG scan; 0 turns it off on small machines">Read ahead (files) <input id="job-prefetch" type="number" min="0" placeholder="64"></label>
         </div>
         <div id="job-workers-warning" class="small fs-warn"></div>
         <div id="job-pdf"></div>

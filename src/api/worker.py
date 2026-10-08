@@ -170,11 +170,14 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
     """
     file_path = Path(file_path)
     started = time.time()
+    # Bytes read ahead by the job (prefetch); otherwise the file is read here
+    file_bytes = meta.get("file_bytes")
     try:
         results = engine.scan_path(
             file_path,
             keep_images=save_images != SAVE_NONE,
             pdf_params=meta.get("pdf_params"),
+            data=file_bytes,
         )
     except Exception as error:  # pragma: no cover - scan_path already guards pages
         from src.pipeline import STATUS_ERROR, ScanResult
@@ -182,7 +185,11 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
         results = [ScanResult(file_path.name, STATUS_ERROR, error=str(error))]
     stored = []
     # Fingerprint of the original; re-renders refuse a different file
-    source_sha256 = file_sha256(file_path)
+    source_sha256 = (
+        hashlib.sha256(file_bytes).hexdigest()
+        if file_bytes is not None
+        else file_sha256(file_path)
+    )
     for page, result in enumerate(results):
         scan_id = new_id()
         scan_dir = scan_dir_for(scans_root, scan_id)

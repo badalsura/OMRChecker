@@ -398,7 +398,7 @@ class OMREngine:
             }
         ]
 
-    def load_images(self, file_path, pdf_params=None):
+    def load_images(self, file_path, pdf_params=None, data=None):
         """
         [(name, image)] of an image file or the selected pages of a PDF.
 
@@ -412,13 +412,16 @@ class OMREngine:
             values["pdf_params"] = {**values.get("pdf_params", {}), **overrides}
             config = DotMap(values, _dynamic=False)
         return ImageUtils.load_omr_image(
-            Path(file_path), config, color=self.needs_color
+            Path(file_path), config, color=self.needs_color, data=data
         )
 
-    def scan_path(self, file_path, keep_images=True, pdf_params=None):
-        """Read an image or every selected page of a PDF; returns a list of results."""
+    def scan_path(self, file_path, keep_images=True, pdf_params=None, data=None):
+        """
+        Read an image or every selected page of a PDF; returns a list of results.
+        data: the file's bytes when already read (file_path then names it).
+        """
         file_path = Path(file_path)
-        images = self.load_images(file_path, pdf_params)
+        images = self.load_images(file_path, pdf_params, data)
         if not images:
             return [
                 ScanResult(file_path.name, STATUS_ERROR, error="File could not be read")

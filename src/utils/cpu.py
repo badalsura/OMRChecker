@@ -78,7 +78,12 @@ def physical_cores():
 
 
 def default_workers():
-    return max(1, physical_cores())
+    """
+    One worker per logical processor: with files read ahead the workers are
+    CPU-bound, and hyper-threads still add throughput on OpenCV work.
+    OMR_WORKERS (or the job's worker count) overrides it.
+    """
+    return max(1, os.cpu_count() or physical_cores())
 
 
 def _linux_physical_cores():

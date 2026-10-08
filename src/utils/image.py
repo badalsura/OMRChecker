@@ -221,19 +221,24 @@ class ImageUtils:
         return max(dpis) if dpis else 72
 
     @staticmethod
-    def load_omr_image(file_path, tuning_config, color=False):
+    def load_omr_image(file_path, tuning_config, color=False, data=None):
         """
         Load OMR image from file. Returns list of (display_name, image_array) tuples.
 
         color=True decodes BGR images (for a template colorDropout); the default
-        grayscale decode is faster.
+        grayscale decode is faster. data: the file's bytes, already read (bulk
+        jobs read files ahead of the workers); file_path then only names it.
         """
         suffix = file_path.suffix.lower()
         if suffix == ".pdf":
             import fitz
 
             try:
-                doc = fitz.open(str(file_path))
+                doc = (
+                    fitz.open(stream=data, filetype="pdf")
+                    if data is not None
+                    else fitz.open(str(file_path))
+                )
             except Exception as e:
                 logger.error(f"Failed to open PDF: '{file_path}' - {e}")
                 return []
@@ -292,9 +297,11 @@ class ImageUtils:
                 doc.close()
             return images
         else:
-            img = cv2.imread(
-                str(file_path), cv2.IMREAD_COLOR if color else cv2.IMREAD_GRAYSCALE
-            )
+            flags = cv2.IMREAD_COLOR if color else cv2.IMREAD_GRAYSCALE
+            if data is not None:
+                img = cv2.imdecode(np.frombuffer(data, np.uint8), flags)
+            else:
+                img = cv2.imread(str(file_path), flags)
             if img is None:
                 logger.error(f"Failed to read image: '{file_path}'")
                 return []

@@ -11,7 +11,13 @@ import multiprocessing
 import queue
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from collections import deque
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 from pathlib import Path
 
 from src.api.storage import new_id, read_json, write_json_atomic
@@ -38,7 +44,37 @@ COMPLETED, FAILED, CANCELLED, INTERRUPTED = (
 )
 # Stopped on request; sheets read so far are kept and Resume reads the rest
 PAUSED = "paused"
+# Files read ahead of the workers by default (a few MB of scans in memory)
+DEFAULT_PREFETCH = 64
+PREFETCH_READERS = 4
 ACTIVE_STATES = {QUEUED, RUNNING}
+
+
+def _read_bytes(path):
+    try:
+        return Path(path).read_bytes()
+    except OSError:
+        return None  # the worker reads the path itself and reports the error
+
+
+def read_ahead(tasks, reader, depth):
+    """
+    Yield the tasks with each file's bytes attached, reading up to depth
+    files ahead on background threads so the workers never wait on the disk.
+    """
+    pending = deque()
+    tasks = iter(tasks)
+    while True:
+        while len(pending) < depth:
+            task = next(tasks, None)
+            if task is None:
+                break
+            pending.append((task, reader.submit(_read_bytes, task["file_path"])))
+        if not pending:
+            return
+        task, future = pending.popleft()
+        data = future.result()
+        yield {**task, "file_bytes": data} if data is not None else task
 
 
 def collect_folder(folder, recursive=True):
@@ -126,6 +162,10 @@ class JobManager:
             "options": {
                 "save_images": options.get("save_images") or SAVE_REVIEW,
                 "workers": options.get("workers"),
+                # Files read into memory ahead of the workers (0 = off)
+                "prefetch": DEFAULT_PREFETCH
+                if options.get("prefetch") is None
+                else max(0, int(options["prefetch"])),
                 # Per-job PDF rendering {"pdf_dpi", "pdf_page"}; None = config.json
                 "pdf_params": options.get("pdf_params"),
             },
@@ -371,6 +411,13 @@ class JobManager:
             pool = self._get_pool(workers)
             in_flight = {}
             max_in_flight = workers * 4
+            prefetch = int(job["options"].get("prefetch") or 0)
+            reader = None
+            if prefetch:
+                reader = ThreadPoolExecutor(
+                    max_workers=PREFETCH_READERS, thread_name_prefix="omr-prefetch"
+                )
+                tasks = read_ahead(tasks, reader, prefetch)
             tasks_iter = iter(tasks)
             exhausted = False
             while True:
@@ -398,6 +445,8 @@ class JobManager:
                     for future in list(in_flight):
                         if future.cancel():
                             in_flight.pop(future)
+            if reader is not None:
+                reader.shutdown(wait=False, cancel_futures=True)
         flush(force=True)
         if job["id"] in self.cancelled:
             job["state"] = CANCELLED

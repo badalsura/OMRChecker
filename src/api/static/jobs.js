@@ -42,6 +42,8 @@ async function startJob() {
     if (name) form.append("name", name);
     const workers = document.getElementById("job-workers").value;
     if (workers) form.append("workers", workers);
+    const prefetch = document.getElementById("job-prefetch").value;
+    if (prefetch !== "") form.append("prefetch", prefetch);
     return form;
   };
   button.disabled = true;
