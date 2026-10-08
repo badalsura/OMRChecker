@@ -6,12 +6,75 @@ on:
       mode:
         description: "onedir | onefile | both"
         default: both
+      default_engine:
+        description: "OCR engine used first: tesseract | paddle"
+        default: tesseract
+      fallback_engine:
+        description: "OCR engine tried when the first read is empty, unsure or invalid: paddle | tesseract | none"
+        default: paddle
+      paddle_models:
+        description: "PaddleOCR model size to bundle: mobile | server | none"
+        default: mobile
+      paddle_langs:
+        description: "PaddleOCR languages, space separated (en, devanagari)"
+        default: en
+      tessdata:
+        description: "Tesseract model set: best | fast"
+        default: best
+      tess_langs:
+        description: "Tesseract languages, space separated (eng, hin, ...)"
+        default: eng
   push:
     tags:
       - "v*"
 
 jobs:
+  # OCR models are fetched and converted once on Linux with a current Python:
+  # paddle2onnx and PaddlePaddle (needed only for the conversion) have no
+  # Python 3.8 Windows wheels. The exe itself only needs the .onnx files and
+  # runs them on the onnxruntime it already ships.
+  ocr-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEFAULT_ENGINE: ${{ github.event.inputs.default_engine || 'tesseract' }}
+      FALLBACK_ENGINE: ${{ github.event.inputs.fallback_engine || 'paddle' }}
+      PADDLE_MODELS: ${{ github.event.inputs.paddle_models || 'mobile' }}
+      PADDLE_LANGS: ${{ github.event.inputs.paddle_langs || 'en' }}
+      TESSDATA: ${{ github.event.inputs.tessdata || 'best' }}
+      TESS_LANGS: ${{ github.event.inputs.tess_langs || 'eng' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the model converter (build machine only)
+        if: env.PADDLE_MODELS != 'none'
+        run: python -m pip install paddlepaddle paddle2onnx
+
+      - name: Fetch Tesseract and PaddleOCR models
+        run: |
+          args="--tessdata $TESSDATA --langs $TESS_LANGS --default-engine $DEFAULT_ENGINE --fallback-engine $FALLBACK_ENGINE"
+          if [ "$PADDLE_MODELS" != "none" ]; then
+            args="$args --paddle $PADDLE_MODELS --paddle-langs $PADDLE_LANGS"
+          fi
+          python packaging/fetch_ocr_models.py $args
+          cat packaging/ocr_build.json
+          ls -l packaging/tessdata packaging/models/paddleocr 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocr-models
+          path: |
+            packaging/tessdata/
+            packaging/models/
+            packaging/ocr_build.json
+          if-no-files-found: error
+
   build:
+    needs: ocr-models
     # Python 3.8 is the newest Python that runs on Windows 7; an exe built with it
     # (and PyInstaller 5.13) starts on Windows 7 SP1 through 11.
     runs-on: windows-latest
@@ -28,6 +91,11 @@ jobs:
           architecture: x64
           cache: pip
           cache-dependency-path: packaging/requirements-win7.txt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ocr-models
+          path: packaging
 
       - name: Verify Windows cp38 wheels exist for every pin
         run: python packaging/verify_wheels.py
@@ -65,6 +133,10 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force
           if (-not $ok) { exit 1 }
+          # The bundled PaddleOCR models must load in the exe
+          $build = Get-Content packaging\ocr_build.json | ConvertFrom-Json
+          Write-Host "OCR engines in the exe:" ($r.engines | ConvertTo-Json -Compress)
+          if ($build.bundled.paddle -and -not $r.engines.paddleocr) { Write-Error "PaddleOCR models were bundled but do not load"; exit 1 }
           Compress-Archive -Force -Path dist\OMRChecker -DestinationPath dist\OMRChecker-portable-win64.zip
 
       - name: Smoke-test the onefile exe

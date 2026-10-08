@@ -18,6 +18,21 @@ No model file is committed to git. A build fetches what it bundles with
   dictionary is taken from each model's `inference.yml`. If you already have
   converted ONNX files, `--paddle-onnx-dir DIR` copies them instead.
 
+## The Windows portable build (GitHub Actions)
+
+`.github/workflows/build-windows.yml` fetches the models in its own job on
+Linux with Python 3.11 (paddle2onnx and PaddlePaddle are needed only to convert
+the models and have no Python 3.8 Windows wheels), then the Python 3.8 build
+bundles the `.onnx` files, tessdata and `ocr_build.json` into the exe.
+
+By default (a `v*` tag, or "Run workflow" without changes) the exe gets
+Tesseract "best" English first and PaddleOCR mobile English as the fallback.
+"Run workflow" lets you pick: `default_engine`, `fallback_engine`,
+`paddle_models` (mobile / server / none), `paddle_langs`, `tessdata` and
+`tess_langs`. The exe smoke test fails the build if bundled PaddleOCR models do
+not load (`/health` → `engines.paddleocr`). On a PC where onnxruntime cannot
+load (some Windows 7 machines), the exe still runs and reads with Tesseract.
+
 ## Build choices
 
 ```

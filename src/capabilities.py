@@ -45,6 +45,21 @@ def _tesseract():
     return _entry(ok, "found" if ok else "not found; OCR zones go to review")
 
 
+def _paddle_build_choice():
+    """The model size and language this build bundled (packaging/ocr_build.json)."""
+    try:
+        from src.readers.ocr_build import build_defaults
+
+        params = build_defaults()
+    except Exception:
+        params = {}
+    choice = {}
+    for key, arg in (("paddle_det_model", "det_size"), ("paddle_rec_model", "rec_size"), ("paddle_lang", "lang")):
+        if params.get(key):
+            choice[arg] = params[key]
+    return choice
+
+
 def _paddle():
     for name in _PADDLE_MODULES:
         try:
@@ -57,7 +72,7 @@ def _paddle():
             check = getattr(module, probe, None)
             if callable(check):
                 try:
-                    ok = bool(check())
+                    ok = bool(check(**_paddle_build_choice()) if probe == "paddle_available" else check())
                 except Exception as error:
                     return _entry(False, "unavailable ({})".format(type(error).__name__))
                 return _entry(ok, "models loaded" if ok else "models or onnxruntime missing")
