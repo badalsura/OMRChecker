@@ -245,21 +245,36 @@ def rectify_field_block(img, field_block, search_px, verify=True):
         offset = (float(moved[0] - centre[0, 0, 0]), float(moved[1] - centre[0, 0, 1]))
         level = "inner"
 
-    inner = find_border(img, field_block, padding_of(field_block), search, offset)
-    allowed = search
-    if isinstance(inner, str):
-        if outer is None:
-            return RectifyResult(
-                False,
-                inner,
-                status="skipped" if "outside the page" in inner else None,
-            )
-        corners, expected = outer
-        level = "outer"
-    else:
-        corners, expected = inner
-        allowed = search + float(np.hypot(*offset))
+    # The outer frame already places the block: search the inner box closely
+    inner_search = search if outer is None else max(4.0, search / 2.0)
+    inner = find_border(
+        img, field_block, padding_of(field_block), inner_search, offset
+    )
+    result = None
+    if not isinstance(inner, str):
+        result = _quad_result(
+            img,
+            field_block,
+            inner,
+            inner_search + float(np.hypot(*offset)),
+            level,
+            verify,
+        )
+        if result.ok or outer is None:
+            return result
+    elif outer is None:
+        return RectifyResult(
+            False,
+            inner,
+            status="skipped" if "outside the page" in inner else None,
+        )
+    # Inner box not found (or not plausible): use the outer frame's fit
+    fallback = _quad_result(img, field_block, outer, search, "outer", verify)
+    return fallback if fallback.ok or result is None else result
 
+
+def _quad_result(img, field_block, found, allowed, level, verify):
+    corners, expected = found
     result = RectifyResult(False, corners=corners, expected=expected, level=level)
     if result.max_shift > allowed:
         result.reason = "correction larger than the search margin"
