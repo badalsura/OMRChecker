@@ -1,0 +1,23 @@
+# Optional central OMR server (see Dockerfile and packaging/README.md).
+# Windows 7 PCs cannot run Docker; they use this server from Chrome 109 or
+# Firefox ESR 115 at http://<server>:8000/.
+services:
+  omr:
+    build: .
+    image: omrchecker-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Require X-API-Key on every API call (recommended on a shared network)
+      OMR_API_KEY: "${OMR_API_KEY:-}"
+      # Server folders that jobs may read from (inside the container)
+      OMR_ALLOWED_DIRS: /scans
+      # OMR_WORKERS: "8"           # bulk worker processes (default: all cores)
+    volumes:
+      - omr_data:/data             # templates, results, review queue
+      - ./scans:/scans:ro          # scan folders to read as server-side jobs
+      - ./models:/app/models:ro    # optional ONNX models (bubble, ICR, PaddleOCR)
+
+volumes:
+  omr_data:
