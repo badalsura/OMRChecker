@@ -88,8 +88,11 @@ class CropPage(ImagePreprocessor):
         logger.info(f"Found page corners: \t {sheet.tolist()}")
 
         # Warp layer 1
-        image = ImageUtils.four_point_transform(image, sheet)
-        self.record_geometry(lambda im: ImageUtils.four_point_transform(im, sheet))
+        image, matrix, size = ImageUtils.four_point_transform_with_matrix(image, sheet)
+        self.record_geometry(
+            lambda im: ImageUtils.four_point_transform(im, sheet),
+            {"op": "warp", "matrix": matrix, "size": size},
+        )
 
         # Return preprocessed image
         return image

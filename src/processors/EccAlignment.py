@@ -51,7 +51,10 @@ class EccAlignment(ImagePreprocessor):
     def apply_filter(self, image, file_path):
         ref_h, ref_w = self.reference.shape[:2]
         image = ImageUtils.resize_util(image, ref_w, ref_h)
-        self.record_geometry(lambda im: ImageUtils.resize_util(im, ref_w, ref_h))
+        self.record_geometry(
+            lambda im: ImageUtils.resize_util(im, ref_w, ref_h),
+            {"op": "resize", "size": [ref_w, ref_h]},
+        )
         small_w, small_h = int(ref_w * self.scale), int(ref_h * self.scale)
         reference_small = cv2.resize(self.reference, (small_w, small_h)).astype(
             np.float32
@@ -99,5 +102,15 @@ class EccAlignment(ImagePreprocessor):
                 borderValue=255,
             )
 
-        self.record_geometry(transform)
+        self.record_geometry(
+            transform,
+            {
+                "op": "warp",
+                "matrix": warp,
+                "size": [ref_w, ref_h],
+                "inverse": True,
+                "affine": self.motion != cv2.MOTION_HOMOGRAPHY,
+                "border": 255,
+            },
+        )
         return transform(image)

@@ -21,6 +21,7 @@ registration feature on machine-read forms. This preprocessor:
 import cv2
 import numpy as np
 
+from src.geometry import tps_maps
 from src.logger import logger
 from src.processors.interfaces.ImagePreprocessor import ImagePreprocessor
 from src.utils.image import ImageUtils
@@ -36,6 +37,20 @@ GOOD_FIT_FRACTION = 0.95
 MIN_TILT_DEGREES = 0.3
 # Thin-plate-spline displacement field is evaluated on this grid step (px)
 TPS_GRID_STEP = 16
+# One found index point outweighs this many timing marks when choosing the
+# orientation (index points are placed asymmetrically on purpose)
+INDEX_POINT_WEIGHT = 4
+REGION_NAMES = {
+    (0, 0): "top-left",
+    (0, 1): "top",
+    (0, 2): "top-right",
+    (1, 0): "left",
+    (1, 1): "middle",
+    (1, 2): "right",
+    (2, 0): "bottom-left",
+    (2, 1): "bottom",
+    (2, 2): "bottom-right",
+}
 
 
 class TimingMarkAlignment(ImagePreprocessor):
@@ -49,7 +64,25 @@ class TimingMarkAlignment(ImagePreprocessor):
             name: np.array(track["marks"], dtype=np.float32)
             for name, track in options["tracks"].items()
         }
-        self.expected = np.concatenate(list(self.tracks.values()))
+        self.expected = (
+            np.concatenate(list(self.tracks.values()))
+            if self.tracks
+            else np.zeros((0, 2), np.float32)
+        )
+        # Index points: corner squares, dots, L-corners of any size and shape
+        self.index_points = [
+            {
+                "name": point.get("name") or f"point{i + 1}",
+                "center": np.float32(point["center"]),
+                "size": np.float32(point["size"]),
+                "shape": point.get("shape", "any"),
+                "required": point.get("required", True),
+            }
+            for i, point in enumerate(options.get("indexPoints") or [])
+        ]
+        self.joint_fit = options.get("jointFit", True)
+        self.trim_margins = options.get("trimMargins", True)
+        self.max_region_residual = options.get("maxRegionResidual")
         self.mark_w, self.mark_h = options["markDimensions"]
         self.size_tolerance = options.get("sizeTolerance", DEFAULT_SIZE_TOLERANCE)
         self.search_radius = options.get(
@@ -58,13 +91,17 @@ class TimingMarkAlignment(ImagePreprocessor):
         self.min_matched = options.get(
             "minMatchedMarks", min(DEFAULT_MIN_MATCHED_MARKS, len(self.expected))
         )
+        if not len(self.expected) and len(self.index_points) < 4:
+            raise ValueError(
+                "TimingMarkAlignment needs timing tracks or at least 4 indexPoints"
+            )
         self.max_residual = options.get("maxResidual", DEFAULT_MAX_RESIDUAL)
         self.non_rigid = options.get("nonRigid", False)
         self.detect_orientation = options.get("detectOrientation", True)
         self.last_registration = {}
 
     def __str__(self):
-        return f"TimingMarkAlignment({len(self.expected)} marks)"
+        return f"TimingMarkAlignment({len(self.expected)} marks, {len(self.index_points)} index points)"
 
     def _min_mark_spacing(self):
         spacings = []
@@ -77,31 +114,47 @@ class TimingMarkAlignment(ImagePreprocessor):
     def apply_filter(self, image, file_path):
         page_w, page_h = self.page_dimensions
         page_corners = self.find_page_corners(image)
-        candidates = self.blob_centres(image, page_corners)
-        if len(candidates) < self.min_matched:
-            logger.error(
-                f"Timing marks not found in '{file_path}': {len(candidates)} candidate blobs"
-            )
-            return None
-
         rotations = (0, 1, 2, 3) if self.detect_orientation else (0,)
         best = None
-        for rotation in rotations:
-            fit = self.fit_orientation(page_corners, candidates, rotation)
-            if fit is None:
-                continue
-            if best is None or (fit["matched"], -fit["residual"]) > (
-                best["matched"],
-                -best["residual"],
-            ):
-                best = fit
-
-        if best is None or best["matched"] < self.min_matched:
-            matched = 0 if best is None else best["matched"]
-            logger.error(
-                f"Timing mark registration failed for '{file_path}': matched {matched}/{len(self.expected)} marks"
-            )
-            return None
+        if len(self.expected):
+            candidates = self.blob_centres(image, page_corners)
+            if len(candidates) < self.min_matched:
+                logger.error(
+                    f"Timing marks not found in '{file_path}': {len(candidates)} candidate blobs"
+                )
+                return None
+            for rotation in rotations:
+                fit = self.fit_orientation(page_corners, candidates, rotation)
+                if fit is None:
+                    continue
+                if self.index_points:
+                    self.locate_index_points(image, fit)
+                if best is None or self._orientation_key(fit) > self._orientation_key(
+                    best
+                ):
+                    best = fit
+            if best is None or best["matched"] < self.min_matched:
+                matched = 0 if best is None else best["matched"]
+                logger.error(
+                    f"Timing mark registration failed for '{file_path}': matched {matched}/{len(self.expected)} marks"
+                )
+                return None
+        else:
+            for rotation in rotations:
+                fit = self.fit_index_points_only(image, page_corners, rotation)
+                if fit is not None and (
+                    best is None
+                    or (fit["index_found"], -fit["residual"])
+                    > (best["index_found"], -best["residual"])
+                ):
+                    best = fit
+            if best is None:
+                logger.error(
+                    f"Index point registration failed for '{file_path}': fewer than 4 index points found"
+                )
+                return None
+        if self.index_points and self.joint_fit:
+            self.joint_refit(image, best)
         if best["residual"] > self.max_residual:
             logger.error(
                 f"Timing mark registration rejected for '{file_path}': residual {best['residual']:.2f}px > {self.max_residual}px"
@@ -120,19 +173,52 @@ class TimingMarkAlignment(ImagePreprocessor):
             )
 
         warped = warp_page(image)
-        self.record_geometry(warp_page)
-        if self.non_rigid and best["matched"] >= 6:
-            warped = self.thin_plate_correction(warped, best)
+        self.record_geometry(
+            warp_page,
+            {
+                "op": "warp",
+                "matrix": homography,
+                "size": [int(page_w), int(page_h)],
+                "inverse": True,
+                "border": 255,
+            },
+        )
+        tps = None
+        if self._use_non_rigid(best):
+            warped, tps = self.thin_plate_correction(warped, best)
 
         self.last_registration = {
-            "method": "timing_marks",
+            "method": "timing_marks" if len(self.expected) else "index_points",
             "orientation": best["rotation"] * 90,
             "matched_marks": best["matched"],
             "expected_marks": int(len(self.expected)),
             "residual_px": round(best["residual"], 3),
         }
+        if self.index_points:
+            self.last_registration["index_points_found"] = best.get("index_found", 0)
+        self.record_alignment_info(**self.alignment_report(image, best, tps))
         logger.info(f"Timing marks: {self.last_registration}")
         return warped
+
+    def _orientation_key(self, fit):
+        # Index points are asymmetric: they decide between look-alike orientations
+        return (
+            fit["matched"] + INDEX_POINT_WEIGHT * fit.get("index_found", 0),
+            -fit["residual"],
+        )
+
+    def _use_non_rigid(self, fit):
+        points = len(fit["template_pts"])
+        if self.non_rigid == "auto":
+            return points >= 6 and self._spread_cells(fit["template_pts"]) >= 7
+        return bool(self.non_rigid) and points >= 6
+
+    def _spread_cells(self, points):
+        """Cells of a 3x3 page grid holding at least one reference point."""
+        page_w, page_h = self.page_dimensions
+        cols = np.clip((points[:, 0] / page_w * 3).astype(int), 0, 2)
+        rows = np.clip((points[:, 1] / page_h * 3).astype(int), 0, 2)
+        return len(set(zip(rows.tolist(), cols.tolist())))
 
     # --- coarse page mapping ---------------------------------------------
 
@@ -404,32 +490,283 @@ class TimingMarkAlignment(ImagePreprocessor):
         page_w, page_h = int(self.page_dimensions[0]), int(self.page_dimensions[1])
         # For each output (template) pixel, sample the warped image where it really is
         weights = fit_thin_plate_spline(targets, observed - targets)
-        grid_x = np.arange(0, page_w + TPS_GRID_STEP, TPS_GRID_STEP, dtype=np.float32)
-        grid_y = np.arange(0, page_h + TPS_GRID_STEP, TPS_GRID_STEP, dtype=np.float32)
-        gx, gy = np.meshgrid(grid_x, grid_y)
-        grid = np.stack([gx.ravel(), gy.ravel()], axis=1)
-        displacement = evaluate_thin_plate_spline(weights, targets, grid)
-        dx = cv2.resize(
-            displacement[:, 0].reshape(gx.shape),
-            (page_w, page_h),
-            interpolation=cv2.INTER_LINEAR,
-        )
-        dy = cv2.resize(
-            displacement[:, 1].reshape(gy.shape),
-            (page_w, page_h),
-            interpolation=cv2.INTER_LINEAR,
-        )
-        map_x, map_y = np.meshgrid(
-            np.arange(page_w, dtype=np.float32), np.arange(page_h, dtype=np.float32)
-        )
-        map_x = map_x + dx.astype(np.float32)
-        map_y = map_y + dy.astype(np.float32)
+        tps = {
+            "points": [[float(x), float(y)] for x, y in targets],
+            "weights": [[float(a), float(b)] for a, b in weights],
+            "grid_step": TPS_GRID_STEP,
+            "size": [page_w, page_h],
+        }
+        map_x, map_y = tps_maps(tps)
 
         def remap(im):
             return cv2.remap(im, map_x, map_y, cv2.INTER_LINEAR, borderValue=255)
 
-        self.record_geometry(remap)
-        return remap(warped)
+        self.record_geometry(remap, dict(tps, op="tps"))
+        return remap(warped), tps
+
+    # --- index points ------------------------------------------------------
+
+    def locate_index_points(self, image, fit, radius_units=None):
+        """Find each index point near where fit's homography puts it."""
+        homography = fit["homography"]
+        ppu = self._pixels_per_unit(homography)
+        found = []
+        for point in self.index_points:
+            radius = radius_units
+            if radius is None:
+                radius = max(self.search_radius, 0.5 * float(point["size"].max()))
+            centre = cv2.perspectiveTransform(point["center"][None, None], homography)[
+                0, 0
+            ]
+            found.append(self._find_index_point(image, centre, point, ppu, radius * ppu))
+        fit["index_image_pts"] = found
+        fit["index_found"] = int(sum(1 for p in found if p is not None))
+        return found
+
+    def _find_index_point(self, image, centre, point, ppu, radius):
+        w, h = float(point["size"][0]) * ppu, float(point["size"][1]) * ppu
+        half = 0.5 * max(w, h) * (1 + self.size_tolerance) + radius
+        img_h, img_w = image.shape[:2]
+        left, top = int(max(0, centre[0] - half)), int(max(0, centre[1] - half))
+        right = int(min(img_w, centre[0] + half + 1))
+        bottom = int(min(img_h, centre[1] + half + 1))
+        if right - left < 3 or bottom - top < 3:
+            return None
+        window = image[top:bottom, left:right]
+        if window.ndim == 3:
+            window = cv2.cvtColor(window, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(
+            cv2.GaussianBlur(window, (3, 3), 0),
+            0,
+            255,
+            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+        )
+        count, _, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
+        tolerance = max(self.size_tolerance, 0.3)
+        best, best_distance = None, None
+        for i in range(1, count):
+            bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+            area = stats[i, cv2.CC_STAT_AREA]
+            # Orientation is unknown here: compare sizes sorted
+            if not _size_matches((bw, bh), (w, h), tolerance):
+                continue
+            extent = area / float(max(bw * bh, 1))
+            shape = point["shape"]
+            if shape == "square" and extent < 0.75:
+                continue
+            if shape == "circle" and not 0.6 <= extent <= 0.92:
+                continue
+            if shape == "any" and extent < 0.3:
+                continue
+            cx, cy = centroids[i][0] + left, centroids[i][1] + top
+            distance = float(np.hypot(cx - centre[0], cy - centre[1]))
+            if distance > radius + 0.5 * max(w, h):
+                continue
+            if best is None or distance < best_distance:
+                best, best_distance = (float(cx), float(cy)), distance
+        return best
+
+    def fit_index_points_only(self, image, page_corners, rotation):
+        """Registration from index points alone (no timing tracks)."""
+        page_w, page_h = self.page_dimensions
+        coarse = self.coarse_homography(page_corners, rotation)
+        fit = {"homography": coarse, "rotation": rotation, "matched": 0}
+        wide = 0.08 * float(np.hypot(page_w, page_h))
+        for radius in (wide, wide / 3.0, None):
+            found = self.locate_index_points(image, fit, radius)
+            pairs = [
+                (p["center"], f) for p, f in zip(self.index_points, found) if f is not None
+            ]
+            if len(pairs) < 4:
+                return None
+            template_pts = np.float32([p for p, _ in pairs])
+            image_pts = np.float32([f for _, f in pairs])
+            homography, _ = cv2.findHomography(template_pts, image_pts, 0)
+            if homography is None:
+                return None
+            fit["homography"] = homography
+        fit["template_pts"] = template_pts
+        fit["image_pts"] = image_pts
+        fit["residual"] = float(
+            self.residual_in_template_units(homography, template_pts, image_pts)
+        )
+        return fit
+
+    def joint_refit(self, image, fit):
+        """One homography from timing marks, index points and printed block corners."""
+        template_pts = [fit["template_pts"]] if len(fit.get("template_pts", [])) else []
+        image_pts = [fit["image_pts"]] if len(fit.get("image_pts", [])) else []
+        found = fit.get("index_image_pts") or self.locate_index_points(image, fit)
+        index_pairs = [
+            (p["center"], f) for p, f in zip(self.index_points, found) if f is not None
+        ]
+        if index_pairs and len(self.expected):
+            template_pts.append(np.float32([p for p, _ in index_pairs]))
+            image_pts.append(np.float32([f for _, f in index_pairs]))
+        block_pairs = self.block_corner_pairs(image, fit["homography"])
+        if block_pairs:
+            template_pts.append(np.float32([p for p, _ in block_pairs]))
+            image_pts.append(np.float32([f for _, f in block_pairs]))
+        if not template_pts:
+            return
+        template_pts = np.concatenate(template_pts).astype(np.float32)
+        image_pts = np.concatenate(image_pts).astype(np.float32)
+        if len(template_pts) < 4:
+            return
+        homography, _ = cv2.findHomography(template_pts, image_pts, 0)
+        if homography is None:
+            return
+        fit["homography"] = homography
+        fit["template_pts"] = template_pts
+        fit["image_pts"] = image_pts
+        fit["block_corners_used"] = len(block_pairs)
+        fit["residual"] = float(
+            self.residual_in_template_units(homography, template_pts, image_pts)
+        )
+
+    def block_corner_pairs(self, image, homography):
+        """(template corner, image corner) of printed block borders that are found."""
+        template = getattr(self, "template", None)
+        if template is None or not getattr(template, "field_blocks", None):
+            return []
+        ops = self.image_instance_ops
+        default = ops.alignment_option(template, "rectify_on_border", False)
+        search = ops.alignment_option(template, "rectify_search_px", 20)
+        blocks = [
+            b
+            for b in template.field_blocks
+            if (default if b.rectify_on_border is None else b.rectify_on_border)
+        ]
+        if not blocks:
+            return []
+        from src.rectify import find_border, padding_of
+
+        page_w, page_h = (int(v) for v in self.page_dimensions)
+        page = cv2.warpPerspective(
+            image,
+            homography,
+            (page_w, page_h),
+            flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+            borderValue=255,
+        )
+        pairs = []
+        for block in blocks:
+            padding = padding_of(block)
+            if padding is None:
+                # Without a known gap the expected corners are not fixed
+                continue
+            found = find_border(page, block, padding, search)
+            if isinstance(found, str):
+                continue
+            corners, expected = found
+            in_image = cv2.perspectiveTransform(corners[None], homography)[0]
+            pairs.extend(zip(expected, in_image))
+        return pairs
+
+    # --- reporting -----------------------------------------------------------
+
+    def alignment_report(self, image, fit, tps):
+        """Residuals per page region, trimmed margins and index points found."""
+        homography = fit["homography"]
+        inverse = np.linalg.inv(homography)
+        template_pts = fit["template_pts"]
+        observed = cv2.perspectiveTransform(fit["image_pts"][None], inverse)[0]
+        if tps is not None:
+            from src.geometry import map_points
+
+            observed = np.float32(
+                map_points({"steps": [dict(tps, op="tps")]}, observed)
+            )
+        errors = np.linalg.norm(observed - template_pts, axis=1)
+        page_w, page_h = self.page_dimensions
+        regions = {}
+        cols = np.clip((template_pts[:, 0] / page_w * 3).astype(int), 0, 2)
+        rows = np.clip((template_pts[:, 1] / page_h * 3).astype(int), 0, 2)
+        for (row, col), name in REGION_NAMES.items():
+            mask = (rows == row) & (cols == col)
+            if mask.any():
+                regions[name] = {
+                    "mean": round(float(errors[mask].mean()), 3),
+                    "max": round(float(errors[mask].max()), 3),
+                    "points": int(mask.sum()),
+                }
+        info = {
+            "rotation": int(fit["rotation"] * 90),
+            "alignment_method": self.last_registration.get("method"),
+            "residual": {
+                "page": round(float(errors.mean()), 3) if len(errors) else 0.0,
+                "regions": regions,
+            },
+        }
+        review = []
+        if self.max_region_residual is not None:
+            bad = sorted(
+                name
+                for name, region in regions.items()
+                if region["mean"] > self.max_region_residual
+            )
+            if bad:
+                review.append(
+                    {
+                        "kind": "sheet",
+                        "name": "alignment_residual",
+                        "flags": ["alignment_residual"],
+                        "regions": bad,
+                        "max_region_residual": self.max_region_residual,
+                    }
+                )
+        if self.index_points:
+            found = fit.get("index_image_pts") or [None] * len(self.index_points)
+            info["index_points"] = [
+                {
+                    "name": point["name"],
+                    "found": position is not None,
+                    "image": None
+                    if position is None
+                    else [round(position[0], 2), round(position[1], 2)],
+                }
+                for point, position in zip(self.index_points, found)
+            ]
+            missing = [
+                point["name"]
+                for point, position in zip(self.index_points, found)
+                if position is None and point["required"]
+            ]
+            if missing:
+                review.append(
+                    {
+                        "kind": "sheet",
+                        "name": "index_points",
+                        "flags": ["index_point_missing"],
+                        "missing": missing,
+                    }
+                )
+        if self.trim_margins:
+            info["margin_trim"] = self.margin_trim(image, homography)
+        if review:
+            info["review"] = review
+        return info
+
+    def margin_trim(self, image, homography):
+        """Template px of the scan that lie outside the template page, per side."""
+        h, w = image.shape[:2]
+        corners = np.float32([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]])
+        mapped = cv2.perspectiveTransform(corners[None], np.linalg.inv(homography))[0]
+        page_w, page_h = self.page_dimensions
+        return {
+            "top": round(float(max(0.0, -mapped[:, 1].min())), 1),
+            "bottom": round(float(max(0.0, mapped[:, 1].max() - (page_h - 1))), 1),
+            "left": round(float(max(0.0, -mapped[:, 0].min())), 1),
+            "right": round(float(max(0.0, mapped[:, 0].max() - (page_w - 1))), 1),
+        }
+
+
+def _size_matches(found, expected, tolerance):
+    a = sorted(float(v) for v in found)
+    b = sorted(float(v) for v in expected)
+    return all(
+        (1 - tolerance) * e - 2 <= f <= (1 + tolerance) * e + 2 for f, e in zip(a, b)
+    )
 
 
 def _squared_distances(a, b):

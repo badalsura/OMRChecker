@@ -100,6 +100,32 @@ class ImageUtils:
 
     @staticmethod
     def four_point_transform(image, pts):
+        return ImageUtils.four_point_transform_with_matrix(image, pts)[0]
+
+    @staticmethod
+    def four_point_transform_matrix(pts):
+        """(matrix, (width, height)) that four_point_transform warps with."""
+        rect = ImageUtils.order_points(pts)
+        tl, tr, br, bl = rect
+        width_a = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+        width_b = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+        max_width = max(int(width_a), int(width_b))
+        height_a = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+        height_b = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+        max_height = max(int(height_a), int(height_b))
+        dst = np.array(
+            [
+                [0, 0],
+                [max_width - 1, 0],
+                [max_width - 1, max_height - 1],
+                [0, max_height - 1],
+            ],
+            dtype="float32",
+        )
+        return cv2.getPerspectiveTransform(rect, dst), (max_width, max_height)
+
+    @staticmethod
+    def four_point_transform_with_matrix(image, pts):
         # obtain a consistent order of the points and unpack them
         # individually
         rect = ImageUtils.order_points(pts)
@@ -136,8 +162,8 @@ class ImageUtils:
         transform_matrix = cv2.getPerspectiveTransform(rect, dst)
         warped = cv2.warpPerspective(image, transform_matrix, (max_width, max_height))
 
-        # return the warped image
-        return warped
+        # return the warped image (and how, for the geometry record)
+        return warped, transform_matrix, (max_width, max_height)
 
     @staticmethod
     def _resolve_pages(page_spec, doc_len):

@@ -37,6 +37,15 @@ CONFIG_DEFAULTS = DotMap(
             "rectify_on_border": False,
             # How far (px) the border may sit from where the template expects it
             "rectify_search_px": 20,
+            # Image the borders are searched on when a colour dropout removes
+            # the print: "auto"/"darkest" (darkest channel) or "grey"
+            "rectify_print_image": "auto",
+            # Fit blocks without a printed box onto their bubble outlines
+            "block_perspective": False,
+            # Find the page outline in phone photos before registration
+            "page_outline": False,
+            # Reject a block correction that makes the printed bubbles fit worse
+            "verify_bubble_fit": True,
         },
         "review_params": {
             # Intensity distance from the threshold that counts as fully confident

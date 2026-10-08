@@ -51,6 +51,13 @@ CONFIG_SCHEMA = {
                 "block_snap_radius": {"type": "integer", "minimum": 0, "maximum": 50},
                 "rectify_on_border": {"type": "boolean"},
                 "rectify_search_px": {"type": "integer", "minimum": 2, "maximum": 100},
+                "rectify_print_image": {
+                    "type": "string",
+                    "enum": ["auto", "grey", "darkest"],
+                },
+                "block_perspective": {"type": "boolean"},
+                "page_outline": {"type": "boolean"},
+                "verify_bubble_fit": {"type": "boolean"},
             },
         },
         "review_params": {
