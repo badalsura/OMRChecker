@@ -61,7 +61,11 @@ def column_state(value, details=None, empty_value=""):
         return "empty" if blank else "ok"
     flags = details.get("flags") or []
     if blank:
-        # also a column a rule blanked
+        # A blank column that is flagged for something other than being empty
+        # (a possible missed mark, or a rule blanked it) has an issue
+        if not details.get("reviewed") and details.get("needs_review"):
+            if any(flag != "empty" for flag in flags):
+                return "issue"
         return "empty"
     if details.get("reviewed"):
         return "empty" if "empty" in flags else "ok"
