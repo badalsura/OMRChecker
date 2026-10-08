@@ -68,6 +68,8 @@ class GenerationResult:
     reference_image: np.ndarray
     report: dict
     registered_images: Optional[List[np.ndarray]] = field(default=None, repr=False)
+    # config.json suggestions (review thresholds from the observed fills)
+    config: Optional[dict] = None
 
     def to_dict(self):
         return {"template": self.template, "report": self.report}
@@ -81,6 +83,9 @@ class GenerationResult:
             json.dump(self.template, f, indent=2)
         with open(out_dir / "generation_report.json", "w") as f:
             json.dump(self.report, f, indent=2)
+        if self.config:
+            with open(out_dir / "config.json", "w") as f:
+                json.dump(self.config, f, indent=2)
         cv2.imwrite(str(out_dir / "reference.png"), self.reference_image)
         if overlay:
             cv2.imwrite(
@@ -386,6 +391,42 @@ def _red_pen_zones(zones_, aligned, dropout_aligned, blank, blank_dropout, good)
     return out
 
 
+def _validation_rules(matches, composites, custom_labels, labels):
+    """
+    Required / exact length / no gaps for every number matched to a label
+    column: catches half-bubbled or blank digit columns cheaply.
+    """
+    rules = {}
+    for match in matches:
+        if match["fields"] < 2 or not match.get("digits"):
+            continue
+        key = next(
+            (k for k, subs in composites.items()
+             if k in (custom_labels or {}) and str(k).startswith(str(match["column"]).strip())),
+            None,
+        )
+        if key is None:
+            continue
+        low, high = match["lengths"]
+        if high < match["fields"]:
+            # Leading digits left blank on every sample (e.g. marks under 100)
+            high = match["fields"]
+        values = [
+            str((row or {}).get(match["column"]) or "").strip()
+            for row in labels or []
+            if row is not None
+        ]
+        rule = {
+            "required": bool(values) and all(values),
+            "length": low if low == high else [low, high],
+            "allowGaps": False,
+        }
+        if low != high:
+            rule["allowEmptyEnds"] = True
+        rules[key] = rule
+    return rules
+
+
 def _alignment_method(pre_processors):
     names = [p.get("name") for p in pre_processors or []]
     if "TimingMarkAlignment" in names:
@@ -546,6 +587,7 @@ def self_check(template, images, table, page_size, reference=None, end_to_end=Fa
     # Zones are checked separately; OCR/ICR engines would dominate the runtime
     template.pop("zones", None)
     per_field, failures, statuses = {}, [], []
+    marked_ratios, unmarked_ratios = [], []
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp, "template.json")
         path.write_text(json.dumps(template))
@@ -568,6 +610,13 @@ def self_check(template, images, table, page_size, reference=None, end_to_end=Fa
                 failures.append({"sheet": s, "error": str(error)})
                 continue
             statuses.append(result.status)
+            for details in result.fields.values():
+                for bubble in details.get("bubbles") or []:
+                    ratio = bubble.get("fill_ratio")
+                    if ratio is not None:
+                        (marked_ratios if bubble.get("marked") else unmarked_ratios).append(
+                            float(ratio)
+                        )
             if result.status == "error":
                 failures.append({"sheet": s, "error": result.error})
                 continue
@@ -594,6 +643,39 @@ def self_check(template, images, table, page_size, reference=None, end_to_end=Fa
         "needs_review_sheets": statuses.count("needs_review"),
         "overall_agreement": round(agree / total, 4) if total else None,
         "per_field": {k: round(v[0] / v[1], 4) for k, v in per_field.items()},
+        "fill_ratios": _ratio_summary(marked_ratios, unmarked_ratios),
+    }
+
+
+def _ratio_summary(marked, unmarked):
+    """Percentiles of the engine's bubble fill ratios (marked / unmarked)."""
+    out = {}
+    for name, values in (("marked", marked), ("unmarked", unmarked)):
+        if values:
+            v = np.asarray(values)
+            out[name] = {
+                "count": int(len(v)),
+                **{f"p{q}": round(float(np.percentile(v, q)), 3) for q in (1, 5, 50, 95, 99)},
+            }
+    return out
+
+
+def review_thresholds(fill_ratios):
+    """
+    config.json review_params from the observed fill ratios: a marked bubble
+    filled less than most real marks, or an unmarked one inked more than
+    almost every blank bubble, goes to review (partial or crossed-out marks).
+    """
+    marked, unmarked = fill_ratios.get("marked"), fill_ratios.get("unmarked")
+    if not marked or not unmarked or marked["count"] < 10 or unmarked["count"] < 50:
+        return None
+    max_unmarked = float(np.clip(unmarked["p99"] + 0.15, 0.35, 0.45))
+    min_marked = float(np.clip(marked["p5"] - 0.4, max_unmarked + 0.1, 0.5))
+    if min_marked <= max_unmarked:
+        return None
+    return {
+        "max_unmarked_fill_ratio": round(max_unmarked, 2),
+        "min_marked_fill_ratio": round(min_marked, 2),
     }
 
 
@@ -787,10 +869,12 @@ def generate_template(images, labels=None, options=None):
     assigned = None
     taken, block_assignments, unlabelled = set(), {}, []
     exact_composites, exact_truth, naming_report = {}, {}, []
+    exact_matches = []
     remaining = list(range(len(grids)))
     if labelled and grids:
         masked = [lab if i in good else None for i, lab in enumerate(labels)]
         matches = naming.match_grids(grids, fills, threshold, masked)
+        exact_matches = matches
         exact, exact_composites, exact_truth = naming.build_assignments(
             matches, grids, taken
         )
@@ -939,8 +1023,20 @@ def generate_template(images, labels=None, options=None):
             if hits and np.mean(hits) >= 0.6:
                 name = key
                 break
+        unverified = False
+        if name is None:
+            kind = "qr" if zone["type"] == "qrcode" else "barcode"
+            for key, values in label_columns.items():
+                empty_column = not any(v for v in values.values())
+                if key not in used_columns and empty_column and kind in key.lower():
+                    name, unverified = key, True
+                    break
         name = _unique(name or zone["type"], zone_taken)
         used_columns.add(name)
+        if unverified:
+            info_notes.append(
+                f"label column '{name}' is empty on every sheet: zone kept, not checked"
+            )
         x, y, w, h = zone["box"]
         template_zones[name] = {
             "type": zone["type"],
@@ -1109,6 +1205,9 @@ def generate_template(images, labels=None, options=None):
         colour["red_pen_zones"] = sorted(red_pen)
     if custom_labels:
         template["customLabels"] = custom_labels
+    validate = _validation_rules(exact_matches, exact_composites, custom_labels, labels)
+    if validate:
+        template["validate"] = validate
     if template_zones:
         template["zones"] = template_zones
     template = _jsonable(template)
@@ -1117,6 +1216,7 @@ def generate_template(images, labels=None, options=None):
         warnings.extend(f"schema: {e}" for e in schema_errors)
     lap("template")
 
+    config = None
     # 7. Self-check (raw inputs keep their colour so colorDropout applies)
     raw_inputs = [c if c is not None else g for c, g in zip(colour_images, images)]
     checks = {}
@@ -1167,6 +1267,9 @@ def generate_template(images, labels=None, options=None):
             [table[i] for i in good] if table else None,
             page_size,
         )
+        review = review_thresholds(checks["registered"].get("fill_ratios") or {})
+        if review:
+            config = {"review_params": review}
         if opts["end_to_end_check"]:
             checks["end_to_end"] = self_check(
                 template, raw_inputs, table, page_size, blank, end_to_end=True
@@ -1205,17 +1308,32 @@ def generate_template(images, labels=None, options=None):
             )
     verify[:0] = block_verify
 
-    if assigned and assigned["unmatched_labels"]:
-        leftover = [
-            n
-            for n in assigned["unmatched_labels"]
-            if n not in used_columns
-            and not any(
-                n in subs and orig in used_columns for orig, subs in composites.items()
+    if labelled:
+        used = set(used_columns) | set(field_names) | set(template_zones)
+        for key, subs in composites.items():
+            if all(sub in field_names for sub in subs):
+                used.add(key)
+        if assigned:
+            for original, subs in assigned["composites"].items():
+                if all(sub in field_names for sub in subs):
+                    used.add(original)
+        empty, unread = [], []
+        for key, values in label_columns.items():
+            if key in used:
+                continue
+            filled = [v for v in values.values() if v and v != naming.MULTI]
+            (unread if filled else empty).append(key)
+        for key in empty:
+            if label_ops.LABEL_NUMBER.match(key) and key.startswith("q"):
+                continue  # unanswered questions
+            info_notes.append(
+                f"label column '{key}' is empty on every sheet: not checked"
             )
-        ]
-        if leftover:
-            warnings.append(f"labels not matched to any bubbles: {leftover}")
+        if unread:
+            warnings.append(
+                "label column(s) not found as bubbles or a readable zone (e.g. a "
+                f"scanner-imprinted number), not read: {unread[:20]}"
+            )
     if not labelled:
         warnings.append("no labels given: field names and values are guesses")
     if corners and len(corners) < 4:
@@ -1253,6 +1371,8 @@ def generate_template(images, labels=None, options=None):
         "schema_errors": schema_errors,
         "warnings": warnings,
         "info": info_notes,
+        "review_thresholds": (config or {}).get("review_params"),
+        "naming": naming_report,
         "alignment": alignment,
         "needs_verification": verify,
         "timings_ms": timings,
@@ -1262,4 +1382,5 @@ def generate_template(images, labels=None, options=None):
         reference_image=blank,
         report=_jsonable(report),
         registered_images=aligned,
+        config=config,
     )
