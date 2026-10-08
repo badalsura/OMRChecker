@@ -4130,6 +4130,47 @@
         }
       }
     },
+    "/templates/{template_id}/models": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Template Models",
+        "description": "ONNX models in the template folder and the server's model folders.",
+        "operationId": "template_models_templates__template_id__models_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/exports": {
       "post": {
         "tags": [
@@ -4773,6 +4814,30 @@
             "title": "Start",
             "description": "false: add more files, then /start",
             "default": true
+          },
+          "pdf_dpi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Dpi",
+            "description": "PDF render DPI or 'auto'"
+          },
+          "pdf_page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Page",
+            "description": "PDF pages: '1', '2-4', '3-' or 'all'"
           }
         },
         "type": "object",
@@ -4800,6 +4865,30 @@
             "type": "string",
             "title": "Save Images",
             "default": "all"
+          },
+          "pdf_dpi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Dpi",
+            "description": "PDF render DPI or 'auto'"
+          },
+          "pdf_page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Page",
+            "description": "PDF pages: '1', '2-4', '3-' or 'all'"
           }
         },
         "type": "object",
