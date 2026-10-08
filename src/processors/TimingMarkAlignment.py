@@ -100,6 +100,9 @@ class TimingMarkAlignment(ImagePreprocessor):
         self.max_residual = options.get("maxResidual", DEFAULT_MAX_RESIDUAL)
         self.non_rigid = options.get("nonRigid", False)
         self.detect_orientation = options.get("detectOrientation", True)
+        # Stop trying orientations once one fits cleanly (the 180 degree
+        # look-alike is always tried first, unless index points decided)
+        self.early_stop = options.get("earlyStop", False)
         self.last_registration = {}
 
     def __str__(self):
@@ -117,6 +120,8 @@ class TimingMarkAlignment(ImagePreprocessor):
         page_w, page_h = self.page_dimensions
         page_corners = self.find_page_corners(image)
         rotations = (0, 1, 2, 3) if self.detect_orientation else (0,)
+        if self.early_stop and self.detect_orientation:
+            rotations = (0, 2, 1, 3)
         best = None
         if len(self.expected):
             candidates = self.blob_centres(image, page_corners)
@@ -138,6 +143,8 @@ class TimingMarkAlignment(ImagePreprocessor):
                     best
                 ):
                     best = fit
+                if self._clean_stop(best, len(orientation_fits)):
+                    break
             self._runner_up = max(
                 (f for f in orientation_fits if f is not best),
                 key=self._orientation_key,
@@ -276,6 +283,23 @@ class TimingMarkAlignment(ImagePreprocessor):
         matched = len(self.match(homography, candidates, radius))
         beyond = self._marks_beyond_track_ends(homography, candidates, radius)
         return matched - 2 * beyond
+
+    def _clean_stop(self, best, tried):
+        """True when the remaining orientations need not be tried."""
+        if not self.early_stop or best is None:
+            return False
+        clean = (
+            best["beyond_ends"] == 0
+            and best["matched"] >= GOOD_FIT_FRACTION * len(self.expected)
+            and best["residual"] <= 0.5 * self.max_residual
+        )
+        if not clean:
+            return False
+        required = sum(1 for p in self.index_points if p["required"])
+        if required and best.get("index_found", 0) >= required:
+            return True
+        # Tracks alone can look the same upside down: 0 and 180 both tried
+        return tried >= 2 and best["rotation"] in (0, 2)
 
     def _orientation_key(self, fit):
         # Index points are asymmetric: they decide between look-alike orientations

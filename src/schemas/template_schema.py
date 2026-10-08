@@ -94,6 +94,7 @@ TIMING_MARK_OPTIONS_SCHEMA = {
         "nonRigid": {"enum": [True, False, "auto"]},
         # Try 90/180/270 degree rotations when the sheet is fed in wrongly
         "detectOrientation": {"type": "boolean"},
+        "earlyStop": {"type": "boolean"},
         # Index points (corner squares, dots, L-corners): fitted together with
         # the timing marks; each keeps its own size and shape
         "indexPoints": {"type": "array", "items": INDEX_POINT_SCHEMA},

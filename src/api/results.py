@@ -42,6 +42,7 @@ from src.api.worker import (
     PNG_FAST,
     archive_template_version,
     build_engine,
+    file_sha256,
     summarize,
     template_hash,
     template_version,
@@ -306,6 +307,16 @@ class ResultsService:
             }
 
     # ---- rendering ---------------------------------------------------------
+    @staticmethod
+    def check_source(result, path):
+        """Refuse a file whose contents differ from the one that was read."""
+        expected = result.get("source_sha256")
+        if expected and file_sha256(path) != expected:
+            raise ResultsError(
+                f"'{path}' is not the file that was read (its contents changed)",
+                409,
+            )
+
     def reread(
         self, result, template_overrides=None, config_overrides=None, use_current=False
     ):
@@ -319,6 +330,7 @@ class ResultsService:
                 "or the job's path_remap) if the input folder was moved.",
                 404,
             )
+        self.check_source(result, path)
 
         with self.engines.engine(
             result, template_overrides, config_overrides, use_current
@@ -353,6 +365,7 @@ class ResultsService:
                 "or the job's path_remap) if the input folder was moved.",
                 404,
             )
+        self.check_source(result, path)
         regrade = result.get("regrade") or {}
         with self.engines.engine(
             result,

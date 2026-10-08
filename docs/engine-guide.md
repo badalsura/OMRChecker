@@ -111,7 +111,9 @@ orientations, fits a RANSAC homography to the matched marks and rejects the
 sheet if fewer than `minMatchedMarks` marks match or the mean residual exceeds
 `maxResidual`. It then warps straight into template coordinates.
 `nonRigid: true` adds a thin-plate-spline correction for curled paper and
-phone lens distortion.
+phone lens distortion. `earlyStop: true` (off by default) stops trying
+orientations once one fits cleanly; 0 and 180 degrees are still both tried
+unless the index points already decided.
 
 **EccAlignment.** Dense refinement against an image of the blank form. Use it
 after a coarse step.
@@ -123,7 +125,9 @@ symbology it supports:
 - 2D codes: PDF417, QR (all versions), Micro QR, rMQR, Data Matrix, Aztec and MaxiCode
 
 Restrict a zone with `formats`. OCR uses Tesseract's LSTM engine, in-process
-through `tesserocr` when it is installed, which takes about 10 ms per zone.
+through `tesserocr` when it is installed, or straight through the libtesseract
+library that ships with `tesseract.exe` (set `OMR_LIBTESSERACT` to its path, or
+`OMR_TESSERACT_CAPI=0` to turn it off); either takes about 10 ms per zone.
 ICR reads boxed characters with a trained crop classifier. Until a model is
 configured, ICR results are always sent to review.
 

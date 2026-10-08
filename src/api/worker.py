@@ -181,6 +181,8 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
 
         results = [ScanResult(file_path.name, STATUS_ERROR, error=str(error))]
     stored = []
+    # Fingerprint of the original; re-renders refuse a different file
+    source_sha256 = file_sha256(file_path)
     for page, result in enumerate(results):
         scan_id = new_id()
         scan_dir = scan_dir_for(scans_root, scan_id)
@@ -215,6 +217,7 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
                 "input_path": input_path,
                 # Absolute path of the original file; re-rendering reads it again
                 "source_path": source_path,
+                "source_sha256": source_sha256,
                 "template_version": meta.get("template_version"),
                 # PDF rendering chosen on the Scan / New Job screen; re-renders reuse it
                 **({"pdf_params": meta["pdf_params"]} if meta.get("pdf_params") else {}),
@@ -231,6 +234,18 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
         write_json_atomic(scan_dir / "result.json", data)
         stored.append(data)
     return stored
+
+
+def file_sha256(path):
+    """SHA-256 of a file, read in chunks; None when it cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def _link_or_copy(source, target):

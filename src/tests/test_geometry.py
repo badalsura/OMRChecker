@@ -468,6 +468,19 @@ def test_results_preview_replays_geometry_in_both_views(tmp_path, spec):
             assert np.array_equal(picture, expected), view
         assert_sampled_where_drawn(direct, direct.aligned_image)
 
+        # A different file at the recorded path is refused, not replayed
+        ctx = client.app.state.ctx
+        assert stored["source_sha256"]
+        source = Path(stored["source_path"])
+        original = source.read_bytes()
+        source.write_bytes(original + b"changed")
+        ctx.results.renders.items.clear()
+        changed = client.get(f"/scans/{scan_id}/render").json()
+        assert changed["image_source"] == "stored"
+        assert any("not the file that was read" in w for w in changed["warnings"])
+        source.write_bytes(original)
+        ctx.results.renders.items.clear()
+
         # Old results without geometry still render (by re-reading)
         ctx = client.app.state.ctx
         path = ctx.data.scan_dir(scan_id) / "result.json"

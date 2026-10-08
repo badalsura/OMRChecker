@@ -30,14 +30,19 @@ def field_errors(result, answers):
     }
 
 
+@pytest.mark.parametrize("early_stop", [False, True])
 @pytest.mark.parametrize(
     "seed,flip,rotation,perspective",
     [(1, False, 3, 0.03), (2, True, 3, 0.03), (3, False, 8, 0.06)],
 )
 def test_timing_marks_register_skewed_and_flipped_sheets(
-    tmp_path, spec, seed, flip, rotation, perspective
+    tmp_path, spec, seed, flip, rotation, perspective, early_stop
 ):
-    engine = make_engine(tmp_path, spec.to_template())
+    template = spec.to_template()
+    for step in template["preProcessors"]:
+        if step["name"] == "TimingMarkAlignment":
+            step["options"]["earlyStop"] = early_stop
+    engine = make_engine(tmp_path, template)
     rng = random.Random(seed)
     answers = random_answers(spec, rng)
     image, _ = render_sheet(spec, answers, rng=rng, mark_style="mixed", erasures=2)
