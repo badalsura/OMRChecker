@@ -2,8 +2,9 @@
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
 import { api, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
+import { ocrZoneControls } from "./editor_ocr.js";
 
-const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc" };
+const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc", image: "#787878" };
 const BLOCK_COLOR = "#2f6fdf";
 const HIGHLIGHT = "#ff8a00";
 const HANDLE = 8;
@@ -1039,15 +1040,12 @@ export class TemplateEditor {
         this.input("Allowed characters", opts.whitelist ?? "", (v) => setOpt("whitelist", v), { placeholder: "e.g. 0123456789" }),
         raw.type === "icr" ? this.num("Character boxes", opts.characterBoxes, (v) => setOpt("characterBoxes", v === null ? null : Math.max(1, Math.round(v))), { optional: true }) : null,
         raw.type === "ocr"
-          ? el(
-              "div",
-              { class: "two" },
-              this.input("Language", opts.lang ?? "", (v) => setOpt("lang", v), { placeholder: "eng" }),
-              this.num("Page seg. mode", opts.psm, (v) => setOpt("psm", v === null ? null : Math.min(13, Math.round(v))), { optional: true, placeholder: "7" })
-            )
+          ? this.num("Page seg. mode", opts.psm, (v) => setOpt("psm", v === null ? null : Math.min(13, Math.round(v))), { optional: true, placeholder: "7" })
           : null
       );
     }
+    // Direction, engines, language, image zone options (editor_ocr.js)
+    box.append(...ocrZoneControls(this, raw, opts, setOpt, o.name));
     box.append(
       this.input("Pattern (regex the value must match)", opts.pattern ?? "", (v) => {
         try {
