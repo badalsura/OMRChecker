@@ -267,6 +267,12 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
       r.data = await api(`/scans/${scanId}/overlay`);
       r.data.warnings = [error.message];
       r.image = null;
+      if (r.data.status === "error" && r.mode === "aligned" && !r.side) {
+        // Nothing aligned to show: the original is what can be completed
+        r.mode = "original";
+        syncViewControls();
+        loadViews();
+      }
       renderList();
       renderSide();
       draw();
@@ -573,6 +579,7 @@ function bindCanvas() {
     const was = drag;
     drag = null;
     if (!was || was.moved || e.target !== canvas) return;
+    if (r.align) return alignClick(toImage(e.clientX, e.clientY));
     const hit = hitTest(toImage(e.clientX, e.clientY));
     if (!hit) return;
     if (hit.kind === "bubble") {
@@ -661,6 +668,7 @@ function drawPane(pane, dpr) {
     ctx2d.fillText(text, 20 * px, 30 * px, w - 40 * px);
     return;
   }
+  if (r.align && pane.kind === "original") drawAlignClicks(px);
   if (!r.data) return;
   const geo = geometryFor(pane.kind);
   if (!geo) return;
@@ -906,6 +914,7 @@ function renderSide() {
   side.append(el("div", { id: "res-view-notes" }));
   if (r.data.drift && r.data.drift.length) side.append(el("div", { class: "res-warning" }, `Re-reading now gives different values for: ${r.data.drift.join(", ")}`));
   if (d.error) side.append(el("div", { class: "res-warning error" }, d.error));
+  if (d.status === "error" && !r.preview) side.append(failedSheetBox(d));
   if (r.preview) side.append(previewBox());
   for (const item of d.sheet_review || []) {
     const detail = item.marked_bubbles !== undefined ? ` (${item.marked_bubbles} marked, minimum ${item.min_marked_bubbles})` : "";
@@ -1085,6 +1094,128 @@ function setViewOption(name, value) {
   loadViews();
   renderViewNotes();
   draw();
+}
+
+// ---- failed sheets (item 25): align by clicking, or type the values
+const CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"];
+
+function failedSheetBox(d) {
+  const box = el(
+    "div",
+    { class: "res-failed" },
+    el("strong", {}, "This sheet could not be aligned."),
+    el("p", { class: "muted small" }, "Click its page corners (or the template's index points) on the original image and it is read again, or type its values by hand.")
+  );
+  const startAlign = async (kind) => {
+    try {
+      const targets = await api(`/scans/${d.scan_id}/manual-align`);
+      const names = kind === "corners" ? CORNER_NAMES : targets.index_points.map((p) => p.name);
+      if (kind === "index" && names.length < 4) return toast("This template has fewer than 4 index points; click the page corners instead", "error", 5000);
+      r.align = { kind, names, points: [], scanId: d.scan_id };
+      if (r.mode !== "original") setViewOption("mode", "original");
+      alignPrompt();
+      draw();
+    } catch (error) {
+      toast(error.message, "error", 5000);
+    }
+  };
+  box.append(
+    el(
+      "div",
+      { class: "row gap wrap" },
+      el("button", { class: "small primary", onclick: () => startAlign("corners") }, "Align by page corners"),
+      el("button", { class: "small", onclick: () => startAlign("index") }, "Align by index points"),
+      el("button", { class: "small", onclick: () => typeValues(d) }, "Type values…"),
+      r.align ? el("button", { class: "small ghost", onclick: () => { r.align = null; draw(); renderSide(); } }, "Cancel clicking") : null
+    )
+  );
+  if (r.align) box.append(el("div", { class: "chip" }, alignPromptText()));
+  return box;
+}
+
+function alignPromptText() {
+  const a = r.align;
+  const next = a.names[a.points.length];
+  return next ? `Click ${next} (${a.points.length + 1} of ${a.names.length}) on the original` : "Reading…";
+}
+
+function alignPrompt() {
+  statusLine.textContent = alignPromptText();
+  renderSide();
+}
+
+async function alignClick(p) {
+  const a = r.align;
+  if (!a || !r.data || r.data.scan_id !== a.scanId) return (r.align = null);
+  if (p.pane.kind !== "original") return toast("Click on the Original view");
+  a.points.push([Math.round(p.x), Math.round(p.y)]);
+  draw();
+  if (a.points.length < a.names.length) return alignPrompt();
+  alignPrompt();
+  try {
+    await api(`/scans/${a.scanId}/manual-align`, { method: "POST", json: { points: a.points, kind: a.kind, names: a.kind === "index" ? a.names : null } });
+    toast("Aligned by hand and read again", "ok");
+    r.align = null;
+    await open(a.scanId);
+    load(r.offset, true);
+  } catch (error) {
+    r.align = null;
+    toast(error.message, "error", 6000);
+    renderSide();
+    draw();
+  }
+}
+
+function drawAlignClicks(px) {
+  ctx2d.lineWidth = 2 * px;
+  r.align.points.forEach(([x, y], i) => {
+    ctx2d.strokeStyle = COLORS.selected;
+    ctx2d.beginPath();
+    ctx2d.arc(x, y, 8 * px, 0, Math.PI * 2);
+    ctx2d.stroke();
+    label(r.align.names[i], x + 10 * px, y - 10 * px, px, COLORS.selected);
+  });
+}
+
+async function typeValues(d) {
+  let targets;
+  try {
+    targets = await api(`/scans/${d.scan_id}/manual-align`);
+  } catch (error) {
+    return toast(error.message, "error", 5000);
+  }
+  const inputs = {};
+  const rows = (targets.output_columns || []).map((name) => {
+    inputs[name] = el("input", { value: (d.responses || {})[name] || "", style: "width:10em" });
+    return el("label", { class: "field inline" }, el("span", { class: "mono" }, name), inputs[name]);
+  });
+  const dialog = modal(
+    "Type this sheet's values",
+    el("div", { class: "res-manual" }, el("p", { class: "muted small" }, "Saved values are marked as typed by hand, and the sheet counts as reviewed."), ...rows),
+    [
+      el("button", { class: "ghost", onclick: () => dialog.close() }, "Cancel"),
+      el(
+        "button",
+        {
+          class: "primary",
+          onclick: async () => {
+            const values = Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.value]));
+            try {
+              await api(`/scans/${d.scan_id}/manual-values`, { method: "POST", json: { values } });
+              dialog.close();
+              toast("Values saved", "ok");
+              await open(d.scan_id);
+              load(r.offset, true);
+            } catch (error) {
+              toast(error.message, "error", 5000);
+            }
+          },
+        },
+        "Save"
+      ),
+    ],
+    { wide: true }
+  );
 }
 
 // Item 31: delete one sheet's result after a confirmation (audited)

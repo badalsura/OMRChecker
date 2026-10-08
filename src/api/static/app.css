@@ -226,6 +226,8 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .res-path { word-break: break-all; margin: 4px 0; }
 .res-warning { background: var(--warn-soft); color: var(--warn); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin: 6px 0; }
 .res-warning.error { background: var(--err-soft); color: var(--err); }
+.res-failed { border: 1px solid var(--err); border-radius: 6px; padding: 8px; margin: 6px 0; }
+.res-manual { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
 .res-warning.preview { background: var(--accent-soft); color: var(--text); }
 .res-outputs { display: flex; flex-direction: column; gap: 2px; }
 .res-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 46px; gap: 2px 6px; align-items: center; padding: 3px 6px; border-radius: 6px; border-left: 3px solid transparent; }

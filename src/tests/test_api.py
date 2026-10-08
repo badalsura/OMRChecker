@@ -585,3 +585,45 @@ def test_primary_key_duplicates(tmp_path, spec):
         assert client.delete(f"/results/{second['scan_id']}").status_code < 300
         listing = client.get(f"/results?template_id={tid}&view=duplicates").json()
         assert listing["items"] == []
+
+
+def test_failed_sheet_aligned_by_hand_or_typed(tmp_path, spec):
+    template = spec.to_template()
+    image, truth = make_sheet(spec, 5)
+    blank = image.copy()
+    options = template["preProcessors"][0]["options"]
+    w, h = options["markDimensions"]
+    for track in options["tracks"].values():
+        for x, y in track["marks"]:
+            cv2.rectangle(blank, (int(x - w), int(y - h)), (int(x + w), int(y + h)), (255, 255, 255), -1)
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates",
+            files=[("files", ("template.json", json.dumps(template), "application/json"))],
+            data={"name": "Tracks"},
+        )
+        tid = response.json()["id"]
+        failed = scan_one(client, tid, blank, "failed.png")
+        assert failed["status"] == "error"
+        sid = failed["scan_id"]
+        targets = client.get(f"/scans/{sid}/manual-align").json()
+        pw, ph = targets["page_size"]
+        assert [pw, ph] == [blank.shape[1], blank.shape[0]]
+        assert client.get(f"/scans/{sid}/views/original").status_code == 200
+        corners = [[0, 0], [pw - 1, 0], [pw - 1, ph - 1], [0, ph - 1]]
+        response = client.post(f"/scans/{sid}/manual-align", json={"points": corners})
+        assert response.status_code == 200, response.text
+        stored = client.get(f"/scans/{sid}").json()
+        assert stored["status"] != "error" and stored["manual_alignment"]["kind"] == "corners"
+        wrong = {k: (v, stored["responses"].get(k)) for k, v in truth["answers"].items() if stored["responses"].get(k) != v}
+        assert len(wrong) <= 1, wrong
+        assert client.get(f"/scans/{sid}/render").json()["geometry_replayed"] is True
+
+        other = scan_one(client, tid, blank, "typed.png")
+        response = client.post(
+            f"/scans/{other['scan_id']}/manual-values", json={"values": {"q1": "B"}}
+        )
+        assert response.status_code == 200, response.text
+        typed = client.get(f"/scans/{other['scan_id']}").json()
+        assert typed["status"] == "ok" and typed["responses"]["q1"] == "B"
+        assert typed["manual_entry"] and typed["read_error"]

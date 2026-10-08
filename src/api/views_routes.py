@@ -77,7 +77,11 @@ def effective_geometry(service, scan_id, result, source_image):
             "source_size", [source_image.shape[1], source_image.shape[0]]
         )
         return geometry, True
-    aligned = service.render(scan_id)["image"]
+    try:
+        aligned = service.render(scan_id)["image"]
+    except ResultsError:
+        # A sheet that failed registration: the original is still worth showing
+        aligned = source_image
     return (
         {
             "source_size": [source_image.shape[1], source_image.shape[0]],

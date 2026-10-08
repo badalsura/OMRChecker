@@ -43,6 +43,18 @@ class VerifyBody(BaseModel):
     user: Optional[str] = None
 
 
+class ManualAlignBody(BaseModel):
+    points: List[List[float]] = Field(..., description="Clicked [x, y] in original pixels")
+    kind: str = Field("corners", pattern="^(corners|index)$")
+    names: Optional[List[str]] = Field(None, description="Index point per click (kind=index)")
+    user: Optional[str] = None
+
+
+class ManualValuesBody(BaseModel):
+    values: Dict[str, Any] = Field(..., description="Output column -> typed value")
+    user: Optional[str] = None
+
+
 class RegradeBody(BaseModel):
     template_overrides: Dict[str, Any] = Field(
         default_factory=dict,
@@ -294,6 +306,47 @@ def register(app, ctx, secured):
                 + ("" if applied else "?preview=true"),
             )
         return {**service.overlay(record, info), **extra}
+
+    @app.get("/scans/{scan_id}/manual-align", tags=["results"], dependencies=secured)
+    def scan_align_targets(scan_id: str):
+        """Page size and index points a failed sheet can be aligned by."""
+        from src.api.manual import align_targets
+
+        try:
+            return align_targets(service, service.load(scan_id))
+        except ResultsError as error:
+            fail(error)
+
+    @app.post("/scans/{scan_id}/manual-align", tags=["results"], dependencies=secured)
+    def scan_manual_align(scan_id: str, body: ManualAlignBody, request: Request):
+        """Align a sheet by clicked page corners or index points and read it again."""
+        from src.api.manual import manual_align
+
+        try:
+            record = manual_align(
+                service,
+                scan_id,
+                body.points,
+                body.kind,
+                body.names,
+                user_of(request, body.user),
+            )
+            return overlay_response(record)
+        except ResultsError as error:
+            fail(error)
+
+    @app.post("/scans/{scan_id}/manual-values", tags=["results"], dependencies=secured)
+    def scan_manual_values(scan_id: str, body: ManualValuesBody, request: Request):
+        """Type every output of a sheet the engine could not read."""
+        from src.api.manual import manual_values
+
+        try:
+            record = manual_values(
+                service, scan_id, body.values, user_of(request, body.user)
+            )
+            return overlay_response(record)
+        except ResultsError as error:
+            fail(error)
 
     @app.get("/scans/{scan_id}/audit", tags=["results"], dependencies=secured)
     def scan_audit(scan_id: str, limit: int = Query(200, ge=1, le=1000)):
