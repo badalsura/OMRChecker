@@ -20,6 +20,12 @@ const r = {
   busy: false,
   autoAdvance: safeStorage("get", "omr_res_advance") !== "0",
   prefetched: new Set(),
+  // View choice, remembered between sheets (and sessions)
+  mode: ["aligned", "color", "original"].includes(safeStorage("get", "omr_res_mode")) ? safeStorage("get", "omr_res_mode") : "aligned",
+  side: safeStorage("get", "omr_res_side") === "1",
+  left: ["aligned", "color", "original"].includes(safeStorage("get", "omr_res_left")) ? safeStorage("get", "omr_res_left") : "original",
+  borders: safeStorage("get", "omr_res_borders") === "1",
+  views: {}, // kind -> {scanId, meta, image, error, loading}
 };
 
 let canvas, ctx2d, statusLine;
@@ -64,6 +70,15 @@ export function initResults() {
       refreshFacets();
       load(0);
     });
+  });
+  // A correction saved on the review screen shows here at once
+  on("review-saved", (info) => {
+    if (!r.data || r.preview) return;
+    if (!info || !info.scan_id || info.scan_id === r.data.scan_id) open(r.data.scan_id, { keepView: true, quiet: true });
+  });
+  on("results-deleted", () => {
+    r.prefetched.clear();
+    load(r.offset, true);
   });
   on("results-scan", (scanId) => {
     document.querySelector('.tabs button[data-tab="results"]').click();
@@ -227,10 +242,11 @@ function loadImage(src) {
   });
 }
 
-async function open(scanId, { keepView = false } = {}) {
+async function open(scanId, { keepView = false, quiet = false } = {}) {
   r.busy = true;
-  statusLine.textContent = "Rendering…";
+  if (!quiet) statusLine.textContent = "Rendering…";
   r.preview = null;
+  if (!keepView) r.views = {};
   try {
     const data = await api(`/scans/${scanId}/render`);
     const image = await loadImage(fresh(data.image_url));
@@ -242,6 +258,7 @@ async function open(scanId, { keepView = false } = {}) {
     renderList();
     renderSide();
     draw();
+    loadViews();
     prefetch();
   } catch (error) {
     // Show the values even when no image can be produced
@@ -340,19 +357,149 @@ function imageSize() {
   return [1000, 1400];
 }
 
+// ---- views: aligned (default), aligned in full colour, original as background,
+// and side by side. All replay the geometry the engine recorded.
+const VIEW_NAMES = { aligned: "Aligned", color: "Full colour", original: "Original" };
+
+function viewEntry(kind) {
+  const entry = r.views[kind];
+  return entry && r.data && entry.scanId === r.data.scan_id ? entry : null;
+}
+
+// The panes on the canvas: [{kind, x0, w, k}], k = screen scale of a pane
+// pixel relative to an aligned pixel (the original scan has its own size).
+function panes() {
+  const wrap = canvas.parentElement;
+  const W = wrap.clientWidth || 1;
+  const kinds = r.preview || !r.data ? ["aligned"] : r.side ? [r.left, r.mode] : [r.mode];
+  const w = W / kinds.length;
+  return kinds.map((kind, index) => ({ kind, x0: index * w, w, k: paneScale(kind) }));
+}
+
+function paneScale(kind) {
+  if (kind !== "original") return 1;
+  const entry = viewEntry("original");
+  if (!entry || !entry.meta || !entry.meta.width) return 1;
+  return imageSize()[0] / entry.meta.width;
+}
+
+function paneAt(clientX) {
+  const rect = canvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const list = panes();
+  return list.find((p) => x >= p.x0 && x < p.x0 + p.w) || list[list.length - 1];
+}
+
+function paneImage(kind) {
+  if (kind === "aligned") return r.preview ? r.preview.image : r.image;
+  const entry = viewEntry(kind);
+  return entry ? entry.image : null;
+}
+
+async function loadViews() {
+  if (!r.data || r.preview) return;
+  const scanId = r.data.scan_id;
+  const needed = new Set(r.side ? [r.left, r.mode] : [r.mode]);
+  for (const kind of ["original", "color"]) {
+    if (!needed.has(kind) || viewEntry(kind)) continue;
+    const entry = { scanId, loading: true, meta: null, image: null, error: null };
+    r.views[kind] = entry;
+    try {
+      entry.meta = await api(`/scans/${scanId}/views/${kind}`);
+      entry.image = await loadImage(url(entry.meta.image_url));
+    } catch (error) {
+      entry.error = error.message.replace(/^\d+: /, "");
+    }
+    entry.loading = false;
+    if (r.data && r.data.scan_id === scanId) {
+      draw();
+      renderViewNotes();
+    }
+  }
+}
+
+function renderViewNotes() {
+  const box = $("res-view-notes");
+  if (!box) return;
+  box.innerHTML = "";
+  const kinds = r.preview || !r.data ? [] : r.side ? [r.left, r.mode] : [r.mode];
+  for (const kind of new Set(kinds)) {
+    const entry = viewEntry(kind);
+    if (!entry) continue;
+    if (entry.error) box.append(el("div", { class: "res-warning" }, `${VIEW_NAMES[kind]} view: ${entry.error}`));
+    for (const warning of (entry.meta && entry.meta.warnings) || []) box.append(el("div", { class: "res-warning" }, `${VIEW_NAMES[kind]} view: ${warning}`));
+  }
+}
+
+// Outlines of one pane: quads (TL, TR, BR, BL) in that pane's pixels
+function rectQuad(x, y, w, h) {
+  return [
+    [x, y],
+    [x + w, y],
+    [x + w, y + h],
+    [x, y + h],
+  ];
+}
+
+function geometryFor(kind) {
+  if (kind === "original") {
+    const entry = viewEntry("original");
+    const map = entry && entry.meta && entry.meta.map;
+    if (!map) return null;
+    return {
+      bubble: (field, b) => (map.fields[field.name] && map.fields[field.name].bubbles[b.value]) || null,
+      field: (field) => (map.fields[field.name] && map.fields[field.name].box) || null,
+      zone: (zone) => map.zones[zone.name] || null,
+      blocks: () => map.blocks || {},
+    };
+  }
+  return {
+    bubble: (field, b) => rectQuad(b.x, b.y, b.w, b.h),
+    field: (field) => (field.box ? rectQuad(...field.box) : null),
+    zone: (zone) => (zone.box && zone.box.length === 4 ? rectQuad(...zone.box) : null),
+    blocks: () => (r.data && r.data.blocks) || {},
+  };
+}
+
+function quadBounds(q) {
+  const xs = q.map((p) => p[0]);
+  const ys = q.map((p) => p[1]);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+
+// Move each corner d pixels away from the centre (outlines around a box)
+function grow(q, d) {
+  const cx = q.reduce((s, p) => s + p[0], 0) / q.length;
+  const cy = q.reduce((s, p) => s + p[1], 0) / q.length;
+  return q.map(([x, y]) => [x + Math.sign(x - cx) * d, y + Math.sign(y - cy) * d]);
+}
+
+function inQuad(p, q) {
+  let inside = false;
+  for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+    const [xi, yi] = q[i];
+    const [xj, yj] = q[j];
+    if (yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
 function fit() {
   const wrap = canvas.parentElement;
+  const pane = panes()[0];
   const [w, h] = imageSize();
-  const scale = Math.min((wrap.clientWidth - 20) / w, (wrap.clientHeight - 20) / h);
+  const scale = Math.min((pane.w - 20) / w, (wrap.clientHeight - 20) / h);
   r.view.scale = scale > 0 ? scale : 1;
-  r.view.x = (wrap.clientWidth - w * r.view.scale) / 2;
+  r.view.x = (pane.w - w * r.view.scale) / 2;
   r.view.y = (wrap.clientHeight - h * r.view.scale) / 2;
 }
 
+// cx, cy relative to the pane's top-left corner; zoom and scroll are shared
+// by every pane, so side-by-side panes move together
 function zoom(factor, cx, cy) {
   const wrap = canvas.parentElement;
   if (cx === undefined) {
-    cx = wrap.clientWidth / 2;
+    cx = panes()[0].w / 2;
     cy = wrap.clientHeight / 2;
   }
   const scale = Math.max(0.05, Math.min(12, r.view.scale * factor));
@@ -363,26 +510,31 @@ function zoom(factor, cx, cy) {
   draw();
 }
 
-function toImage(clientX, clientY) {
+function toImage(clientX, clientY, pane) {
   const rect = canvas.getBoundingClientRect();
-  return { x: (clientX - rect.left - r.view.x) / r.view.scale, y: (clientY - rect.top - r.view.y) / r.view.scale };
+  pane = pane || paneAt(clientX);
+  const s = r.view.scale * pane.k;
+  return { x: (clientX - rect.left - pane.x0 - r.view.x) / s, y: (clientY - rect.top - r.view.y) / s, pane };
 }
 
 function hitTest(p) {
   if (!r.data || !r.overlay) return null;
   const d = r.preview ? r.preview.data : r.data;
-  const pad = 2;
+  const geo = geometryFor(p.pane ? p.pane.kind : "aligned");
+  if (!geo) return null;
+  const pad = 2 / ((p.pane && p.pane.k) || 1);
   for (const field of d.fields) {
-    const box = field.box;
-    if (!box || p.x < box[0] - pad || p.y < box[1] - pad || p.x > box[0] + box[2] + pad || p.y > box[1] + box[3] + pad) continue;
+    const box = geo.field(field);
+    if (!box || !inQuad(p, grow(box, pad))) continue;
     for (const b of field.bubbles) {
-      if (p.x >= b.x - pad && p.x <= b.x + b.w + pad && p.y >= b.y - pad && p.y <= b.y + b.h + pad) return { kind: "bubble", field, bubble: b };
+      const q = geo.bubble(field, b);
+      if (q && inQuad(p, grow(q, pad))) return { kind: "bubble", field, bubble: b };
     }
     return { kind: "field", field };
   }
   for (const zone of d.zones) {
-    const box = zone.box;
-    if (box && box.length === 4 && p.x >= box[0] && p.y >= box[1] && p.x <= box[0] + box[2] && p.y <= box[1] + box[3]) return { kind: "zone", zone };
+    const q = geo.zone(zone);
+    if (q && inQuad(p, q)) return { kind: "zone", zone };
   }
   return null;
 }
@@ -408,6 +560,7 @@ function bindCanvas() {
     const hit = hitTest(toImage(e.clientX, e.clientY));
     const key = hit ? (hit.bubble ? `${hit.field.name}/${hit.bubble.value}` : (hit.field || hit.zone).name) : null;
     canvas.style.cursor = hit ? "pointer" : "grab";
+    // The same key highlights the spot on every pane
     if (key !== r.hover) {
       r.hover = key;
       r.hoverHit = hit;
@@ -434,7 +587,8 @@ function bindCanvas() {
     (e) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      zoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - rect.left, e.clientY - rect.top);
+      const pane = paneAt(e.clientX);
+      zoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - rect.left - pane.x0, e.clientY - rect.top);
     },
     { passive: false }
   );
@@ -446,9 +600,12 @@ const COLORS = {
   markedLine: "#2f6fdf",
   empty: "rgba(110, 118, 135, 0.55)",
   flagged: "#e08a00",
+  group: "#c2185b",
   corrected: "#8e44ad",
   selected: "#d0342c",
+  hover: "#00a3a3",
   zone: { barcode: "#c85a14", qrcode: "#a028a0", ocr: "#1e8c1e", icr: "#1478dc" },
+  block: { found: "#1e8c1e", fitted: "#1478dc", failed: "#d0342c", skipped: "#8a909c" },
 };
 
 function draw() {
@@ -456,63 +613,137 @@ function draw() {
   const dpr = window.devicePixelRatio || 1;
   ctx2d.setTransform(1, 0, 0, 1, 0, 0);
   ctx2d.clearRect(0, 0, canvas.width, canvas.height);
-  ctx2d.setTransform(dpr * r.view.scale, 0, 0, dpr * r.view.scale, dpr * r.view.x, dpr * r.view.y);
-  const img = r.preview ? r.preview.image : r.image;
-  const [w, h] = imageSize();
-  ctx2d.fillStyle = "#fff";
-  ctx2d.fillRect(0, 0, w, h);
-  if (img) {
-    ctx2d.imageSmoothingEnabled = r.view.scale < 2;
-    ctx2d.drawImage(img, 0, 0);
+  const list = panes();
+  for (const pane of list) {
+    ctx2d.save();
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx2d.beginPath();
+    ctx2d.rect(pane.x0, 0, pane.w, canvas.height / dpr);
+    ctx2d.clip();
+    drawPane(pane, dpr);
+    ctx2d.restore();
   }
-  if (!r.data || !r.overlay) return;
-  const d = r.preview ? r.preview.data : r.data;
-  const px = 1 / r.view.scale; // one screen pixel in image units
-  for (const field of d.fields) drawField(field, px);
-  for (const zone of d.zones) drawZone(zone, px);
+  if (list.length > 1) {
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx2d.fillStyle = "#2b2f38";
+    for (const pane of list.slice(1)) ctx2d.fillRect(pane.x0 - 1, 0, 2, canvas.height / dpr);
+    ctx2d.font = "12px system-ui, sans-serif";
+    for (const pane of list) {
+      const text = VIEW_NAMES[pane.kind];
+      const width = ctx2d.measureText(text).width;
+      ctx2d.fillStyle = "rgba(43, 47, 56, 0.8)";
+      ctx2d.fillRect(pane.x0 + 6, 6, width + 10, 18);
+      ctx2d.fillStyle = "#fff";
+      ctx2d.fillText(text, pane.x0 + 11, 19);
+    }
+  }
 }
 
-function drawField(field, px) {
+function drawPane(pane, dpr) {
+  const s = r.view.scale * pane.k;
+  ctx2d.setTransform(dpr * s, 0, 0, dpr * s, dpr * (pane.x0 + r.view.x), dpr * r.view.y);
+  const img = paneImage(pane.kind);
+  const entry = pane.kind === "aligned" ? null : viewEntry(pane.kind);
+  let [w, h] = imageSize();
+  if (img) [w, h] = [img.naturalWidth, img.naturalHeight];
+  else if (entry && entry.meta) [w, h] = [entry.meta.width, entry.meta.height];
+  ctx2d.fillStyle = "#fff";
+  ctx2d.fillRect(0, 0, w, h);
+  const px = 1 / s; // one screen pixel in pane pixels
+  if (img) {
+    ctx2d.imageSmoothingEnabled = s < 2;
+    ctx2d.drawImage(img, 0, 0);
+  } else if (pane.kind !== "aligned") {
+    const text = !entry || entry.loading ? `Loading the ${VIEW_NAMES[pane.kind].toLowerCase()} view…` : `${VIEW_NAMES[pane.kind]} view unavailable: ${entry.error || ""}`;
+    ctx2d.fillStyle = "#555";
+    ctx2d.font = `${14 * px}px system-ui, sans-serif`;
+    ctx2d.fillText(text, 20 * px, 30 * px, w - 40 * px);
+    return;
+  }
+  if (!r.data) return;
+  const geo = geometryFor(pane.kind);
+  if (!geo) return;
+  if (r.borders) drawBlocks(geo, px);
+  if (!r.overlay) return;
+  const d = r.preview ? r.preview.data : r.data;
+  for (const field of d.fields) drawField(field, px, geo);
+  for (const zone of d.zones) drawZone(zone, px, geo);
+}
+
+function path(q) {
+  ctx2d.beginPath();
+  q.forEach(([x, y], i) => (i ? ctx2d.lineTo(x, y) : ctx2d.moveTo(x, y)));
+  ctx2d.closePath();
+}
+
+// Item 29: block borders the engine found / fitted (show or hide)
+function drawBlocks(geo, px) {
+  for (const [name, block] of Object.entries(geo.blocks())) {
+    const q = block && block.corners;
+    if (!q || q.length !== 4) continue;
+    ctx2d.strokeStyle = COLORS.block[block.status] || "#555";
+    ctx2d.lineWidth = 2 * px;
+    ctx2d.setLineDash(block.status === "found" ? [] : [8 * px, 5 * px]);
+    path(q);
+    ctx2d.stroke();
+    ctx2d.setLineDash([]);
+    const b = quadBounds(q);
+    label(`${name}${block.status ? ` (${block.status})` : ""}`, b.x0, b.y1 + 14 * px, px, ctx2d.strokeStyle);
+  }
+}
+
+function drawField(field, px, geo) {
   const selected = field.name === r.selected;
+  const grouped = (field.group_flags || []).length > 0;
   for (const b of field.bubbles) {
+    const q = geo.bubble(field, b);
+    if (!q) continue;
     const hovered = r.hover === `${field.name}/${b.value}`;
+    path(q);
     if (b.marked) {
       ctx2d.fillStyle = COLORS.marked;
-      ctx2d.fillRect(b.x, b.y, b.w, b.h);
+      ctx2d.fill();
     }
     ctx2d.lineWidth = (b.marked ? 2 : 1) * px * (hovered ? 2 : 1);
-    ctx2d.strokeStyle = b.marked ? COLORS.markedLine : COLORS.empty;
-    if (field.flagged) ctx2d.strokeStyle = b.marked ? COLORS.markedLine : COLORS.flagged;
-    ctx2d.strokeRect(b.x, b.y, b.w, b.h);
+    ctx2d.strokeStyle = hovered ? COLORS.hover : b.marked ? COLORS.markedLine : COLORS.empty;
+    if (field.flagged && !hovered) ctx2d.strokeStyle = b.marked ? COLORS.markedLine : COLORS.flagged;
+    ctx2d.stroke();
     if (b.marked !== b.read_marked) {
       // A person changed this bubble: mark the difference to the machine read
+      const bb = quadBounds(q);
       ctx2d.strokeStyle = COLORS.corrected;
       ctx2d.lineWidth = 2.5 * px;
       ctx2d.beginPath();
-      ctx2d.arc(b.cx, b.cy, Math.max(b.w, b.h) * 0.62, 0, Math.PI * 2);
+      ctx2d.arc((bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2, Math.max(bb.x1 - bb.x0, bb.y1 - bb.y0) * 0.62, 0, Math.PI * 2);
       ctx2d.stroke();
     }
   }
-  if (!field.box) return;
-  const [x, y, w, h] = field.box;
-  if (field.flagged || selected || field.corrected) {
+  const box = geo.field(field);
+  if (!box) return;
+  const hovered = r.hover === field.name;
+  if (field.flagged || selected || field.corrected || grouped || hovered) {
     ctx2d.lineWidth = (selected ? 3 : 2) * px;
-    ctx2d.strokeStyle = selected ? COLORS.selected : field.corrected ? COLORS.corrected : COLORS.flagged;
+    ctx2d.strokeStyle = selected ? COLORS.selected : hovered ? COLORS.hover : field.corrected ? COLORS.corrected : grouped ? COLORS.group : COLORS.flagged;
     if (field.flagged && !selected && field.pending) ctx2d.setLineDash([6 * px, 4 * px]);
-    ctx2d.strokeRect(x - 4 * px, y - 4 * px, w + 8 * px, h + 8 * px);
+    path(grow(box, 4 * px));
+    ctx2d.stroke();
     ctx2d.setLineDash([]);
   }
-  if (selected || field.flagged || r.view.scale > 0.9) label(`${field.name}: ${field.value === "" ? "∅" : field.value}`, x, y - 6 * px, px, selected ? COLORS.selected : field.flagged ? COLORS.flagged : "#333");
+  const b = quadBounds(box);
+  if (selected || field.flagged || grouped || r.view.scale > 0.9) label(`${field.name}: ${field.value === "" ? "∅" : field.value}`, b.x0, b.y0 - 6 * px, px, selected ? COLORS.selected : grouped ? COLORS.group : field.flagged ? COLORS.flagged : "#333");
 }
 
-function drawZone(zone, px) {
-  if (!zone.box || zone.box.length !== 4) return;
-  const [x, y, w, h] = zone.box;
+function drawZone(zone, px, geo) {
+  const q = geo.zone(zone);
+  if (!q) return;
   const selected = zone.name === r.selected;
-  ctx2d.lineWidth = (selected ? 3 : 2) * px;
-  ctx2d.strokeStyle = selected ? COLORS.selected : zone.flagged ? COLORS.flagged : zone.corrected ? COLORS.corrected : COLORS.zone[zone.type] || "#333";
-  ctx2d.strokeRect(x, y, w, h);
-  label(`${zone.name}: ${zone.value === "" ? "∅" : zone.value}`, x, y - 6 * px, px, ctx2d.strokeStyle);
+  const hovered = r.hover === zone.name;
+  ctx2d.lineWidth = (selected || hovered ? 3 : 2) * px;
+  ctx2d.strokeStyle = selected ? COLORS.selected : hovered ? COLORS.hover : zone.flagged ? COLORS.flagged : zone.corrected ? COLORS.corrected : COLORS.zone[zone.type] || "#333";
+  path(q);
+  ctx2d.stroke();
+  const b = quadBounds(q);
+  label(`${zone.name}: ${zone.value === "" ? "∅" : zone.value}`, b.x0, b.y0 - 6 * px, px, ctx2d.strokeStyle);
 }
 
 function label(text, x, y, px, color) {
@@ -532,6 +763,8 @@ function updateStatus() {
   if (hit && r.hover) {
     if (hit.bubble) parts.push(`${hit.field.name} · ${hit.bubble.value} · fill ${Math.round((hit.bubble.fill_ratio || 0) * 100)}% · click to ${hit.bubble.marked ? "unmark" : "mark"}`);
     else parts.push((hit.field || hit.zone).name);
+    const flags = hit.field && hit.field.group_flags;
+    if (flags && flags.length) parts.push(flags.join("; "));
   }
   if (r.preview) parts.push("REGRADE PREVIEW (not saved)");
   statusLine.textContent = parts.join("  ·  ");
@@ -541,12 +774,14 @@ function centerOn(item) {
   const box = item.box;
   if (!box) return;
   const wrap = canvas.parentElement;
+  const pane = panes().find((p) => p.kind !== "original") || panes()[0];
+  if (pane.kind === "original") return;
   const sx = r.view.x + box[0] * r.view.scale;
   const sy = r.view.y + box[1] * r.view.scale;
   const ex = sx + box[2] * r.view.scale;
   const ey = sy + box[3] * r.view.scale;
-  if (sx >= 0 && sy >= 0 && ex <= wrap.clientWidth && ey <= wrap.clientHeight) return;
-  r.view.x = wrap.clientWidth / 2 - (box[0] + box[2] / 2) * r.view.scale;
+  if (sx >= 0 && sy >= 0 && ex <= pane.w && ey <= wrap.clientHeight) return;
+  r.view.x = pane.w / 2 - (box[0] + box[2] / 2) * r.view.scale;
   r.view.y = wrap.clientHeight / 2 - (box[1] + box[3] / 2) * r.view.scale;
 }
 
@@ -638,6 +873,7 @@ function itemRow(item, indent) {
       acceptButton(item),
       item.corrected ? el("span", { class: "chip corrected" }, `was ${item.original_value === "" || item.original_value === undefined ? "∅" : item.original_value}`) : null,
       (item.flags || []).map((f) => chip(f, "flag")),
+      (item.group_flags || []).map((f) => el("span", { class: "chip group-flag", title: "Column of a grouped value that needs a look" }, f)),
       (item.reasons || []).length ? el("span", { class: "muted small res-reasons" }, item.reasons.join("; ")) : null
     )
   );
@@ -657,6 +893,7 @@ function renderSide() {
     el("div", { class: "muted small res-path" }, d.resolved_path || d.source_path || "")
   );
   for (const warning of r.data.warnings || []) side.append(el("div", { class: "res-warning" }, warning));
+  side.append(el("div", { id: "res-view-notes" }));
   if (r.data.drift && r.data.drift.length) side.append(el("div", { class: "res-warning" }, `Re-reading now gives different values for: ${r.data.drift.join(", ")}`));
   if (d.error) side.append(el("div", { class: "res-warning error" }, d.error));
   if (r.preview) side.append(previewBox());
@@ -681,7 +918,8 @@ function renderSide() {
       });
       const head = el("summary", { class: `res-row group${output.flagged ? " flagged" : ""}${output.corrected ? " corrected" : ""}`, "data-names": [output.name, ...output.parts].join("\n") }, el("span", { class: "res-name" }, output.name), joined, el("span", { class: "conf", style: { background: confidenceColor(output.confidence) } }, confText(output.confidence)), el("div", { class: "res-flags" }, acceptButton(output), (output.flags || []).map((f) => chip(f, "flag")), (output.reasons || []).length ? el("span", { class: "muted small res-reasons" }, output.reasons.join("; ")) : null));
       const details = el("details", { class: "res-group" }, head, parts.map((p) => itemRow(p, true)));
-      if (output.flagged || output.corrected) details.open = true;
+      if (parts.some((p) => (p.group_flags || []).length)) head.classList.add("group-flagged");
+      if (output.flagged || output.corrected || head.classList.contains("group-flagged")) details.open = true;
       list.append(details);
     } else if (byName[output.name]) {
       const row = itemRow(byName[output.name]);
@@ -738,6 +976,7 @@ function renderSide() {
       )
     );
   }
+  renderViewNotes();
   if (d.regrade) side.append(el("div", { class: "muted small" }, `Regraded by ${d.regrade.by} with `, el("code", {}, JSON.stringify({ ...d.regrade.template_overrides, ...d.regrade.config_overrides }))));
   $("res-verify").textContent = verified ? "Unverify" : "Verify ✓";
   $("res-verify").classList.toggle("primary", !verified);
@@ -764,7 +1003,9 @@ function onKey(e) {
   else if (k === "o") {
     r.overlay = !r.overlay;
     draw();
-  } else if (k === "n" || k === "Tab") cycleFlagged(e.shiftKey ? -1 : 1);
+  } else if (k === "b") setViewOption("borders", !r.borders);
+  else if (k === "s") setViewOption("side", !r.side);
+  else if (k === "n" || k === "Tab") cycleFlagged(e.shiftKey ? -1 : 1);
   else if (k === "r") showRegrade();
   else if (k === "e" && r.selected) select(r.selected, true);
   else return;
@@ -803,6 +1044,82 @@ export function bindToolbar() {
     safeStorage("set", "omr_res_advance", r.autoAdvance ? "1" : "0");
   });
   $("res-regrade").addEventListener("click", showRegrade);
+  $("res-delete").addEventListener("click", deleteScan);
+  // View control: aligned / full colour / original, side by side, borders
+  $("res-mode").value = r.mode;
+  $("res-left").value = r.left;
+  $("res-side").checked = r.side;
+  $("res-borders").checked = r.borders;
+  $("res-mode").addEventListener("change", (e) => setViewOption("mode", e.target.value));
+  $("res-left").addEventListener("change", (e) => setViewOption("left", e.target.value));
+  $("res-side").addEventListener("change", (e) => setViewOption("side", e.target.checked));
+  $("res-borders").addEventListener("change", (e) => setViewOption("borders", e.target.checked));
+  syncViewControls();
+}
+
+function syncViewControls() {
+  $("res-mode").value = r.mode;
+  $("res-left").value = r.left;
+  $("res-side").checked = r.side;
+  $("res-borders").checked = r.borders;
+  $("res-left-wrap").classList.toggle("hidden", !r.side);
+}
+
+function setViewOption(name, value) {
+  const wasSide = r.side;
+  r[name] = value;
+  const stored = typeof value === "boolean" ? (value ? "1" : "0") : value;
+  safeStorage("set", `omr_res_${name}`, stored);
+  syncViewControls();
+  if (name === "side" && wasSide !== r.side) fit();
+  loadViews();
+  renderViewNotes();
+  draw();
+}
+
+// Item 31: delete one sheet's result after a confirmation (audited)
+function deleteScan() {
+  if (!r.data || r.preview) return;
+  const scanId = r.data.scan_id;
+  const name = r.data.file_id || scanId.slice(0, 8);
+  const go = el(
+    "button",
+    {
+      class: "danger",
+      onclick: async () => {
+        go.disabled = true;
+        try {
+          await api(`/results/${scanId}`, { method: "DELETE" });
+          dialog.close();
+          toast(`Deleted ${name}`, "ok");
+          emit("review-changed");
+          const index = r.items.findIndex((i) => i.id === scanId);
+          r.data = null;
+          r.image = null;
+          r.views = {};
+          await load(r.offset, true);
+          if (r.items.length) await openAt(Math.min(Math.max(index, 0), r.items.length - 1));
+          refreshFacets();
+        } catch (error) {
+          go.disabled = false;
+          toast(error.message, "error", 6000);
+        }
+      },
+    },
+    "Delete"
+  );
+  const dialog = modal(
+    `Delete ${name}?`,
+    el(
+      "div",
+      {},
+      el("p", {}, "This deletes the sheet's result: its values, corrections, review items and the stored images. It cannot be undone."),
+      el("p", { class: "small muted" }, r.data.source_path ? `The scan file itself (${r.data.source_path}) is not touched unless it was an upload.` : "The uploaded copy of the scan is deleted too."),
+      el("p", { class: "small muted" }, "The deletion is written to the audit log with your name.")
+    ),
+    [el("button", { onclick: () => dialog.close() }, "Cancel"), go]
+  );
+  go.focus();
 }
 
 const REGRADE_EXAMPLE = '{"colorDropout": {"enabled": false}}';
@@ -834,6 +1151,7 @@ function showRegrade() {
       if (apply) {
         dialog.close();
         toast(`Regraded · ${data.changes.length} value(s) changed`, "ok");
+        r.views = {};
         await open(r.data.scan_id, { keepView: true });
         return;
       }
@@ -898,7 +1216,8 @@ function previewBox() {
             toast("Regrade applied", "ok");
             const backdrop = document.querySelector(".modal-backdrop");
             if (backdrop) backdrop.remove();
-            await open(r.data.scan_id, { keepView: true });
+            r.views = {};
+        await open(r.data.scan_id, { keepView: true });
           } catch (error) {
             toast(error.message, "error");
           }
@@ -1020,6 +1339,7 @@ async function showRemap() {
               if (job) await api(`/jobs/${job.id}`, { method: "PATCH", json: { path_remap: parse(jobBox.value) } });
               dialog.close();
               toast("Saved", "ok");
+              r.views = {};
               if (r.data) open(r.data.scan_id, { keepView: true });
             } catch (error) {
               toast(error.message, "error", 6000);
