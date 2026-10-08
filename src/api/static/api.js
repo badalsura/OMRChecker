@@ -80,6 +80,13 @@ export function url(path) {
   return path + (path.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(state.apiKey);
 }
 
+// A name for display: never "null" / "undefined" (template menus, options, lists)
+export function displayName(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  const text = String(value).trim();
+  return !text || text === "null" || text === "undefined" ? fallback : text;
+}
+
 export function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs || {})) {
@@ -162,7 +169,7 @@ export function fillTemplateSelect(select) {
   if (select.dataset.allowAll) select.append(el("option", { value: "" }, "All templates"));
   else if (!state.templates.length) select.append(el("option", { value: "" }, "No templates yet"));
   for (const t of state.templates) {
-    select.append(el("option", { value: t.id }, `${t.name}${t.status === "draft" ? " (draft)" : ""}`));
+    select.append(el("option", { value: t.id }, `${displayName(t.name, t.id || "unnamed template")}${t.status === "draft" ? " (draft)" : ""}`));
   }
   if ([...select.options].some((o) => o.value === current)) select.value = current;
   if (!select.dataset.bound) {

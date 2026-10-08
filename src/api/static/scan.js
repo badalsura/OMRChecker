@@ -1,5 +1,6 @@
 // Scan tab: drop sheets, read them synchronously, inspect results.
 import { api, chip, confidenceColor, csvCell, download, el, emit, toast, url } from "./api.js";
+import { appendPdfParams, mountPdfOptions } from "./pdf_options.js";
 
 const CONCURRENCY = 3;
 const sheets = []; // {id, file, name, state, result, error}
@@ -8,6 +9,7 @@ let running = 0;
 let counter = 0;
 
 export function initScan() {
+  mountPdfOptions("scan-pdf", "scan");
   const drop = document.getElementById("scan-drop");
   const input = document.getElementById("scan-files");
   drop.addEventListener("click", () => input.click());
@@ -85,6 +87,7 @@ async function readSheet(sheet) {
   const form = new FormData();
   form.append("template_id", sheet.templateId);
   form.append("files", sheet.file, sheet.name);
+  appendPdfParams(form, "scan");
   const started = performance.now();
   try {
     const data = await api("/scans", { method: "POST", form });

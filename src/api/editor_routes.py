@@ -1,14 +1,11 @@
 """
 Helpers for the template editor and the Scan / New Job screens:
 
-* GET /editor/ocr-langs: Tesseract languages installed on this server
-  (the OCR zone "Language" dropdown);
 * GET /templates/{id}/models: ONNX models the template can use
   (config.json ml_params model pickers);
 * parse_pdf_params(): per-request PDF DPI / pages for POST /scans and /jobs.
 """
 
-import glob
 import json
 import os
 import re
@@ -51,30 +48,6 @@ def parse_pdf_params(pdf_dpi=None, pdf_page=None):
                 raise HTTPException(400, "PDF pages start at 1")
             params["pdf_page"] = values[0] if len(values) == 1 else values
     return params or None
-
-
-def installed_ocr_languages():
-    """Tesseract language codes installed here (empty when Tesseract is missing)."""
-    langs = set()
-    try:
-        from src.readers.ocr import find_tessdata
-
-        tessdata = find_tessdata()
-        if tessdata:
-            for path in glob.glob(os.path.join(tessdata, "*.traineddata")):
-                langs.add(Path(path).stem)
-    except Exception:
-        pass
-    if not langs:
-        try:
-            import pytesseract
-
-            langs.update(pytesseract.get_languages(config=""))
-        except Exception:
-            pass
-    langs.discard("osd")
-    langs.discard("equ")
-    return sorted(langs)
 
 
 def _model_kind(path):
@@ -124,11 +97,6 @@ def list_models(template_dir):
 
 
 def register(app, ctx, secured):
-    @app.get("/editor/ocr-langs", tags=["templates"], dependencies=secured)
-    def ocr_languages():
-        """Installed Tesseract languages, for the OCR zone language dropdown."""
-        return {"languages": installed_ocr_languages()}
-
     @app.get("/templates/{template_id}/models", tags=["templates"], dependencies=secured)
     def template_models(template_id: str):
         """ONNX models in the template folder and the server's model folders."""

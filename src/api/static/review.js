@@ -1,5 +1,5 @@
 // Review queue: keyboard-driven, optimistic, prefetching.
-import { api, chip, confidenceColor, el, on, toast, url } from "./api.js";
+import { api, chip, confidenceColor, displayName, el, on, toast, url } from "./api.js";
 
 const q = {
   buffer: [],
@@ -57,7 +57,7 @@ async function refreshNames() {
     const summary = await api(`/review/summary${template ? `?template_id=${encodeURIComponent(template)}` : ""}`);
     select.innerHTML = "";
     select.append(el("option", { value: "" }, `All (${summary.total})`));
-    for (const row of summary.by_name) select.append(el("option", { value: row.name }, `${row.name} (${row.n})`));
+    for (const row of summary.by_name) select.append(el("option", { value: row.name }, `${displayName(row.name, "(no name)")} (${row.n})`));
     if ([...select.options].some((o) => o.value === current)) select.value = current;
   } catch (e) {
     /* ignore */

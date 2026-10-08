@@ -1,10 +1,12 @@
 // Jobs tab: start bulk jobs (chunked uploads or a server folder) and watch progress.
 import { api, chip, chunk, el, emit, fmtDuration, state, toast, url } from "./api.js";
+import { appendPdfParams, mountPdfOptions } from "./pdf_options.js";
 
 const UPLOAD_CHUNK = 25;
 let pollTimer = null;
 
 export function initJobs() {
+  mountPdfOptions("job-pdf", "job");
   document.getElementById("job-start").addEventListener("click", startJob);
   document.getElementById("jobs-refresh").addEventListener("click", refreshJobs);
   document.getElementById("job-dir-mode").addEventListener("change", (e) => {
@@ -32,6 +34,7 @@ async function startJob() {
     const form = new FormData();
     form.append("template_id", templateId);
     form.append("save_images", document.getElementById("job-images").value);
+    appendPdfParams(form, "job");
     const name = document.getElementById("job-name").value.trim();
     if (name) form.append("name", name);
     const workers = document.getElementById("job-workers").value;

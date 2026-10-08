@@ -68,11 +68,9 @@ def test_scan_pdf_pages_from_the_form(tmp_path, spec):
         assert bad.status_code == 400
 
 
-def test_models_and_languages(tmp_path, spec):
+def test_models(tmp_path, spec):
     with make_client(tmp_path) as client:
         template_id = upload_template(client, spec)
-        langs = client.get("/editor/ocr-langs").json()["languages"]
-        assert isinstance(langs, list) and "osd" not in langs
         assert client.get("/templates/nope/models").status_code == 404
         models = client.get(f"/templates/{template_id}/models").json()["models"]
         assert all(m["location"] == "server" for m in models)
