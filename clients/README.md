@@ -16,6 +16,8 @@ All three have the same operations and no third-party dependencies.
 | human review | `review_queue(...)`, `submit_review(scan_id, corrections, accept)` | `reviewQueue(params)`, `submitReview(...)` | `ReviewQueue`, `SubmitReview` |
 | results screen (list, render, edit) | `list_results`, `iter_results`, `render`, `render_image`, `overlay`, `correct(scan_id, changes, toggle=)`, `verify`, `regrade`, `audit` | `listResults`, `render`, `correct`, `verify`, `regrade` | `ListResults`, `Render`, `Correct`, `Verify` |
 | accuracy / path remap / job settings | `accuracy`, `path_remap`, `set_path_remap`, `update_job` | `accuracy` | `Accuracy` |
+| housekeeping (audited deletes, bulk accept as read) | `delete_scan`, `delete_job`, `accept_review_bulk(expected=, before=, **filters)`, `review_counts`, `review_states` | `deleteScan`, `deleteJob`, `acceptReviewBulk`, `reviewCounts` | `DeleteScan`, `DeleteJob`, `AcceptReviewBulk`, `ReviewCounts` |
+| server folders / other views | `folder_roots`, `browse_folder`, `check_folder(path, recursive)`, `recent_folders`, `scan_view(scan_id, "original"/"color")` | `checkFolder` | `CheckFolder` |
 | exports (csv, xlsx, pdf, sqlite, sql) | `export(filters, fmt, out_path, profile=)`, `create_export`, `export_status`, `download_export`, `export_profiles`, `save_export_profile` | `createExport`, `exportStatus`, `downloadExport` | `CreateExport`, `WaitForExport`, `DownloadExport` |
 
 Pass the API key (server started with `OMR_API_KEY` / `--api-key`) as the second

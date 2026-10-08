@@ -218,6 +218,34 @@ public class OmrClient {
                 HttpRequest.BodyPublishers.ofString(Json.write(body)), "application/json");
     }
 
+    /** Pending total and per-name counts; params: template_id, job_id, scan_id, name, kind, since. */
+    public String reviewCounts(Map<String, String> params) throws IOException, InterruptedException {
+        return get("/review/counts", params);
+    }
+
+    /** Accept pending items under the filters as read (who and when are recorded; nothing is deleted).
+     *  filters: template_id, job_id, scan_id, name, kind, expected, before, limit. */
+    public String acceptReviewBulk(Map<String, Object> filters) throws IOException, InterruptedException {
+        return postJson("/review/accept-bulk", filters != null ? filters : Map.of());
+    }
+
+    // ------------------------------------------------------------ housekeeping
+
+    /** Delete one sheet's result and stored images (audited). */
+    public String deleteScan(String scanId) throws IOException, InterruptedException {
+        return send("DELETE", "/results/" + enc(scanId), null, null, null);
+    }
+
+    /** Delete a finished job and its results (audited); server-folder files are never touched. */
+    public String deleteJob(String jobId) throws IOException, InterruptedException {
+        return send("DELETE", "/jobs/" + enc(jobId), null, null, null);
+    }
+
+    /** Is this server folder usable? {ok, images, pdfs} or {ok: false, error}. */
+    public String checkFolder(String path, boolean recursive) throws IOException, InterruptedException {
+        return get("/fs/check", Map.of("path", path, "recursive", String.valueOf(recursive)));
+    }
+
     // ------------------------------------------------------------ results
 
     /** Graded sheets. params: template_id, job_id, status, view (all, flagged, reviewed, not_reviewed,

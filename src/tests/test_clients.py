@@ -228,6 +228,28 @@ def test_python_client_results_and_exports(server, assets, tmp_path):
         )
 
 
+def test_python_client_housekeeping(server, assets):
+    client = OMRClient(server, user="py-keeper")
+    template = client.upload_template([assets["template"]], name="py-keeper")
+    folder = str(assets["sheets"][0].parent)
+    check = client.check_folder(folder, recursive=False)
+    assert check["ok"] and check["images"] >= 3
+    assert client.browse_folder(folder)["path"]
+    job = client.create_job(template["id"], folder=folder, recursive=False)
+    job = client.wait_for_job(job["id"], poll=0.2, timeout=120)
+    assert job["state"] == "completed"
+    assert folder in client.recent_folders()
+    counts = client.review_counts(job_id=job["id"])
+    assert "total" in counts and "now" in counts
+    accepted = client.accept_review_bulk(job_id=job["id"], before=counts["now"])
+    assert accepted["remaining"] == 0 and accepted["by"] == "py-keeper"
+    scan_id = client.list_results(job_id=job["id"])["items"][0]["id"]
+    assert client.delete_scan(scan_id)["deleted"] == scan_id
+    deleted = client.delete_job(job["id"])
+    assert deleted["scans"] == job["total_files"] - 1
+    assert all(p.exists() for p in assets["sheets"])
+
+
 def test_python_bulk_folder_cli(server, assets, tmp_path):
     out = tmp_path / "bulk.csv"
     proc = subprocess.run(

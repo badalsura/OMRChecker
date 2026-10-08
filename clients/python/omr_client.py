@@ -503,6 +503,72 @@ class OMRClient:
         """Edit a job's name or path_remap."""
         return self._post_json(f"/jobs/{parse.quote(job_id)}", changes, "PATCH")
 
+    # ------------------------------------------------------------ housekeeping
+    def delete_job(self, job_id: str) -> Dict[str, Any]:
+        """Delete a finished job and every result it produced (audited).
+
+        Files in a server folder are never deleted; uploaded copies are.
+        """
+        return self._json("DELETE", f"/jobs/{parse.quote(job_id)}")
+
+    def delete_scan(self, scan_id: str) -> Dict[str, Any]:
+        """Delete one sheet's result and stored images (audited)."""
+        return self._json("DELETE", f"/results/{parse.quote(scan_id)}")
+
+    def review_counts(self, since: Optional[float] = None, **filters) -> Dict[str, Any]:
+        """Pending total, per-name counts and items queued since a server time."""
+        return self._json("GET", "/review/counts", dict(filters, since=since))
+
+    def review_states(self, items: Iterable[Tuple[str, str]]) -> List[Dict[str, Any]]:
+        """[(scan_id, name)] -> pending / done (by, at, value) / gone."""
+        payload = {"items": [{"scan_id": s, "name": n} for s, n in items]}
+        return self._post_json("/review/states", payload)["items"]
+
+    def accept_review_bulk(
+        self,
+        expected: Optional[int] = None,
+        before: Optional[float] = None,
+        limit: int = 2000,
+        **filters,
+    ) -> Dict[str, Any]:
+        """Accept pending review items under the filters as read (not a delete).
+
+        Who and when is recorded per item. expected: refuse (409) when more
+        items are pending than this; before: only items queued until then.
+        Repeat while the result's "remaining" is above 0.
+        """
+        payload = dict(filters, expected=expected, before=before, limit=limit)
+        payload = {k: v for k, v in payload.items() if v is not None}
+        return self._post_json("/review/accept-bulk", payload)
+
+    # ------------------------------------------------------------ server folders
+    def folder_roots(self) -> Dict[str, Any]:
+        return self._json("GET", "/fs/roots")
+
+    def browse_folder(self, path: str) -> Dict[str, Any]:
+        return self._json("GET", "/fs/browse", {"path": path})
+
+    def check_folder(self, path: str, recursive: bool = True) -> Dict[str, Any]:
+        return self._json("GET", "/fs/check", {"path": path, "recursive": recursive})
+
+    def recent_folders(self) -> List[str]:
+        return self._json("GET", "/fs/recent")["folders"]
+
+    # ------------------------------------------------------------ other views
+    def scan_view(self, scan_id: str, view: str = "original") -> Dict[str, Any]:
+        """view: original (with outlines mapped back) or color (aligned, full colour)."""
+        return self._json(
+            "GET", f"/scans/{parse.quote(scan_id)}/views/{parse.quote(view)}"
+        )
+
+    def scan_view_image(self, scan_id: str, view: str = "original", fmt: str = "jpg") -> bytes:
+        with self._open(
+            "GET",
+            f"/scans/{parse.quote(scan_id)}/views/{parse.quote(view)}/image",
+            {"format": fmt},
+        ) as response:
+            return response.read()
+
     # ------------------------------------------------------------ exports
     def create_export(
         self,

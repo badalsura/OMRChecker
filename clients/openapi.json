@@ -1017,6 +1017,24 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "created_after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only items queued after this server time ('now')",
+              "title": "Created After"
+            },
+            "description": "Only items queued after this server time ('now')"
           }
         ],
         "responses": {
@@ -1383,6 +1401,45 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Delete Job",
+        "description": "Delete a job and every scan it produced (results, stored images and\nuploaded files). Files of a server folder are never deleted. A running\njob must be cancelled first.",
+        "operationId": "delete_job_jobs__job_id__delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2620,6 +2677,545 @@
         }
       }
     },
+    "/scans/{scan_id}/views/{view}": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan View",
+        "description": "view=original: the colour scan with every outline mapped back through\nthe recorded page transform (map: fields -> {box, bubbles: {value:\nquad}}, zones -> quad, blocks -> {corners, status}; quads in image\npixels, TL TR BR BL). view=color: the aligned page in full colour\n(same coordinates as /render). Nothing is re-detected.",
+        "operationId": "scan_view_scans__scan_id__views__view__get",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          },
+          {
+            "name": "view",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "View"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(jpg|png)$",
+              "default": "jpg",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scans/{scan_id}/views/{view}/image": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan View Image",
+        "operationId": "scan_view_image_scans__scan_id__views__view__image_get",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          },
+          {
+            "name": "view",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "View"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(jpg|png)$",
+              "default": "jpg",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/roots": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Roots",
+        "description": "Starting points of the folder picker: drives, or the allowed folders.",
+        "operationId": "fs_roots_fs_roots_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/browse": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Browse",
+        "description": "Sub-folders of a server folder with the images and PDFs directly in each.",
+        "operationId": "fs_browse_fs_browse_get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Folder to list",
+              "title": "Path"
+            },
+            "description": "Folder to list"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/check": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Check",
+        "description": "ok, images and pdfs for a pasted path, or a plain error message.",
+        "operationId": "fs_check_fs_check_get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Folder to check",
+              "title": "Path"
+            },
+            "description": "Folder to check"
+          },
+          {
+            "name": "recursive",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Count subfolders too",
+              "default": true,
+              "title": "Recursive"
+            },
+            "description": "Count subfolders too"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/recent": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Recent",
+        "operationId": "fs_recent_fs_recent_get",
+        "parameters": [
+          {
+            "name": "check_exists",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": false,
+              "title": "Check Exists"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/results/{scan_id}": {
+      "delete": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Delete Scan",
+        "description": "Delete one scan: its result, stored images and uploaded copy. The\noriginal file of a server-folder job is left alone. An audit record\n(kind \"delete\") keeps who deleted what and when.",
+        "operationId": "delete_scan_results__scan_id__delete",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/counts": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Review Counts",
+        "description": "Pending items under the queue filters, per field/zone name (for the\nname filter, which ignores the name filter itself), and how many were\nqueued since a time. \"now\" is the server time to pass as since next.",
+        "operationId": "review_counts_review_counts_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "scan_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scan Id"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Name"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(field|zone|check|custom_label|sheet)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Also count items queued after this server time",
+              "title": "Since"
+            },
+            "description": "Also count items queued after this server time"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/states": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Review States",
+        "description": "For each queue item: \"pending\", \"done\" (with who decided it, when and\nthe value) or \"gone\" (the scan was deleted or regraded). The queue\nscreen uses it to skip items someone else already decided.",
+        "operationId": "review_states_review_states_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/accept-bulk": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Accept Bulk",
+        "description": "Accept every pending item under the filters as read (their values stay\nas the engine read them). Nothing is deleted: each item is settled with\nwho accepted it and when (review_log action \"bulk_accepted\", plus an\naudit record per item), so it can be traced and changed later. No\ntraining samples are written for these unchecked values.",
+        "operationId": "accept_bulk_review_accept_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptBulkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/exports": {
       "post": {
         "tags": [
@@ -2971,6 +3567,112 @@
   },
   "components": {
     "schemas": {
+      "AcceptBulkBody": {
+        "properties": {
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "scan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(field|zone|check|custom_label|sheet)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 20000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "description": "Items handled by this call (repeat while remaining > 0)",
+            "default": 2000
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected",
+            "description": "The pending count the user confirmed; refused (409) when more items are pending now, so nothing unseen is accepted"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before",
+            "description": "Only items queued at or before this server time (the 'now' of the /review/counts the user confirmed), so later arrivals stay pending"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "Defaults to the X-User header"
+          }
+        },
+        "type": "object",
+        "title": "AcceptBulkBody"
+      },
       "Body_add_job_files_jobs__job_id__files_post": {
         "properties": {
           "files": {
@@ -3483,6 +4185,24 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "ItemRef": {
+        "properties": {
+          "scan_id": {
+            "type": "string",
+            "title": "Scan Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scan_id",
+          "name"
+        ],
+        "title": "ItemRef"
+      },
       "RegradeBody": {
         "properties": {
           "template_overrides": {
@@ -3572,6 +4292,20 @@
         },
         "type": "object",
         "title": "ReviewBody"
+      },
+      "StatesBody": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemRef"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "title": "StatesBody"
       },
       "SuggestBody": {
         "properties": {
