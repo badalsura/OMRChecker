@@ -177,6 +177,7 @@ class OMREngine:
         self.image_ops.bubble_classifier = load_crop_classifier(
             resolve_path(template_dir, bubble_model_path or ml_params.bubble_model_path)
         )
+        self.image_ops.model_decides = ml_params.get("bubble_model_role") == "decide"
         self.zone_engines = {
             "icr": load_crop_classifier(
                 resolve_path(template_dir, icr_model_path or ml_params.icr_model_path)

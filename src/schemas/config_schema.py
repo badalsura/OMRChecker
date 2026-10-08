@@ -103,6 +103,7 @@ CONFIG_SCHEMA = {
             "additionalProperties": False,
             "properties": {
                 "bubble_model_path": {"type": ["string", "null"]},
+                "bubble_model_role": {"enum": ["second_opinion", "decide"]},
                 "icr_model_path": {"type": ["string", "null"]},
             },
         },

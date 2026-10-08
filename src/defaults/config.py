@@ -92,6 +92,9 @@ CONFIG_DEFAULTS = DotMap(
         "ml_params": {
             # ONNX crop classifiers (see src/ml); relative paths resolve from the template folder
             "bubble_model_path": None,
+            # "second_opinion": the threshold read decides and a disagreeing
+            # model sends the bubble to review; "decide": the model decides
+            "bubble_model_role": "second_opinion",
             "icr_model_path": None,
         },
         "pdf_params": {

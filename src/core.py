@@ -39,6 +39,9 @@ def _ellipse_mask(h, w):
     return inside
 
 
+# Classifier labels for a crossed-out or erased bubble (optional extra class)
+ERASED_LABELS = ("erased", "crossed", "crossed_out")
+
 class ImageInstanceOps:
     """Class to hold fine-tuned utilities for a group of images. One instance for each processing directory."""
 
@@ -50,6 +53,10 @@ class ImageInstanceOps:
         self.save_img_list: Any = defaultdict(list)
         # Optional learned classifier (src/ml/classifiers.py) for bubble crops
         self.bubble_classifier = None
+        # Rule for learned models (item 15): a second opinion unless
+        # ml_params.bubble_model_role is "decide"
+        self.model_decides = False
+        self.model_erased_probs = None
         # While companion images are tracked: geometric steps of the current
         # preprocessor (see ImagePreprocessor.record_geometry)
         self.geometry_ops = None
@@ -456,6 +463,11 @@ class ImageInstanceOps:
                         if model_marked_probs is None
                         else float(model_marked_probs[total_q_box_no])
                     )
+                    erased_prob = (
+                        None
+                        if self.model_erased_probs is None
+                        else float(self.model_erased_probs[total_q_box_no])
+                    )
                     total_q_box_no += 1
                     x, y, field_value = (
                         bubble.x + field_block.shift + bubble.dx,
@@ -506,17 +518,26 @@ class ImageInstanceOps:
                         "confidence": round(bubble_confidence, 3),
                     }
                     if model_prob is not None:
-                        # The learned classifier decides; the threshold read is a cross-check
                         model_is_marked = model_prob >= 0.5
+                        model_confidence = abs(model_prob - 0.5) * 2
                         bubble_detail["model_marked_prob"] = round(model_prob, 4)
-                        bubble_detail["model_disagrees"] = bool(
-                            model_is_marked != bubble_is_marked
-                        )
-                        bubble_is_marked = model_is_marked
-                        bubble_detail["marked"] = bool(model_is_marked)
-                        bubble_detail["confidence"] = round(
-                            abs(model_prob - 0.5) * 2, 3
-                        )
+                        disagrees = model_is_marked != bubble_is_marked
+                        if erased_prob is not None:
+                            bubble_detail["model_erased_prob"] = round(erased_prob, 4)
+                            # A crossed-out or erased mark is never decided silently
+                            disagrees = disagrees or erased_prob >= 0.5
+                        bubble_detail["model_disagrees"] = bool(disagrees)
+                        if self.model_decides:
+                            # Opt-in: the learned classifier decides
+                            bubble_is_marked = model_is_marked
+                            bubble_detail["marked"] = bool(model_is_marked)
+                            bubble_detail["confidence"] = round(model_confidence, 3)
+                        elif not disagrees:
+                            # Second opinion (default): agreement can raise
+                            # confidence; disagreement goes to review
+                            bubble_detail["confidence"] = round(
+                                max(bubble_confidence, model_confidence), 3
+                            )
                     bubble_details.append(bubble_detail)
                     if bubble_is_marked:
                         detected_bubbles.append(bubble)
@@ -853,6 +874,11 @@ class ImageInstanceOps:
                     y = bubble.y + field_block.shift_y + bubble.dy
                     crops.append(img[max(y, 0) : y + box_h, max(x, 0) : x + box_w])
         probabilities = self.bubble_classifier.predict_proba(crops)
+        labels = list(self.bubble_classifier.labels)
+        erased = [i for i, name in enumerate(labels) if name in ERASED_LABELS]
+        self.model_erased_probs = (
+            probabilities[:, erased].sum(axis=1) if erased else None
+        )
         return probabilities[:, self.bubble_classifier.label_index("marked")]
 
     @staticmethod

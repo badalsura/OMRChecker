@@ -703,9 +703,13 @@ python -m src.ml.train --data datasets/bubbles --out models/bubble_model.onnx --
 python -m src.benchmark --template T.json --images holdout/ --truth holdout.csv --bubble-model models/bubble_model.onnx
 ```
 
-Then set `ml_params.bubble_model_path` in `config.json`. With a model
-configured, the model decides and the threshold reader acts as a cross-check:
-where they disagree, the field goes to review. ICR models are trained the same
+Then set `ml_params.bubble_model_path` in `config.json`. By default the model
+is a second opinion (`ml_params.bubble_model_role: "second_opinion"`): the
+threshold reader decides, agreement can raise a bubble's confidence, and
+where they disagree the field goes to review (`model_disagrees`). A model
+with an extra `erased` (or `crossed`) class sends crossed-out marks to
+review too. Set `bubble_model_role: "decide"` only once the benchmark shows
+fewer silent errors at the same or lower review rate. ICR models are trained the same
 way with `--kind icr`.
 
 ## Benchmark

@@ -369,3 +369,49 @@ def test_training_schedule_adapts_to_small_datasets():
     assert training_schedule(600) == (150, 1e-3, 40)
     assert training_schedule(20000) == (30, 3e-3, 5)
     assert training_schedule(600, epochs=10, lr=0.01, patience=2) == (10, 0.01, 2)
+
+
+class _FakeBubbleModel:
+    """Says every bubble is marked (and, optionally, erased)."""
+
+    def __init__(self, labels):
+        self.labels = labels
+
+    def label_index(self, label):
+        return self.labels.index(label)
+
+    def predict_proba(self, crops):
+        out = np.zeros((len(crops), len(self.labels)), np.float32)
+        out[:, self.labels.index(self.labels[-1])] = 1.0
+        return out
+
+
+def test_bubble_model_is_a_second_opinion_by_default(tmp_path):
+    import json
+    import random
+
+    from src.pipeline import OMREngine
+    from src.synth import default_spec, random_answers, render_sheet
+
+    spec = default_spec(questions=5, with_zones=False)
+    rng = random.Random(2)
+    answers = random_answers(spec, rng, blank_rate=0.0)
+    image, _ = render_sheet(spec, answers, rng=rng)
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps(spec.to_template(pre_processors=[])))
+
+    engine = OMREngine(path)
+    engine.image_ops.bubble_classifier = _FakeBubbleModel(["empty", "marked"])
+    result = engine.scan(image)
+    # The threshold read stands; every unmarked bubble disagrees -> review
+    assert result.fields["q1"]["value"] == answers["q1"]
+    assert "model_disagrees" in result.fields["q1"]["flags"]
+
+    engine = OMREngine(path, config_overrides={"ml_params": {"bubble_model_role": "decide"}})
+    engine.image_ops.bubble_classifier = _FakeBubbleModel(["empty", "marked"])
+    assert len(engine.scan(image).fields["q1"]["value"]) > 1  # all marked
+
+    engine = OMREngine(path)
+    engine.image_ops.bubble_classifier = _FakeBubbleModel(["empty", "marked", "erased"])
+    bubbles = engine.scan(image).fields["q1"]["bubbles"]
+    assert all(b["model_disagrees"] for b in bubbles)
