@@ -67,6 +67,9 @@ CONFIG_SCHEMA = {
             "properties": {
                 "confidence_margin": {"type": "number", "exclusiveMinimum": 0},
                 "min_grid_fit": {"type": "number", "minimum": -1, "maximum": 1},
+                "min_sharpness": {"type": "number", "minimum": 0},
+                "min_contrast": {"type": "number", "minimum": 0, "maximum": 255},
+                "min_bubble_px": {"type": "number", "minimum": 0},
                 "min_confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "min_marked_fill_ratio": {"type": "number", "minimum": 0, "maximum": 1},
                 "max_unmarked_fill_ratio": {

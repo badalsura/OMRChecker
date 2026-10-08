@@ -41,6 +41,8 @@ from src.evaluation import (
     scoring_summary,
 )
 from src.logger import logger
+from src.quality import measure as measure_quality
+from src.quality import review as quality_review
 from src.ml.classifiers import load_crop_classifier
 from src.readers import read_zone, read_zones
 from src.readers.image_zone import attach_zone_images
@@ -83,6 +85,8 @@ class ScanResult:
     scoring: dict = field(default_factory=dict)
     # Groups with groupOptions: per-column states (src/utils/parsing.py)
     groups: dict = field(default_factory=dict)
+    # Image quality measures (src/quality.py)
+    quality: Optional[dict] = None
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
@@ -110,6 +114,8 @@ class ScanResult:
         }
         if self.geometry is not None:
             out["geometry"] = self.geometry
+        if self.quality is not None:
+            out["quality"] = self.quality
         return out
 
 
@@ -199,6 +205,7 @@ class OMREngine:
         if image is None:
             return ScanResult(file_id, STATUS_ERROR, error="Image could not be read")
         recorder = GeometryRecorder(image.shape[1], image.shape[0])
+        source = image
         # Colour dropout; variants exist only for zones with their own setting
         print_source = None
         if image.ndim == 3:
@@ -292,6 +299,10 @@ class OMREngine:
         review.extend(self._sheet_review(fields))
         review.extend(detailed.get("sheet_review") or [])
         review.extend(recorder.info.get("review") or [])
+        quality = measure_quality(
+            source, geometry, min(self.template.bubble_dimensions or [0])
+        )
+        review.extend(quality_review(quality, self.tuning_config.review_params))
         timings["total"] = _elapsed_ms(started)
         return ScanResult(
             file_id=file_id,
@@ -308,6 +319,7 @@ class OMREngine:
             thresholds=detailed["thresholds"],
             timings_ms=timings,
             geometry=geometry,
+            quality=quality,
             aligned_image=aligned_image if keep_images else None,
             marked_image=detailed["final_marked"] if keep_images else None,
             print_image=detailed.get("print_image") if keep_images else None,

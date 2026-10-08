@@ -400,15 +400,22 @@ class TimingMarkAlignment(ImagePreprocessor):
         binary = cv2.adaptiveThreshold(
             image, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block, 15
         )
-        count, _, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
+        count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
         areas = stats[1:, cv2.CC_STAT_AREA]
         widths = stats[1:, cv2.CC_STAT_WIDTH].astype(np.float32)
         heights = stats[1:, cv2.CC_STAT_HEIGHT].astype(np.float32)
         solidity = areas / np.maximum(widths * heights, 1)
+        sized = (areas >= low) & (areas <= high)
+        # A mark turned by tens of degrees fills less of its upright bounding
+        # box; judge those by the box its own second moments describe
+        turned = sized & (solidity <= 0.6)
+        if turned.any():
+            solidity = np.where(
+                turned, _moment_solidity(labels, count, areas, centroids), solidity
+            )
         long_side = max(self.mark_w, self.mark_h) * scale
         keep = (
-            (areas >= low)
-            & (areas <= high)
+            sized
             & (solidity > 0.6)
             & (
                 np.maximum(widths, heights)
@@ -979,6 +986,22 @@ def _well_conditioned(homography, max_condition=1e8):
         return bool(np.linalg.cond(homography) < max_condition)
     except np.linalg.LinAlgError:
         return False
+
+
+def _moment_solidity(labels, count, areas, centroids):
+    """Area over the area of the rectangle with the same second moments, per
+    component (about 1 for a solid rectangle at any angle, lower for rings)."""
+    ys, xs = np.nonzero(labels)
+    ids = labels[ys, xs]
+    dx = xs - centroids[ids, 0]
+    dy = ys - centroids[ids, 1]
+    n = np.maximum(np.bincount(ids, minlength=count).astype(np.float64), 1)
+    sxx = np.bincount(ids, dx * dx, minlength=count) / n
+    syy = np.bincount(ids, dy * dy, minlength=count) / n
+    sxy = np.bincount(ids, dx * dy, minlength=count) / n
+    det = np.maximum(sxx * syy - sxy * sxy, 1e-9)
+    rect = 12.0 * np.sqrt(det)
+    return (areas / np.maximum(rect[1:], 1.0)).astype(np.float32)
 
 
 def _size_matches(found, expected, tolerance):

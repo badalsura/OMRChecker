@@ -61,6 +61,11 @@ CONFIG_DEFAULTS = DotMap(
             # outlines should disable it). Off by default: 0.05 separated
             # misregistered synthetic sheets but also flagged 5 good real samples
             "min_grid_fit": 0,
+            # Image quality gate (src/quality.py): poor_image when under these;
+            # 0 turns a measure off. Conservative: only truly unreadable photos
+            "min_sharpness": 10,
+            "min_contrast": 40,
+            "min_bubble_px": 5,
             # Intensity distance from the threshold that counts as fully confident
             "confidence_margin": 20,
             # Fields whose weakest bubble is below this confidence get flagged
