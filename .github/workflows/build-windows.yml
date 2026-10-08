@@ -52,7 +52,8 @@ jobs:
 
       - name: Install the model converter (build machine only)
         if: env.PADDLE_MODELS != 'none'
-        run: python -m pip install paddlepaddle paddle2onnx
+        # paddle2onnx imports "packaging" without declaring it
+        run: python -m pip install paddlepaddle paddle2onnx packaging
 
       - name: Fetch Tesseract and PaddleOCR models
         run: |
