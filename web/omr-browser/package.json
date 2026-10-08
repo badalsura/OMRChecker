@@ -4,9 +4,9 @@
   "private": true,
   "description": "In-browser OMR engine (dependency-free runtime) with parity tests against the Python engine",
   "main": "omr.js",
-  "files": ["omr.js", "omr.mjs", "omr.worker.js", "demo.html", "README.md"],
+  "files": ["omr.js", "omr.mjs", "omr-ocr.js", "omr.worker.js", "demo.html", "README.md"],
   "scripts": {
-    "test": "node --test test/unit.test.js test/parity.test.js"
+    "test": "node --test test/unit.test.js test/parity.test.js test/ocr.test.js"
   },
   "devDependencies": {
     "pngjs": "^7.0.0",

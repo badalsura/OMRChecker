@@ -53,7 +53,7 @@
       QTYPE_MCQ4_RTL: { bubbleValues: ["D", "C", "B", "A"], direction: "horizontal" },
       QTYPE_MCQ5_RTL: { bubbleValues: ["E", "D", "C", "B", "A"], direction: "horizontal" },
     };
-    var ZONE_REVIEW_FLAGS = ["not_found", "multiple_symbols", "low_confidence", "pattern_mismatch", "engine_unavailable", "no_icr_model", "read_error"];
+    var ZONE_REVIEW_FLAGS = ["not_found", "multiple_symbols", "low_confidence", "pattern_mismatch", "engine_unavailable", "no_icr_model", "read_error", "engine_disagree", "low_char_confidence"];
     var STATUS_OK = "ok", STATUS_NEEDS_REVIEW = "needs_review", STATUS_ERROR = "error";
     var REGISTRATION_ERROR = "Sheet registration failed (page, markers or timing marks not found)";
     // TimingMarkAlignment
@@ -4061,6 +4061,14 @@
               return r;
             });
           }
+        } else if (zone.type === "image") {
+          // Image zones (photo, signature) keep the crop; see src/readers/image_zone.py.
+          // The gray crop is on result.crop (not serialised); saving it is up to the page.
+          var imageCrop = cropImage(aligned, zone.origin[0], zone.origin[1], zone.dimensions[0], zone.dimensions[1]);
+          var ir = zoneResult(zone, "", 1, []);
+          ir.details = { width: imageCrop.width, height: imageCrop.height };
+          Object.defineProperty(ir, "crop", { value: imageCrop, enumerable: false });
+          p = Promise.resolve(ir);
         } else throw new Error("Unknown zone type: " + zone.type);
       } catch (e) {
         p = Promise.reject(e);
@@ -5383,6 +5391,7 @@
         getGlobalThreshold: getGlobalThreshold,
         getLocalThreshold: getLocalThreshold,
         cropImage: cropImage,
+        readZone: readZone,
         rankFilter: rankFilterAsym,
         morphRect: morphRect,
         canny: canny,
