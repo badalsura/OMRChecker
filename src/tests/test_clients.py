@@ -120,6 +120,13 @@ def test_python_client(server, assets, tmp_path):
 
     template = client.upload_template([assets["template"]], name="py-client")
     assert template["id"] in [t["id"] for t in client.list_templates()]
+    copy = client.duplicate_template(template["id"], "py-client copy")
+    assert copy["id"] != template["id"]
+    renamed = client.rename_template(copy["id"], "py-client renamed")
+    assert renamed["id"] == copy["id"] and renamed["name"] == "py-client renamed"
+    with pytest.raises(OMRApiError):
+        client.rename_template(copy["id"], "py-client")
+    client.delete_template(copy["id"])
 
     result = client.scan(template["id"], [assets["sheets"][0]])["scans"][0]
     for label, answer in assets["truths"][0].items():

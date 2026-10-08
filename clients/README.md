@@ -6,7 +6,7 @@ All three have the same operations and no third-party dependencies.
 | Operation | Python `OMRClient` | Java `OmrClient` | Go `omrclient.Client` |
 | --- | --- | --- | --- |
 | health / capabilities | `health()`, `capabilities()` | `health()`, `capabilities()` | `Health`, `Capabilities` |
-| templates | `list_templates()`, `upload_template(paths)` | `listTemplates()`, `uploadTemplate(name, paths)` | `ListTemplates`, `UploadTemplate` |
+| templates | `list_templates()`, `upload_template(paths)`, `duplicate_template(id, name)`, `rename_template(id, name)` | `listTemplates()`, `uploadTemplate(name, paths)`, `duplicateTemplate`, `renameTemplate` | `ListTemplates`, `UploadTemplate`, `DuplicateTemplate`, `RenameTemplate` |
 | synchronous read (few files) | `scan(template_id, files)` | `scan(...)`, `scanResults(...)` | `Scan` |
 | bulk job (uploads and/or server folder) | `create_job(template_id, files=, folder=, workers=, start=)` | `createJob(...)`, `createFolderJob(...)` | `CreateJob(JobOptions{...})` |
 | add files / start / cancel | `upload_job_files`, `start_job`, `cancel_job` | `uploadJobFiles`, `startJob`, `cancelJob` | `UploadJobFiles`, `StartJob`, `CancelJob` |

@@ -105,6 +105,16 @@ public class OmrClient {
         return multipart("/templates", fields, uploads(paths));
     }
 
+    /** Copy template, config, answer key and reference image under a new unique name. */
+    public String duplicateTemplate(String templateId, String name) throws IOException, InterruptedException {
+        return postJson("/templates/" + enc(templateId) + "/duplicate", Map.of("name", name));
+    }
+
+    /** Change the display name (must be unique); the id stays the same. */
+    public String renameTemplate(String templateId, String name) throws IOException, InterruptedException {
+        return postJson("/templates/" + enc(templateId) + "/rename", Map.of("name", name));
+    }
+
     /** Same as {@link #uploadTemplate} but returns only the new template id. */
     public String uploadTemplateId(String name, Collection<Path> paths) throws IOException, InterruptedException {
         return (String) Json.parseObject(uploadTemplate(name, paths)).get("id");

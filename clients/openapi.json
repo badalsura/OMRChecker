@@ -2620,6 +2620,342 @@
         }
       }
     },
+    "/templates/answer-key/parse": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Parse Answer Key",
+        "description": "Rows of a CSV or Excel (.xlsx) answer key; the GUI maps the columns.",
+        "operationId": "parse_answer_key_templates_answer_key_parse_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_parse_answer_key_templates_answer_key_parse_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/duplicate": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Duplicate Template",
+        "description": "Copy the template, config, answer key (evaluation.json) and reference\nimage into a new layout. Scans and results stay with the original.",
+        "operationId": "duplicate_template_templates__template_id__duplicate_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/rename": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Rename Template",
+        "description": "Change the display name; the id stays, so jobs and results stay linked.",
+        "operationId": "rename_template_templates__template_id__rename_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/confirm-warnings": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Confirm Warnings",
+        "description": "Mark the generator's warnings and verification list as checked, for good.",
+        "operationId": "confirm_warnings_templates__template_id__confirm_warnings_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/validate": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Validate Json",
+        "description": "Check template.json, config.json and evaluation.json with the engine's\nown rules, without saving. Returns {template, config, evaluation}: lists\nof {path, message}; engine errors go to the file they most likely belong to.",
+        "operationId": "validate_json_templates__template_id__validate_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/read-sheet": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Read Sheet",
+        "description": "Read one sheet with the saved template; nothing is stored.",
+        "operationId": "read_sheet_templates__template_id__read_sheet_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_read_sheet_templates__template_id__read_sheet_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/score-preview": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Score Preview",
+        "description": "Score one sheet's responses with a draft evaluation.json (not saved).",
+        "operationId": "score_preview_templates__template_id__score_preview_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/exports": {
       "post": {
         "tags": [
@@ -3175,6 +3511,34 @@
         ],
         "title": "Body_generate_templates_generate_post"
       },
+      "Body_parse_answer_key_templates_answer_key_parse_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_parse_answer_key_templates_answer_key_parse_post"
+      },
+      "Body_read_sheet_templates__template_id__read_sheet_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_read_sheet_templates__template_id__read_sheet_post"
+      },
       "Body_sheet_colors_tools_colors_post": {
         "properties": {
           "file": {
@@ -3483,6 +3847,60 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "NameBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "New display name (must be unique)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "NameBody"
+      },
+      "PreviewBody": {
+        "properties": {
+          "evaluation": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evaluation",
+            "description": "Draft evaluation.json"
+          },
+          "responses": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responses",
+            "description": "Concatenated responses of one sheet"
+          },
+          "scan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Id",
+            "description": "Use the stored responses of this scan instead"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evaluation"
+        ],
+        "title": "PreviewBody"
+      },
       "RegradeBody": {
         "properties": {
           "template_overrides": {
@@ -3601,6 +4019,63 @@
           "target"
         ],
         "title": "SuggestBody"
+      },
+      "ValidateBody": {
+        "properties": {
+          "template": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template",
+            "description": "template.json to check (default: the saved one)"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config",
+            "description": "config.json to check (default: the saved one)"
+          },
+          "evaluation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation",
+            "description": "evaluation.json to check (default: the saved one)"
+          },
+          "clear": {
+            "items": {},
+            "type": "array",
+            "title": "Clear",
+            "description": "Files to treat as absent, e.g. [\"evaluation\"] when it was emptied"
+          },
+          "engine": {
+            "type": "boolean",
+            "title": "Engine",
+            "description": "Also build the engine (overlaps, groups, assets)",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ValidateBody"
       },
       "ValidationError": {
         "properties": {
