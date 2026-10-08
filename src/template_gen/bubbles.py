@@ -194,12 +194,46 @@ def _row_runs(cells):
     return runs
 
 
-def _prune_sparse_lines(cands, sparse=0.35, dense=0.8, min_lines=4):
+def _bubble_like(image, cands, points, min_score=0.5):
+    """Share of `points` (x, y) whose appearance matches the mean candidate."""
+    if image is None or len(points) == 0 or len(cands) < 2:
+        return 0.0
+    w, h = np.median(cands[:, 2]), np.median(cands[:, 3])
+    half_w, half_h = int(round(w * 0.65)), int(round(h * 0.65))
+    page_h, page_w = image.shape[:2]
+
+    def crop(cx, cy, pad=0):
+        x, y = int(round(cx)), int(round(cy))
+        x0, y0 = x - half_w - pad, y - half_h - pad
+        x1, y1 = x + half_w + pad + 1, y + half_h + pad + 1
+        if x0 < 0 or y0 < 0 or x1 > page_w or y1 > page_h:
+            return None
+        return image[y0:y1, x0:x1].astype(np.float32)
+
+    patches = [crop(cx, cy) for cx, cy in cands[:, :2]]
+    patches = [p for p in patches if p is not None]
+    if len(patches) < 2:
+        return 0.0
+    mean_patch = np.mean(patches, axis=0)
+    if mean_patch.std() < 1:
+        return 0.0
+    hits = 0
+    for cx, cy in points:
+        window = crop(cx, cy, pad=2)
+        if window is not None:
+            score = cv2.matchTemplate(window, mean_patch, cv2.TM_CCOEFF_NORMED).max()
+            hits += int(score >= min_score)
+    return hits / float(len(points))
+
+
+def _prune_sparse_lines(cands, sparse=0.35, dense=0.8, min_lines=4, image=None):
     """
     Drop lattice columns (rows) that only a few rows (columns) occupy while
     others are nearly full: printed question numbers, shaded cells or the 0/1
     "hundreds" column of a ragged digit grid that joined a regular block.
     (Ragged columns are re-attached later by find_ragged_columns.)
+    A sparse line whose empty cells look like bubbles on the page (faint
+    print, a row of missed outlines) is kept for verify_missing_cells.
     """
     for _ in range(3):
         if len(cands) < 4:
@@ -208,14 +242,26 @@ def _prune_sparse_lines(cands, sparse=0.35, dense=0.8, min_lines=4):
         col_c, col_l = cluster_1d(cands[:, 0], 0.35 * w)
         row_c, row_l = cluster_1d(cands[:, 1], 0.35 * h)
         keep = np.ones(len(cands), bool)
-        if len(row_c) >= min_lines and len(col_c) >= 2:
-            share = np.bincount(col_l, minlength=len(col_c)) / float(len(row_c))
-            if share.max() >= dense:
-                keep &= share[col_l] >= sparse
-        if len(col_c) >= min_lines and len(row_c) >= 2:
-            share = np.bincount(row_l, minlength=len(row_c)) / float(len(col_c))
-            if share.max() >= dense:
-                keep &= share[row_l] >= sparse
+        for line_c, line_l, other_c, other_l, axis in (
+            (col_c, col_l, row_c, row_l, 0),
+            (row_c, row_l, col_c, col_l, 1),
+        ):
+            if len(other_c) < min_lines or len(line_c) < 2:
+                continue
+            share = np.bincount(line_l, minlength=len(line_c)) / float(len(other_c))
+            if share.max() < dense:
+                continue
+            dense_mask = share[line_l] >= dense
+            for k in np.nonzero(share < sparse)[0]:
+                present = set(other_l[line_l == k].tolist())
+                missing = [j for j in range(len(other_c)) if j not in present]
+                points = [
+                    (line_c[k], other_c[j]) if axis == 0 else (other_c[j], line_c[k])
+                    for j in missing
+                ]
+                if _bubble_like(image, cands[dense_mask], points) >= 0.75:
+                    continue
+                keep &= line_l != k
         if keep.all() or not keep.any():
             break
         cands = cands[keep]
@@ -363,7 +409,7 @@ def group_into_grids(
     for component in _components(cands):
         if len(component) < 2:
             continue
-        pruned = _prune_sparse_lines(cands[component])
+        pruned = _prune_sparse_lines(cands[component], image=image)
         for grid in _regular_blocks(pruned, min_occupancy=first_pass):
             if image is not None and grid.occupancy < 1:
                 verify_missing_cells(grid, image)
@@ -382,8 +428,48 @@ def group_into_grids(
             else:
                 grids.append(grid)
     grids = _merge_stacked(_drop_overlapping(grids, rejected))
+    if image is not None:
+        for grid in grids:
+            _extend_faint_edges(grid, grids, image)
+        grids = _merge_stacked(grids)
     grids.sort(key=lambda g: (g.x0, g.y0))
     return grids, rejected
+
+
+def _extend_faint_edges(grid, grids, image, min_share=1.0):
+    """
+    Add a whole first/last row whose outlines were too faint to detect (e.g. a
+    shaded first answer row): every cell one pitch beyond the edge must look
+    like the grid's bubbles and lie outside every other grid.
+    """
+    if grid.rows < 2 or grid.dy <= 0:
+        return grid
+    w, h = grid.bubble
+    centres = grid.centres().reshape(-1, 2)
+    cands = np.column_stack([centres, np.full(len(centres), w), np.full(len(centres), h)])
+    others = [g.centres().reshape(-1, 2) for g in grids if g is not grid]
+    for side in ("top", "bottom"):
+        y = grid.y0 - grid.dy if side == "top" else grid.y0 + grid.rows * grid.dy
+        if y - h < 0 or y + h >= image.shape[0]:
+            continue
+        xs = grid.x0 + grid.dx * np.arange(grid.cols)
+        points = [(x, y) for x in xs]
+        if any(
+            ((np.abs(o[:, 0] - x) < 0.6 * w) & (np.abs(o[:, 1] - y) < 0.6 * h)).any()
+            for o in others
+            for x, y in points
+        ):
+            continue
+        if _bubble_like(image, cands, points, min_score=0.6) < min_share:
+            continue
+        if side == "top":
+            grid.y0 -= grid.dy
+            grid.support = [[1] * grid.cols] + list(grid.support)
+        else:
+            grid.support = list(grid.support) + [[1] * grid.cols]
+        grid.rows += 1
+        grid.extended = getattr(grid, "extended", 0) + 1
+    return grid
 
 
 def _merge_stacked(grids):
@@ -402,6 +488,11 @@ def _merge_stacked(grids):
                     continue
                 w, h = a.bubble
                 if abs(a.x0 - b.x0) > 0.3 * w:
+                    continue
+                if abs(a.bubble[0] - b.bubble[0]) > 0.2 * w or abs(
+                    a.bubble[1] - b.bubble[1]
+                ) > 0.2 * h:
+                    # e.g. the handwriting box row above a digit grid
                     continue
                 if a.cols > 1 and abs(a.dx - b.dx) > 0.05 * max(a.dx, b.dx):
                     continue
@@ -484,13 +575,26 @@ def sample_fill(images, grids, reference):
         integral = cv2.integral(image, sdepth=cv2.CV_32S)
         return [_box_means(integral, b) for b in boxes]
 
-    base = per_image(reference)
+    base = [_constant_marks_lifted(b) for b in per_image(reference)]
     sheets = [per_image(image) for image in images]
     return [
         base[k].reshape(1, g.rows, g.cols)
         - np.stack([sheet[k] for sheet in sheets]).reshape(len(images), g.rows, g.cols)
         for k, g in enumerate(grids)
     ]
+
+
+def _constant_marks_lifted(base, margin=40.0):
+    """
+    A bubble marked on every sheet (e.g. a constant exam code) is dark on the
+    blank page too, so its fill would read as zero. Such bubbles get the
+    grid's typical unmarked level as their blank value instead.
+    """
+    base = np.asarray(base, dtype=np.float64)
+    if base.size < 3:
+        return base
+    paper = float(np.percentile(base, 75))
+    return np.where(base < paper - margin, paper, base)
 
 
 def find_ragged_columns(grids, cands, min_rows=5):
@@ -566,3 +670,47 @@ def _covers(grid, x, y, w, h):
     return bool(
         ((np.abs(centres[:, 0] - x) < 0.3 * w) & (np.abs(centres[:, 1] - y) < 0.3 * h)).any()
     )
+
+
+def split_size_outliers(grids, tolerance=0.25):
+    """
+    (kept, outliers): grids whose bubbles differ from the dominant bubble size
+    by more than `tolerance` (printed question numbers, handwriting boxes) are
+    outliers unless they are big regular blocks themselves.
+    """
+    if len(grids) < 2:
+        return list(grids), []
+    sizes = np.array([g.bubble for g in grids], dtype=np.float64)
+    weights = np.array([g.rows * g.cols for g in grids], dtype=np.float64)
+    order = np.argsort(sizes[:, 0])
+    cum = np.cumsum(weights[order])
+    w_dom = sizes[order][np.searchsorted(cum, cum[-1] / 2.0), 0]
+    order = np.argsort(sizes[:, 1])
+    cum = np.cumsum(weights[order])
+    h_dom = sizes[order][np.searchsorted(cum, cum[-1] / 2.0), 1]
+    kept, outliers = [], []
+    for grid in grids:
+        w, h = grid.bubble
+        off = abs(w - w_dom) > tolerance * w_dom or abs(h - h_dom) > tolerance * h_dom
+        if off and grid.rows * grid.cols < 20:
+            outliers.append(grid)
+        else:
+            kept.append(grid)
+    return kept, outliers
+
+
+def box_row_above(row, grids):
+    """The digit grid a one-row grid of boxes sits directly above (or None)."""
+    if row.rows != 1:
+        return None
+    for index, grid in enumerate(grids):
+        if grid.cols != row.cols or grid.rows < 2:
+            continue
+        if grid.cols > 1 and abs(grid.dx - row.dx) > 0.1 * grid.dx:
+            continue
+        if abs(grid.x0 - row.x0) > 0.4 * grid.bubble[0]:
+            continue
+        gap = grid.y0 - row.y0
+        if 0 < gap < 2.5 * max(grid.dy, grid.bubble[1]):
+            return index
+    return None

@@ -231,3 +231,111 @@ def field_prefix(column, taken):
         candidate = f"{base}_{chr(ord('a') + k)}" if k < 26 else f"{base}_{k}x"
     taken.add(candidate)
     return candidate
+
+
+def _field_names(column, count, taken):
+    """Column "pcode" -> pcode1..N; "marks1" -> marks1_1..N; unique in taken."""
+    base = re.sub(r"[^A-Za-z0-9_]", "", str(column)).lower().strip("_") or "f"
+    if base[0].isdigit():
+        base = "f" + base
+    if base[-1].isdigit():
+        base += "_"
+    stem, k = base, 0
+    while any(f"{stem}{i}" in taken for i in range(1, count + 1)):
+        k += 1
+        stem = f"{base}{chr(ord('a') + k - 1)}_" if k < 27 else f"{base}{k}_"
+    return [f"{stem}{i}" for i in range(1, count + 1)]
+
+
+def _single_field_name(column, taken):
+    """A one-field column keeps its own name when it is a usable field label."""
+    name = str(column).strip()
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) or re.search(r"\d$", name):
+        name = field_prefix(column, set(taken))
+    candidate, k = name, 0
+    while candidate in taken:
+        k += 1
+        candidate = f"{name}_{k}"
+    taken.add(candidate)
+    return candidate
+
+
+def build_assignments(matches, grids, taken):
+    """
+    Exact matches -> per-grid assignments for the template, the customLabels
+    joining each multi-field column and a per-field truth table builder.
+    Returns (assignments {grid index: assignment}, composites {column: [fields]},
+    field_truth {field: (column, position, n_fields)}).
+    """
+    assignments, composites, field_truth = {}, {}, {}
+    for match in matches:
+        column, unit = match["column"], match["grids"]
+        if match["fields"] == 1:
+            names = [_single_field_name(column, taken)]
+        else:
+            names = _field_names(column, match["fields"], taken)
+            taken.update(names)
+            key = str(column).strip()
+            if key in taken:
+                key = f"{key}_value"
+            composites[key] = list(names)
+            taken.add(key)
+        for position, name in enumerate(names):
+            field_truth[name] = (column, position, len(names))
+        start = 0
+        for k, values in zip(unit, match["values"]):
+            grid = grids[k]
+            n = grid.rows if match["direction"] == "horizontal" else grid.cols
+            assignments[k] = {
+                "direction": match["direction"],
+                "field_labels": names[start : start + n],
+                "values": list(values),
+                "agreement": match["score"],
+                "slot_scores": [],
+                "value_completed": False,
+                "exact_match": {
+                    "column": column,
+                    "order": match["order"],
+                    "sheets": match["checked"],
+                    "score": match["score"],
+                    "lengths": match["lengths"],
+                    "digits": match["digits"],
+                },
+            }
+            start += n
+    return assignments, composites, field_truth
+
+
+def truth_tokens(field_truth, labels, n_sheets):
+    """Per-sheet {field: token set or None} for the exactly matched fields."""
+    table = [dict() for _ in range(n_sheets)]
+    for name, (column, position, n_fields) in field_truth.items():
+        for s in range(n_sheets):
+            row = labels[s] if labels and s < len(labels) else None
+            value = None if not row else row.get(column)
+            if value is None or MULTI in str(value):
+                table[s][name] = None
+                continue
+            text = str(value).strip("\r\n")
+            if n_fields == 1:
+                text = text.strip()
+                table[s][name] = set(text) if text else set()
+            elif len(text) == n_fields:
+                char = text[position]
+                table[s][name] = set() if char in " _-" else {char}
+            elif not text.strip():
+                table[s][name] = set()
+            else:
+                table[s][name] = None
+    return table
+
+
+def blank_columns(labels):
+    """Label columns that are empty on every labelled sheet."""
+    seen, filled = set(), set()
+    for row in labels or []:
+        for key, value in (row or {}).items():
+            seen.add(key)
+            if value is not None and str(value).strip():
+                filled.add(key)
+    return sorted(seen - filled)

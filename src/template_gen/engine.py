@@ -33,7 +33,7 @@ import numpy as np
 
 from src.template_gen import bubbles
 from src.template_gen import labels as label_ops
-from src.template_gen import marks, rectify, zones
+from src.template_gen import marks, naming, rectify, zones
 from src.template_gen.assignment import boxes_overlap, otsu_1d, point_in_box
 
 DEFAULT_OPTIONS = {
@@ -178,7 +178,11 @@ def _default_naming(grids, indices, taken, q_start=1):
         n_values = grid.cols if direction == "horizontal" else grid.rows
         n_fields = grid.rows if direction == "horizontal" else grid.cols
         values = label_ops.default_values(n_values)
-        if n_values == 10 and n_fields >= 2:
+        ragged = getattr(grid, "ragged_of", None) is not None
+        if ragged:
+            # The short "hundreds"/"tens" column beside a digit grid
+            direction, values = "vertical", list("0123456789")[:n_values]
+        if ragged or (n_values == 10 and n_fields >= 2):
             prefix = DIGIT_PREFIXES[min(digit_blocks, len(DIGIT_PREFIXES) - 1)]
             while any(f"{prefix}{i}" in taken for i in range(1, n_fields + 1)):
                 prefix += "x"
@@ -239,6 +243,12 @@ def _block_template(grid, assignment, bubble_dims):
 
 
 def _block_name(assignment, taken):
+    exact = assignment.get("exact_match")
+    if exact:
+        base = "".join(
+            ch if ch.isalnum() or ch == "_" else "_" for ch in str(exact["column"])
+        ).strip("_")
+        return _unique(base[:1].upper() + base[1:] if base else "Block", taken)
     first = assignment["field_labels"][0]
     match = label_ops.LABEL_NUMBER.match(first)
     if (
@@ -281,6 +291,72 @@ def _custom_labels(blocks, composites, field_names, zone_names):
         used_fields.update(names)
         taken.add(key)
     return custom
+
+
+def _handwriting_rows(grids, block_assignments, box_rows, icr_zones):
+    """
+    The row of handwriting boxes directly above each digit grid becomes one
+    ICR zone with one box per grid column (padded to the column pitch so the
+    reader cuts one character per column), named after the grid's column.
+    Character-box zones it replaces are removed from icr_zones in place.
+    """
+    units = {}
+    for k, assignment in block_assignments.items():
+        grid = grids[k]
+        if assignment["direction"] != "vertical" or grid.rows < 2:
+            continue
+        if not all(str(v).isdigit() for v in assignment["values"]):
+            continue
+        exact = assignment.get("exact_match")
+        if exact:
+            key = exact["column"]
+        else:
+            match = label_ops.LABEL_NUMBER.match(assignment["field_labels"][0])
+            key = match.group(1).rstrip("_") if match else assignment["field_labels"][0]
+        units.setdefault(key, []).append(k)
+    out = []
+    for key, members in units.items():
+        unit = [grids[k] for k in members]
+        cols = sum(g.cols for g in unit)
+        if cols < 2:
+            continue
+        pitch = next((g.dx for g in unit if g.cols > 1 and g.dx > 0), unit[0].dy)
+        left = min(g.x0 for g in unit) - pitch / 2
+        right = max(g.x0 + (g.cols - 1) * g.dx for g in unit) + pitch / 2
+        top = min(g.y0 - g.bubble[1] / 2 for g in unit)
+        box = None
+        for row in box_rows:
+            if any(bubbles.box_row_above(row, [g]) is not None for g in unit) or (
+                row.cols == cols
+                and abs(row.x0 - (left + pitch / 2)) < 0.4 * pitch
+                and 0 < top - row.y0 < 3 * pitch
+            ):
+                x, y, w, h = row.bbox()
+                box = [left, y - 2, right - left, h + 4]
+                break
+        replaced = []
+        for z, zone in enumerate(icr_zones):
+            x, y, w, h = zone["box"]
+            overlap = min(x + w, right) - max(x, left)
+            above = top - (y + h)
+            if overlap > 0.5 * min(w, right - left) and -0.3 * pitch < above < 2.5 * pitch:
+                replaced.append(z)
+                if box is None:
+                    box = [left, y, right - left, h]
+        for z in reversed(replaced):
+            icr_zones.pop(z)
+        if box is None:
+            continue
+        out.append(
+            {
+                "name": f"{key}_written",
+                "type": "icr",
+                "box": [int(round(v)) for v in box],
+                "character_boxes": cols,
+                "grid_name": key,
+            }
+        )
+    return out
 
 
 def candidate_pre_processors(tracks, page_infos):
@@ -509,6 +585,25 @@ def generate_template(images, labels=None, options=None):
     ]
     candidates = candidates[keep] if len(candidates) else candidates
     grids, rejected = bubbles.group_into_grids(candidates, blank)
+    grids, outliers = bubbles.split_size_outliers(grids)
+    box_rows = []
+    for grid in outliers:
+        rejected.append({"grid": grid, "reason": "size_outlier"})
+        if bubbles.box_row_above(grid, grids) is not None:
+            box_rows.append(grid)
+    ragged, replaced = bubbles.find_ragged_columns(grids, candidates)
+    if ragged:
+        main_ids = {id(grids[c.ragged_of]) for c in ragged}
+        grids = [g for k, g in enumerate(grids) if k not in replaced]
+        for column in ragged:
+            # ragged_of becomes the index of the main grid in the new list
+            column.ragged_of = next(
+                (k for k, g in enumerate(grids) if id(g) in main_ids
+                 and abs(g.y0 - column.y0) < 0.3 * g.bubble[1]
+                 and abs(g.dy - column.dy) < 0.1 * g.dy),
+                None,
+            )
+        grids = grids + ragged
     for item in rejected:
         if item["reason"] == "touching_cells" and item["grid"].rows == 1:
             box = [int(round(v)) for v in item["grid"].bbox()]
@@ -529,15 +624,53 @@ def generate_template(images, labels=None, options=None):
     )
     labelled = labels is not None and any(labels)
     assigned = None
+    taken, block_assignments, unlabelled = set(), {}, []
+    exact_composites, exact_truth, naming_report = {}, {}, []
+    remaining = list(range(len(grids)))
     if labelled and grids:
         masked = [lab if i in good else None for i, lab in enumerate(labels)]
-        assigned = label_ops.assign_with_labels(
-            grids, fills, threshold, masked, opts["min_pair_score"]
+        matches = naming.match_grids(grids, fills, threshold, masked)
+        exact, exact_composites, exact_truth = naming.build_assignments(
+            matches, grids, taken
         )
-    taken, block_assignments, unlabelled = set(), {}, []
+        block_assignments.update(exact)
+        for match in matches:
+            naming_report.append(
+                {
+                    "column": match["column"],
+                    "fields": match["fields"],
+                    "direction": match["direction"],
+                    "order": match["order"],
+                    "sheets_checked": match["checked"],
+                    "score": match["score"],
+                    "lengths": match["lengths"],
+                }
+            )
+        matched_columns = {m["column"] for m in matches}
+        blank_columns = set(naming.blank_columns(masked))
+        remaining = [k for k in range(len(grids)) if k not in exact]
+        rest = [
+            None
+            if lab is None
+            else {
+                key: (None if str(value).strip() == naming.MULTI else value)
+                for key, value in lab.items()
+                if key not in matched_columns and key not in blank_columns
+            }
+            for lab in masked
+        ]
+        if remaining and any(rest):
+            assigned = label_ops.assign_with_labels(
+                [grids[k] for k in remaining],
+                [fills[k] for k in remaining],
+                threshold,
+                rest,
+                opts["min_pair_score"],
+            )
     if assigned:
         taken.update(assigned["all_labels"])
-        for k, result in enumerate(assigned["blocks"]):
+        for j, result in enumerate(assigned["blocks"]):
+            k = remaining[j]
             matched = [n for n in result["field_labels"] if n is not None]
             poor = result["agreement"] is not None and result["agreement"] < 0.5
             if len(matched) < 0.5 * len(result["field_labels"]) or poor:
@@ -559,8 +692,24 @@ def generate_template(images, labels=None, options=None):
                 names.append(name)
             block_assignments[k] = {**result, "field_labels": names}
     else:
-        unlabelled = list(range(len(grids)))
-    block_assignments.update(_default_naming(grids, set(unlabelled), taken))
+        unlabelled = list(remaining)
+    if labelled:
+        # Unused question names (e.g. q51..q120 blank on every sheet) are free
+        # for the geometric numbering below
+        used_now = {n for a in block_assignments.values() for n in a["field_labels"]}
+        taken = used_now | set(exact_composites)
+    q_start = 1 + max(
+        [
+            int(m.group(2))
+            for a in block_assignments.values()
+            for m in [label_ops.LABEL_NUMBER.match(n) for n in a["field_labels"]]
+            if m and m.group(1) == "q"
+        ]
+        or [0]
+    )
+    block_assignments.update(
+        _default_naming(grids, set(unlabelled), taken, q_start if labelled else 1)
+    )
     lap("labels")
 
     # 6. Build the template
@@ -610,9 +759,9 @@ def generate_template(images, labels=None, options=None):
         for s, entry in enumerate(labels):
             for key, value in (entry or {}).items():
                 label_columns.setdefault(key, {})[s] = str(value).strip()
-    used_columns = set()
+    used_columns = {m["column"] for m in naming_report}
     if assigned:
-        used_columns = {
+        used_columns |= {
             key
             for key in label_columns
             if key in field_names
@@ -641,6 +790,26 @@ def generate_template(images, labels=None, options=None):
         zone_reports.append({"name": name, **zone})
         verify.append(
             {"kind": "zone", "name": name, "reason": f"detected {zone['formats']}"}
+        )
+    for zone in _handwriting_rows(grids, block_assignments, box_rows, icr_zones):
+        name = _unique(zone.pop("name"), zone_taken)
+        x, y, w, h = zone["box"]
+        template_zones[name] = {
+            "type": "icr",
+            "origin": [max(int(x), 0), max(int(y), 0)],
+            "dimensions": [int(w), int(h)],
+            "options": {
+                "characterBoxes": int(zone["character_boxes"]),
+                "whitelist": "0123456789",
+            },
+        }
+        zone_reports.append({"name": name, **zone})
+        verify.append(
+            {
+                "kind": "zone",
+                "name": name,
+                "reason": f"handwritten boxes above the {zone['grid_name']} bubbles",
+            }
         )
     for zone in icr_zones:
         count = zone["character_boxes"]
@@ -709,7 +878,9 @@ def generate_template(images, labels=None, options=None):
 
     for zone in template_zones.values():
         _clamp_zone(zone, page_size)
-    composites = assigned["composites"] if assigned else {}
+    composites = dict(exact_composites)
+    if assigned:
+        composites.update(assigned["composites"])
     custom_labels = _custom_labels(
         [block_assignments[k] for k in order], composites, field_names, template_zones
     )
@@ -737,8 +908,11 @@ def generate_template(images, labels=None, options=None):
     # 7. Self-check
     checks = {}
     table = None
-    if assigned:
-        table = assigned["table"]
+    if assigned or exact_truth:
+        table = naming.truth_tokens(exact_truth, labels, len(images))
+        if assigned:
+            for row, extra in zip(table, assigned["table"]):
+                row.update(extra)
     if len(candidates) > 1 and opts["self_check"] and not schema_errors:
         # Pick the registration chain that reads a few raw sheets best
         trials, sample, best = [], good[:6], None
