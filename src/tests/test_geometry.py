@@ -117,7 +117,7 @@ def test_empty_geometry_and_point_mapping():
 # --------------------------------------------------------------------------- engine
 
 
-@pytest.mark.parametrize("non_rigid", [False, True])
+@pytest.mark.parametrize("non_rigid", [False, True, "tracks"])
 def test_engine_records_geometry_and_replay_is_pixel_identical(
     tmp_path, spec, non_rigid
 ):
@@ -132,7 +132,7 @@ def test_engine_records_geometry_and_replay_is_pixel_identical(
     geometry = result.geometry
     assert geometry["source_size"] == [image.shape[1], image.shape[0]]
     assert geometry["aligned_size"] == spec.page
-    assert (geometry["tps"] is not None) == non_rigid
+    assert (geometry["tps"] is not None) == bool(non_rigid)
     assert geometry["residual"]["page"] < 1.0
     assert set(geometry["margin_trim"]) == {"top", "bottom", "left", "right"}
     assert json.loads(json.dumps(result.to_dict()))["geometry"] == geometry
@@ -202,10 +202,12 @@ def index_sheet(spec, seed, flip=False, mid=True, extra_top=0, background=True):
     return image, truth
 
 
-def test_asymmetric_index_points_decide_orientation(tmp_path):
+@pytest.mark.parametrize("seed_guess", [False, True])
+def test_asymmetric_index_points_decide_orientation(tmp_path, seed_guess):
     spec = symmetric_spec()
     template = spec.to_template()
     template["preProcessors"][0]["options"]["indexPoints"] = index_points()
+    template["preProcessors"][0]["options"]["indexSeed"] = seed_guess
     engine = OMREngine(write(tmp_path, template))
     processor = engine.template.pre_processors[0]
     for flip in (False, True):

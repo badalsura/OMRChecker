@@ -91,10 +91,11 @@ TIMING_MARK_OPTIONS_SCHEMA = {
         "maxResidual": positive_number,
         # Apply a thin-plate-spline refinement on top of the homography;
         # "auto": only when the reference points spread across the page
-        "nonRigid": {"enum": [True, False, "auto"]},
+        "nonRigid": {"enum": [True, False, "auto", "tracks"]},
         # Try 90/180/270 degree rotations when the sheet is fed in wrongly
         "detectOrientation": {"type": "boolean"},
         "earlyStop": {"type": "boolean"},
+        "indexSeed": {"type": "boolean"},
         # Index points (corner squares, dots, L-corners): fitted together with
         # the timing marks; each keeps its own size and shape
         "indexPoints": {"type": "array", "items": INDEX_POINT_SCHEMA},

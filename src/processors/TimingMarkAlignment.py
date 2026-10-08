@@ -37,6 +37,7 @@ GOOD_FIT_FRACTION = 0.95
 MIN_TILT_DEGREES = 0.3
 # Thin-plate-spline displacement field is evaluated on this grid step (px)
 TPS_GRID_STEP = 16
+TRACK_GRID_STEP = 48
 # One found index point outweighs this many timing marks when choosing the
 # orientation (index points are placed asymmetrically on purpose)
 INDEX_POINT_WEIGHT = 4
@@ -103,6 +104,8 @@ class TimingMarkAlignment(ImagePreprocessor):
         # Stop trying orientations once one fits cleanly (the 180 degree
         # look-alike is always tried first, unless index points decided)
         self.early_stop = options.get("earlyStop", False)
+        # Start the track search from the index points' own fit as well
+        self.index_seed = options.get("indexSeed", False)
         self.last_registration = {}
 
     def __str__(self):
@@ -133,7 +136,7 @@ class TimingMarkAlignment(ImagePreprocessor):
                 return None
             orientation_fits = []
             for rotation in rotations:
-                fit = self.fit_orientation(page_corners, candidates, rotation)
+                fit = self.fit_orientation(page_corners, candidates, rotation, image)
                 if fit is None:
                     continue
                 if self.index_points:
@@ -202,7 +205,9 @@ class TimingMarkAlignment(ImagePreprocessor):
             },
         )
         tps = None
-        if self._use_non_rigid(best):
+        if self.non_rigid == "tracks":
+            warped, tps = self.track_grid_correction(warped, best)
+        elif self._use_non_rigid(best):
             warped, tps = self.thin_plate_correction(warped, best)
 
         self.last_registration = {
@@ -309,6 +314,8 @@ class TimingMarkAlignment(ImagePreprocessor):
         )
 
     def _use_non_rigid(self, fit):
+        if self.non_rigid == "tracks":
+            return False
         points = len(fit["template_pts"])
         if self.non_rigid == "auto":
             return points >= 6 and self._spread_cells(fit["template_pts"]) >= 7
@@ -412,7 +419,7 @@ class TimingMarkAlignment(ImagePreprocessor):
 
     # --- fitting ---------------------------------------------------------
 
-    def fit_orientation(self, page_corners, candidates, rotation):
+    def fit_orientation(self, page_corners, candidates, rotation, image=None):
         """Best fit for one orientation over a few shifted starting guesses.
 
         Tracks are periodic, so a coarse guess that is off by about one mark
@@ -425,7 +432,14 @@ class TimingMarkAlignment(ImagePreprocessor):
         radius = self.search_radius * self._pixels_per_unit(coarse)
         best = None
         seen = []
-        for start in self._starting_guesses(coarse, candidates):
+        guesses = self._starting_guesses(coarse, candidates)
+        if self.index_seed and image is not None and len(self.index_points) >= 4:
+            # The index points' own fit (found by size and shape, not as
+            # track-like blobs) as one more starting guess, tried first
+            seed = self.fit_index_points_only(image, page_corners, rotation)
+            if seed is not None and _well_conditioned(seed["homography"]):
+                guesses = [np.asarray(seed["homography"], np.float64)] + list(guesses)
+        for start in guesses:
             fit = self._refine(start, candidates, radius)
             if fit is None:
                 continue
@@ -610,6 +624,71 @@ class TimingMarkAlignment(ImagePreprocessor):
 
         self.record_geometry(remap, dict(tps, op="tps"))
         return remap(warped), tps
+
+    def track_grid_correction(self, warped, fit):
+        """
+        Local correction from the timing marks used as row and column rulers
+        (nonRigid: "tracks"). A vertical track measures each row's offset, a
+        horizontal track each column's; with tracks on both sides the offset
+        is interpolated across the page. Offsets are held, never extrapolated,
+        past a track's ends; a direction without a track keeps the homography.
+        """
+        page_w, page_h = int(self.page_dimensions[0]), int(self.page_dimensions[1])
+        template_pts = np.asarray(fit.get("template_pts", []), np.float64)
+        if not len(template_pts):
+            return warped, None
+        inverse = np.linalg.inv(fit["homography"])
+        observed = cv2.perspectiveTransform(
+            np.asarray(fit["image_pts"], np.float64)[None], inverse
+        )[0]
+        shift = observed - template_pts
+        # Coarse grid: kept in result.json for replay, offsets vary slowly
+        step = TRACK_GRID_STEP
+        gx = np.arange(0, page_w + step, step, dtype=np.float64)
+        gy = np.arange(0, page_h + step, step, dtype=np.float64)
+        rows, cols = [], []  # (position across, coords along, offsets along)
+        for marks in self.tracks.values():
+            if len(marks) < 2:
+                continue
+            d = np.linalg.norm(template_pts[:, None] - marks[None].astype(np.float64), axis=2)
+            hit = d.min(axis=1) < 0.5
+            if hit.sum() < 2:
+                continue
+            pts, offs = template_pts[hit], shift[hit]
+            vertical = np.ptp(marks[:, 1]) >= np.ptp(marks[:, 0])
+            if vertical:
+                order = np.argsort(pts[:, 1])
+                rows.append((float(np.median(pts[:, 0])), pts[order, 1], offs[order, 1]))
+            else:
+                order = np.argsort(pts[:, 0])
+                cols.append((float(np.median(pts[:, 1])), pts[order, 0], offs[order, 0]))
+
+        def blend(rulers, along, across):
+            """Offsets on the grid: each ruler interpolated along itself, then
+            across between the outermost two rulers (clamped, no extrapolation)."""
+            rulers = sorted(rulers, key=lambda r: r[0])
+            first, last = rulers[0], rulers[-1]
+            a = np.interp(along, first[1], first[2])
+            if len(rulers) == 1 or last[0] - first[0] < 1:
+                return np.repeat(a[:, None], len(across), axis=1)
+            b = np.interp(along, last[1], last[2])
+            t = np.clip((across - first[0]) / (last[0] - first[0]), 0.0, 1.0)
+            return a[:, None] * (1 - t[None]) + b[:, None] * t[None]
+
+        dy = blend(rows, gy, gx) if rows else np.zeros((len(gy), len(gx)))
+        dx = blend(cols, gx, gy).T if cols else np.zeros((len(gy), len(gx)))
+        grid = {
+            "grid": {"dx": np.round(dx, 2).tolist(), "dy": np.round(dy, 2).tolist()},
+            "grid_step": step,
+            "size": [page_w, page_h],
+        }
+        map_x, map_y = tps_maps(grid)
+
+        def remap(im):
+            return cv2.remap(im, map_x, map_y, cv2.INTER_LINEAR, borderValue=255)
+
+        self.record_geometry(remap, dict(grid, op="tps"))
+        return remap(warped), grid
 
     # --- index points ------------------------------------------------------
 

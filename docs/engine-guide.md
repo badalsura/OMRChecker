@@ -111,7 +111,11 @@ orientations, fits a RANSAC homography to the matched marks and rejects the
 sheet if fewer than `minMatchedMarks` marks match or the mean residual exceeds
 `maxResidual`. It then warps straight into template coordinates.
 `nonRigid: true` adds a thin-plate-spline correction for curled paper and
-phone lens distortion. `earlyStop: true` (off by default) stops trying
+phone lens distortion; `nonRigid: "tracks"` instead corrects each row and
+column from the timing marks themselves (a vertical track measures row
+offsets, a horizontal one column offsets, interpolated between opposite tracks
+and never extrapolated past their ends). `indexSeed: true` adds the index
+points' own fit as a starting guess for the track search. `earlyStop: true` (off by default) stops trying
 orientations once one fits cleanly; 0 and 180 degrees are still both tried
 unless the index points already decided.
 

@@ -85,9 +85,10 @@ def test_timing_marks_do_not_slip_a_mark_on_flush_tilted_scans(
     assert field_errors(result, answers) == {}
 
 
-def test_timing_marks_non_rigid_refinement(tmp_path, spec):
+@pytest.mark.parametrize("non_rigid", [True, "tracks"])
+def test_timing_marks_non_rigid_refinement(tmp_path, spec, non_rigid):
     template = spec.to_template()
-    template["preProcessors"][0]["options"]["nonRigid"] = True
+    template["preProcessors"][0]["options"]["nonRigid"] = non_rigid
     engine = make_engine(tmp_path, template)
     rng = random.Random(4)
     answers = random_answers(spec, rng)
