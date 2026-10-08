@@ -323,6 +323,10 @@ def selftest(workers=2):
     from src.readers.ocr import tesseract_available
 
     report["tesseract"] = tesseract_available()
+    from src.capabilities import engine_report
+
+    # Which optional engines loaded; missing ones switch their feature off
+    report["engines"] = engine_report()
 
     spec = default_spec(questions=20, roll_digits=4, with_zones=False)
     with tempfile.TemporaryDirectory() as tmp:

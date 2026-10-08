@@ -261,7 +261,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     # ------------------------------------------------------------------
     @app.get("/health", tags=["meta"])
     def health():
-        return {"status": "ok", "version": API_VERSION, "time": time.time()}
+        from src.capabilities import cached_summary
+
+        return {
+            "status": "ok",
+            "version": API_VERSION,
+            "time": time.time(),
+            "engines": cached_summary(),
+        }
 
     @app.get("/capabilities", tags=["meta"], dependencies=secured)
     def capabilities():
