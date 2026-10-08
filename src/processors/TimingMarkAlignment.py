@@ -421,9 +421,9 @@ class TimingMarkAlignment(ImagePreprocessor):
         # box; judge those by the box its own second moments describe
         turned = sized & (solidity <= 0.6)
         if turned.any():
-            solidity = np.where(
-                turned, _moment_solidity(labels, count, areas, centroids), solidity
-            )
+            solidity = solidity.copy()
+            for index in np.flatnonzero(turned):
+                solidity[index] = _moment_solidity(labels, stats, centroids, index + 1)
         long_side = max(self.mark_w, self.mark_h) * scale
         keep = (
             sized
@@ -1003,20 +1003,22 @@ def _well_conditioned(homography, max_condition=1e8):
         return False
 
 
-def _moment_solidity(labels, count, areas, centroids):
-    """Area over the area of the rectangle with the same second moments, per
-    component (about 1 for a solid rectangle at any angle, lower for rings)."""
-    ys, xs = np.nonzero(labels)
-    ids = labels[ys, xs]
-    dx = xs - centroids[ids, 0]
-    dy = ys - centroids[ids, 1]
-    n = np.maximum(np.bincount(ids, minlength=count).astype(np.float64), 1)
-    sxx = np.bincount(ids, dx * dx, minlength=count) / n
-    syy = np.bincount(ids, dy * dy, minlength=count) / n
-    sxy = np.bincount(ids, dx * dy, minlength=count) / n
-    det = np.maximum(sxx * syy - sxy * sxy, 1e-9)
-    rect = 12.0 * np.sqrt(det)
-    return (areas / np.maximum(rect[1:], 1.0)).astype(np.float32)
+def _moment_solidity(labels, stats, centroids, label):
+    """Area over the area of the rectangle with the same second moments, for one
+    component (about 1 for a solid rectangle at any angle, lower for rings).
+    Only the component's bounding box is scanned."""
+    x, y, w, h, area = stats[label]
+    ys, xs = np.nonzero(labels[y : y + h, x : x + w] == label)
+    dx = (xs + x) - centroids[label, 0]
+    dy = (ys + y) - centroids[label, 1]
+    # bincount sums in pixel order, as the whole-page version did
+    bins = np.zeros(len(xs), dtype=np.intp)
+    n = max(float(len(xs)), 1.0)
+    sxx = np.bincount(bins, dx * dx, minlength=1)[0] / n
+    syy = np.bincount(bins, dy * dy, minlength=1)[0] / n
+    sxy = np.bincount(bins, dx * dy, minlength=1)[0] / n
+    det = max(sxx * syy - sxy * sxy, 1e-9)
+    return np.float32(area / max(12.0 * np.sqrt(det), 1.0))
 
 
 def _size_matches(found, expected, tolerance):
@@ -1029,11 +1031,11 @@ def _size_matches(found, expected, tolerance):
 
 def _squared_distances(a, b):
     """All squared distances between two point sets, without an n*m*2 temporary."""
-    a = a.astype(np.float32)
-    b = b.astype(np.float32)
-    return np.maximum(
-        (a * a).sum(axis=1)[:, None] + (b * b).sum(axis=1)[None, :] - 2 * a @ b.T, 0
-    )
+    a = a.astype(np.float32, copy=False)
+    b = b.astype(np.float32, copy=False)
+    out = (a * a).sum(axis=1)[:, None] + (b * b).sum(axis=1)[None, :]
+    out -= 2 * a @ b.T
+    return np.maximum(out, 0, out=out)
 
 
 def _angle_mod_90(steps):

@@ -50,6 +50,7 @@ from src.rules import review_items
 from src.template import Template
 from src.utils.image import ImageUtils
 from src.utils.parsing import (
+    Settings,
     describe_groups,
     get_concatenated_response,
     group_review_items,
@@ -151,7 +152,7 @@ class OMREngine:
         tuning_config["outputs"]["save_image_level"] = 0
         for section, values in (config_overrides or {}).items():
             tuning_config.setdefault(section, {}).update(values)
-        self.tuning_config = DotMap(tuning_config, _dynamic=False)
+        self.tuning_config = Settings(tuning_config, _dynamic=False)
 
         self.template = Template(
             template_path, self.tuning_config, overrides=template_overrides
@@ -246,7 +247,12 @@ class OMREngine:
 
         step = time.perf_counter()
         detailed = self.image_ops.read_omr_response_detailed(
-            self.template, aligned, file_id, save_dir=None, print_image=print_aligned
+            self.template,
+            aligned,
+            file_id,
+            save_dir=None,
+            print_image=print_aligned,
+            draw_marked=keep_images,
         )
         timings["bubbles"] = _elapsed_ms(step)
         geometry = recorder.build(self.template.page_dimensions, self._block_geometry())
@@ -410,7 +416,7 @@ class OMREngine:
         if overrides:
             values = config.toDict()
             values["pdf_params"] = {**values.get("pdf_params", {}), **overrides}
-            config = DotMap(values, _dynamic=False)
+            config = Settings(values, _dynamic=False)
         return ImageUtils.load_omr_image(
             Path(file_path), config, color=self.needs_color, data=data
         )

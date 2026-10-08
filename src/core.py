@@ -171,20 +171,20 @@ class ImageInstanceOps:
         )
 
     def read_omr_response_detailed(
-        self, template, image, name, save_dir=None, print_image=None
+        self, template, image, name, save_dir=None, print_image=None, draw_marked=True
     ):
         """
         Read all bubble fields, returning per-field values, confidence and review
         flags. print_image: an aligned copy that keeps the printed form (see
         src.geometry.print_kept_image), used to find block borders when the
-        image read has its print dropped out.
+        image read has its print dropped out. draw_marked=False skips drawing
+        the marked-sheet picture (final_marked is then None).
         """
         config = self.tuning_config
         auto_align = config.alignment_params.auto_align
-        img = image.copy()
-        # origDim = img.shape[:2]
+        # resize_util always returns a new image, so the input is never modified
         img = ImageUtils.resize_util(
-            img, template.page_dimensions[0], template.page_dimensions[1]
+            image, template.page_dimensions[0], template.page_dimensions[1]
         )
         if img.max() > img.min():
             img = ImageUtils.normalize_util(img)
@@ -201,11 +201,17 @@ class ImageInstanceOps:
             sizes = [max(b.bubble_dimensions) for b in template.field_blocks]
             if sizes:
                 img = self.flatten_background(img, float(np.median(sizes)))
-        # Processing copies
-        transp_layer = img.copy()
-        final_marked = img.copy()
+        # Canvases for the marked-sheet picture, only when someone will see it
+        draw_marked = (
+            draw_marked
+            or (config.outputs.save_detections and save_dir is not None)
+            or self.save_image_level >= 2
+        )
+        transp_layer = img.copy() if draw_marked else None
+        final_marked = img.copy() if draw_marked else None
 
-        morph = img.copy()
+        # Every step below returns a new image, so img itself is not modified
+        morph = img
         self.append_save_img(3, morph)
 
         if auto_align:
@@ -457,7 +463,25 @@ class ImageInstanceOps:
 
                 detected_bubbles = []
                 bubble_details = []
+                strip_fills = iter(
+                    self.get_fill_ratios(
+                        img,
+                        [
+                            (
+                                bubble.x + field_block.shift + bubble.dx,
+                                bubble.y + field_block.shift_y + bubble.dy,
+                            )
+                            for bubble in field_block_bubbles
+                        ],
+                        box_w,
+                        box_h,
+                        fixed_threshold
+                        if fixed_mode
+                        else per_q_strip_threshold - review_params.confidence_margin,
+                    )
+                )
                 for bubble in field_block_bubbles:
+                    fill_ratio = next(strip_fills)
                     bubble_mean = all_q_vals[total_q_box_no]
                     model_prob = (
                         None
@@ -477,9 +501,6 @@ class ImageInstanceOps:
                     )
                     if fixed_mode:
                         # Marked when enough of the interior is darker than the line
-                        fill_ratio = self.get_fill_ratio(
-                            img, x, y, box_w, box_h, fixed_threshold
-                        )
                         bubble_is_marked = fill_ratio >= fixed_min_fill
                         bubble_confidence = float(
                             np.clip(
@@ -488,16 +509,6 @@ class ImageInstanceOps:
                         )
                     else:
                         bubble_is_marked = per_q_strip_threshold > bubble_mean
-                        # Count only pixels clearly darker than the decision threshold
-                        # so printed letters and tinted backgrounds don't count as ink
-                        fill_ratio = self.get_fill_ratio(
-                            img,
-                            x,
-                            y,
-                            box_w,
-                            box_h,
-                            per_q_strip_threshold - review_params.confidence_margin,
-                        )
                         # How far the bubble sits from the decision boundary, in [0, 1]
                         bubble_confidence = float(
                             np.clip(
@@ -542,6 +553,7 @@ class ImageInstanceOps:
                     bubble_details.append(bubble_detail)
                     if bubble_is_marked:
                         detected_bubbles.append(bubble)
+                    if final_marked is not None and bubble_is_marked:
                         cv2.rectangle(
                             final_marked,
                             (int(x + box_w / 12), int(y + box_h / 12)),
@@ -562,7 +574,7 @@ class ImageInstanceOps:
                             (20, 20, 10),
                             int(1 + 3.5 * TEXT_SIZE),
                         )
-                    else:
+                    elif final_marked is not None:
                         cv2.rectangle(
                             final_marked,
                             (int(x + box_w / 10), int(y + box_h / 10)),
@@ -614,7 +626,10 @@ class ImageInstanceOps:
         per_omr_threshold_avg /= total_q_strip_no
         per_omr_threshold_avg = round(per_omr_threshold_avg, 2)
         # Translucent
-        cv2.addWeighted(final_marked, alpha, transp_layer, 1 - alpha, 0, final_marked)
+        if final_marked is not None:
+            cv2.addWeighted(
+                final_marked, alpha, transp_layer, 1 - alpha, 0, final_marked
+            )
         # Box types
         if config.outputs.show_image_level >= 6:
             # plt.draw()
@@ -649,11 +664,11 @@ class ImageInstanceOps:
                 "Template Alignment Adjustment", final_align, 0, 0, config=config
             )
 
-        if config.outputs.save_detections and save_dir is not None:
-            image_path = str(save_dir.joinpath(name))
-            ImageUtils.save_img(image_path, final_marked)
-
-        self.append_save_img(2, final_marked)
+        if final_marked is not None:
+            if config.outputs.save_detections and save_dir is not None:
+                image_path = str(save_dir.joinpath(name))
+                ImageUtils.save_img(image_path, final_marked)
+            self.append_save_img(2, final_marked)
 
         if save_dir is not None:
             for i in range(config.outputs.save_image_level):
@@ -881,6 +896,38 @@ class ImageInstanceOps:
             probabilities[:, erased].sum(axis=1) if erased else None
         )
         return probabilities[:, self.bubble_classifier.label_index("marked")]
+
+    @classmethod
+    def get_fill_ratios(cls, img, points, box_w, box_h, threshold):
+        """get_fill_ratio for many same-size bubbles at once: the boxes that lie
+        fully on the page are stacked and counted together, the rest one by one.
+        Fixed mode counts against the fixed line; adaptive mode counts only
+        pixels clearly darker than the strip's decision threshold, so printed
+        letters and tinted backgrounds don't count as ink."""
+        page_h, page_w = img.shape[:2]
+        inside = [
+            0 <= x and 0 <= y and x + box_w <= page_w and y + box_h <= page_h
+            for x, y in points
+        ]
+        ratios = [None] * len(points)
+        full = [i for i, ok in enumerate(inside) if ok]
+        mask = _ellipse_mask(box_h, box_w)
+        pixels = int(np.count_nonzero(mask))
+        if full and pixels:
+            rois = np.stack(
+                [
+                    img[y : y + box_h, x : x + box_w]
+                    for x, y in (points[i] for i in full)
+                ]
+            )
+            counts = np.count_nonzero(rois[:, mask] < threshold, axis=1)
+            for i, count in zip(full, counts):
+                ratios[i] = float(count) / float(pixels)
+        for i, ratio in enumerate(ratios):
+            if ratio is None:
+                x, y = points[i]
+                ratios[i] = cls.get_fill_ratio(img, x, y, box_w, box_h, threshold)
+        return ratios
 
     @staticmethod
     def get_fill_ratio(img, x, y, box_w, box_h, threshold):

@@ -15,6 +15,20 @@ from src.utils.validations import (
     validate_template_json,
 )
 
+
+
+class Settings(DotMap):
+    """A DotMap whose existing keys read as a plain dict lookup. DotMap's own
+    attribute access tries (and fails) a normal attribute search twice before
+    looking at its keys, which adds up when settings are read per bubble."""
+
+    def __getattr__(self, k):
+        try:
+            return self.__dict__["_map"][k]
+        except KeyError:
+            return super().__getattr__(k)
+
+
 OVERRIDE_MERGER = Merger(
     # pass in a list of tuples,with the
     # strategies you are looking to apply
@@ -172,7 +186,7 @@ def open_config_with_defaults(config_path):
     )
     validate_config_json(user_tuning_config, config_path)
     # https://github.com/drgrib/dotmap/issues/74
-    return DotMap(user_tuning_config, _dynamic=False)
+    return Settings(user_tuning_config, _dynamic=False)
 
 
 def open_template_with_defaults(template_path, overrides=None):
