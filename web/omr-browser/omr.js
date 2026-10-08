@@ -1814,6 +1814,11 @@
         colorDropout: normalizeDropout(t.colorDropout),
       };
       // optional "validate" and "checks"; check outputs become columns
+      // Optional per-group placeholders (see joinGroup); unknown groups are ignored
+      parsed.groupOptions = {};
+      Object.keys(t.groupOptions || {}).forEach(function (name) {
+        if (has(customLabels, name)) parsed.groupOptions[name] = Object.assign({}, t.groupOptions[name] || {});
+      });
       parsed.rules = new RuleSet(parsed, t.validate, t.checks);
       var outputColumns = parseFields("Output Columns", t.outputColumns || []);
       if (!outputColumns.length) outputColumns = nonCustom.concat(Object.keys(customLabels), parsed.rules.newOutputColumns).sort(naturalCompare);
@@ -4213,6 +4218,84 @@
       return v === null || v === undefined ? "" : String(v);
     }
 
+    // Per-group placeholders (template "groupOptions"; src/utils/parsing.py).
+    // A group without an entry keeps the plain join.
+    var GROUP_OPTION_DEFAULTS = { empty: " ", multi: "*", issue: "-" };
+    function groupOptionsFor(template, name) {
+      var options = (template.groupOptions || {})[name];
+      if (!options) return null;
+      return Object.assign({}, GROUP_OPTION_DEFAULTS, options);
+    }
+    function columnState(value, details, emptyValue) {
+      var text = pyStr(value);
+      var blank = !text.trim() || (emptyValue !== "" && text === emptyValue);
+      if (!details) return blank ? "empty" : "ok";
+      var flags = details.flags || [];
+      if (blank) {
+        if (!details.reviewed && details.needs_review && flags.some(function (f) { return f !== "empty"; })) return "issue";
+        return "empty";
+      }
+      if (details.reviewed) return flags.indexOf("empty") >= 0 ? "empty" : "ok";
+      if (flags.indexOf("multi_marked") >= 0) return "multi";
+      if (flags.indexOf("empty") >= 0) return "empty";
+      if (details.needs_review) return "issue";
+      return "ok";
+    }
+    function joinGroup(columns, omr, options, fields, emptyValue) {
+      var pieces = [], states = [];
+      columns.forEach(function (column) {
+        var value = has(omr, column) ? omr[column] : "";
+        var state = columnState(value, fields ? fields[column] : null, emptyValue || "");
+        states.push(state);
+        if (!options || state === "ok") pieces.push(pyStr(value));
+        else if (state === "empty") {
+          if (options.empty !== null && options.empty !== undefined) pieces.push(String(options.empty));
+        } else pieces.push(String(options[state] || ""));
+      });
+      return [pieces.join(""), states];
+    }
+    function describeGroups(omr, template, fields) {
+      var groups = {};
+      Object.keys(template.customLabels).forEach(function (name) {
+        var options = groupOptionsFor(template, name);
+        if (!options) return;
+        var cols = template.customLabels[name];
+        var joined = joinGroup(cols, omr, options, fields, template.emptyValue || "");
+        groups[name] = {
+          value: joined[0],
+          columns: cols.map(function (c, i) {
+            return { name: c, state: joined[1][i] };
+          }),
+          flagged: joined[1].some(function (st) {
+            return st === "multi" || st === "issue";
+          }),
+        };
+      });
+      return groups;
+    }
+    function groupReviewItems(groups, review) {
+      var listed = {};
+      (review || []).forEach(function (item) {
+        listed[item.name] = true;
+      });
+      var items = [];
+      Object.keys(groups).forEach(function (name) {
+        var group = groups[name];
+        if (!group.flagged || listed[name]) return;
+        var columns = group.columns.map(function (c) {
+          return c.name;
+        });
+        if (columns.some(function (c) { return listed[c]; })) return;
+        var flags = {};
+        group.columns.forEach(function (c) {
+          if (c.state === "multi") flags.multi_marked = true;
+          if (c.state === "issue") flags.group_issue = true;
+        });
+        items.push({ kind: "custom_label", name: name, flags: Object.keys(flags).sort(), fields: columns });
+      });
+      return items;
+    }
+
     var VALIDATION_FLAG = "validation_failed";
     var ON_FAIL_ACTIONS = ["review", "blank", "both", "flag"];
     function ValidationRule(name, spec) {
@@ -4396,6 +4479,7 @@
       var self = this;
       this.globalEmpty = template.emptyValue || "";
       this.customLabels = template.customLabels;
+      this.template = template;
       this.zones = {};
       template.zones.forEach(function (z) {
         self.zones[z.name] = z;
@@ -4546,6 +4630,8 @@
       var self = this;
       if (has(this.overrides, name)) return this.overrides[name];
       if (has(this.checkValues, name)) return this.checkValues[name];
+      var groupOpts = has(this.rules.customLabels, name) ? groupOptionsFor(this.rules.template, name) : null;
+      if (groupOpts) return joinGroup(this.rules.customLabels[name], this.omr, groupOpts, this.fields, this.rules.globalEmpty)[0];
       if (has(this.rules.customLabels, name))
         return this.rules.customLabels[name]
           .map(function (c) {
@@ -4625,6 +4711,11 @@
         .forEach(function (n) {
           self.validate(n, null);
         });
+      // Groups with placeholders show columns their validation flagged
+      Object.keys(rules.customLabels).forEach(function (label) {
+        if (has(self.overrides, label) || has(rules.outputs, label)) return;
+        if (groupOptionsFor(rules.template, label) && has(self.responses, label)) self.responses[label] = self.baseValue(label);
+      });
       var chain = Promise.resolve();
       rules.checks.forEach(function (rule) {
         chain = chain.then(function () {
@@ -5055,17 +5146,20 @@
             zones[z.name] = z;
           });
           var responses = {};
+          var fields = detailed.fieldDetails, rstep = now();
           Object.keys(template.customLabels).forEach(function (label) {
-            responses[label] = template.customLabels[label]
-              .map(function (k) {
-                return omr[k];
-              })
-              .join("");
+            var options = groupOptionsFor(template, label);
+            responses[label] = options
+              ? joinGroup(template.customLabels[label], omr, options, fields, template.emptyValue || "")[0]
+              : template.customLabels[label]
+                  .map(function (k) {
+                    return omr[k];
+                  })
+                  .join("");
           });
           template.nonCustomLabels.forEach(function (label) {
             responses[label] = omr[label];
           });
-          var fields = detailed.fieldDetails, rstep = now();
           var byName = {};
           template.zones.forEach(function (z) {
             byName[z.name] = z;
@@ -5077,7 +5171,9 @@
             .then(function (ruleOut) {
               if (template.rules.active) timings.rules = elapsed(rstep);
               var score = self.evaluation ? self.evaluation(responses) : null;
-              var review = reviewItems(fields, zones, ruleOut[2]).concat(sheetReview(fields, config.review_params));
+              var review = reviewItems(fields, zones, ruleOut[2]);
+              var groups = describeGroups(omr, template, fields);
+              review = review.concat(groupReviewItems(groups, review)).concat(sheetReview(fields, config.review_params));
               timings.total = elapsed(started);
               var result = makeResult(fileId, review.length ? STATUS_NEEDS_REVIEW : STATUS_OK, {
                 responses: responses,
@@ -5090,6 +5186,7 @@
                 checks: ruleOut[0],
                 validation: ruleOut[1],
               });
+              if (Object.keys(groups).length) result.groups = groups;
               hide(result, "alignedImage", alignedImage);
               hide(result, "registration", ctx.registration || null);
               return result;
@@ -5365,6 +5462,8 @@
       // Low-level building blocks (exported for tests and advanced use)
       _internals: {
         parseTemplate: parseTemplate,
+        joinGroup: joinGroup,
+        columnState: columnState,
         makeImage: makeImage,
         rgbaToGray: rgbaToGray,
         resizeLinear: resizeLinear,
