@@ -194,8 +194,71 @@ def _row_runs(cells):
     return runs
 
 
+def _prune_sparse_lines(cands, sparse=0.35, dense=0.8, min_lines=4):
+    """
+    Drop lattice columns (rows) that only a few rows (columns) occupy while
+    others are nearly full: printed question numbers, shaded cells or the 0/1
+    "hundreds" column of a ragged digit grid that joined a regular block.
+    (Ragged columns are re-attached later by find_ragged_columns.)
+    """
+    for _ in range(3):
+        if len(cands) < 4:
+            break
+        w, h = np.median(cands[:, 2]), np.median(cands[:, 3])
+        col_c, col_l = cluster_1d(cands[:, 0], 0.35 * w)
+        row_c, row_l = cluster_1d(cands[:, 1], 0.35 * h)
+        keep = np.ones(len(cands), bool)
+        if len(row_c) >= min_lines and len(col_c) >= 2:
+            share = np.bincount(col_l, minlength=len(col_c)) / float(len(row_c))
+            if share.max() >= dense:
+                keep &= share[col_l] >= sparse
+        if len(col_c) >= min_lines and len(row_c) >= 2:
+            share = np.bincount(row_l, minlength=len(row_c)) / float(len(col_c))
+            if share.max() >= dense:
+                keep &= share[row_l] >= sparse
+        if keep.all() or not keep.any():
+            break
+        cands = cands[keep]
+    return cands
+
+
+def _trim_odd_edges(cands, tolerance=0.2):
+    """
+    Drop a first/last row or column whose outlines are a different size from
+    the rest: the handwriting box row above a digit grid, or printed boxed
+    question numbers beside an answer row.
+    """
+    for axis, size_axis in ((1, 3), (0, 2)):
+        for _ in range(2):
+            if len(cands) < 6:
+                break
+            ref = np.median(cands[:, 3 if axis == 1 else 2])
+            centres, labels = cluster_1d(cands[:, axis], 0.35 * ref)
+            if len(centres) < 3:
+                break
+            sizes_w = np.array([np.median(cands[labels == k, 2]) for k in range(len(centres))])
+            sizes_h = np.array([np.median(cands[labels == k, 3]) for k in range(len(centres))])
+            dropped = False
+            for edge in (0, len(centres) - 1):
+                others = [k for k in range(len(centres)) if k != edge]
+                mw, mh = np.median(sizes_w[others]), np.median(sizes_h[others])
+                if (
+                    abs(sizes_w[edge] - mw) > tolerance * mw
+                    or abs(sizes_h[edge] - mh) > tolerance * mh
+                ):
+                    cands = cands[labels != edge]
+                    dropped = True
+                    break
+            if not dropped:
+                break
+    return cands
+
+
 def _regular_blocks(cands, depth=0, min_occupancy=0.85):
     if len(cands) < 2 or depth > 12:
+        return []
+    cands = _trim_odd_edges(cands)
+    if len(cands) < 2:
         return []
     w, h = np.median(cands[:, 2]), np.median(cands[:, 3])
     col_c, col_l = cluster_1d(cands[:, 0], 0.35 * w)
@@ -300,7 +363,8 @@ def group_into_grids(
     for component in _components(cands):
         if len(component) < 2:
             continue
-        for grid in _regular_blocks(cands[component], min_occupancy=first_pass):
+        pruned = _prune_sparse_lines(cands[component])
+        for grid in _regular_blocks(pruned, min_occupancy=first_pass):
             if image is not None and grid.occupancy < 1:
                 verify_missing_cells(grid, image)
                 if grid.occupancy < min_occupancy:
@@ -427,3 +491,78 @@ def sample_fill(images, grids, reference):
         - np.stack([sheet[k] for sheet in sheets]).reshape(len(images), g.rows, g.cols)
         for k, g in enumerate(grids)
     ]
+
+
+def find_ragged_columns(grids, cands, min_rows=5):
+    """
+    Short columns beside a digit grid that start on its first row and share its
+    row pitch: the 0/1 "hundreds" or "tens" column of a number such as marks
+    (0..199). Returns (new ragged Grids, indices of grids they replace).
+
+    Each ragged column becomes its own one-field block (grid.ragged_of is the
+    index of its main grid) so the engine reads it with fewer values; the
+    template joins them with a customLabel. Spurious grids whose bubbles all
+    belong to ragged columns (e.g. two 0/1 columns taken for an "AB" row) are
+    replaced.
+    """
+    if len(cands) == 0:
+        return [], set()
+    ragged = []
+    for index, grid in enumerate(grids):
+        if grid.rows < min_rows or grid.dy <= 0:
+            continue
+        pitch_x = grid.dx if grid.cols > 1 and grid.dx > 0 else grid.dy
+        w, h = grid.bubble
+        size_ok = (np.abs(cands[:, 2] - w) < 0.3 * w) & (np.abs(cands[:, 3] - h) < 0.3 * h)
+        for x in (grid.x0 - pitch_x, grid.x0 + grid.cols * pitch_x):
+            near_x = size_ok & (np.abs(cands[:, 0] - x) < 0.3 * w)
+            present = []
+            for r in range(grid.rows):
+                y = grid.y0 + r * grid.dy
+                present.append(bool((near_x & (np.abs(cands[:, 1] - y) < 0.3 * h)).any()))
+            k = 0
+            while k < len(present) and present[k]:
+                k += 1
+            if not 2 <= k < grid.rows or any(present[k:]):
+                continue
+            if any(_covers(g, x, grid.y0, w, h) for g in grids if g is not grid):
+                # Already part of a real grid (only spurious ones are replaced below)
+                owner = next(g for g in grids if g is not grid and _covers(g, x, grid.y0, w, h))
+                if owner.rows >= min_rows:
+                    continue
+            column = Grid(
+                x0=float(x),
+                y0=float(grid.y0),
+                dx=0.0,
+                dy=float(grid.dy),
+                cols=1,
+                rows=k,
+                bubble=[float(w), float(h)],
+                occupancy=1.0,
+                residual=0.0,
+                support=[[1] for _ in range(k)],
+            )
+            column.ragged_of = index
+            ragged.append(column)
+    replaced = set()
+    for index, grid in enumerate(grids):
+        centres = grid.centres().reshape(-1, 2)
+        w, h = grid.bubble
+        claimed = [
+            any(
+                abs(cx - col.x0) < 0.3 * w
+                and -0.3 * h < cy - col.y0 < (col.rows - 0.7) * col.dy + 0.3 * h
+                for col in ragged
+            )
+            for cx, cy in centres
+        ]
+        if claimed and all(claimed):
+            replaced.add(index)
+    return ragged, replaced
+
+
+def _covers(grid, x, y, w, h):
+    centres = grid.centres().reshape(-1, 2)
+    return bool(
+        ((np.abs(centres[:, 0] - x) < 0.3 * w) & (np.abs(centres[:, 1] - y) < 0.3 * h)).any()
+    )
