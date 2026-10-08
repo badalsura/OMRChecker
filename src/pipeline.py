@@ -287,12 +287,27 @@ class OMREngine:
             }
         ]
 
-    def scan_path(self, file_path, keep_images=True):
+    def load_images(self, file_path, pdf_params=None):
+        """
+        [(name, image)] of an image file or the selected pages of a PDF.
+
+        pdf_params (optional): per-request {"pdf_dpi", "pdf_page"} overriding
+        config.json (Scan / New Job screens); None values keep the config's.
+        """
+        config = self.tuning_config
+        overrides = {k: v for k, v in (pdf_params or {}).items() if v is not None}
+        if overrides:
+            values = config.toDict()
+            values["pdf_params"] = {**values.get("pdf_params", {}), **overrides}
+            config = DotMap(values, _dynamic=False)
+        return ImageUtils.load_omr_image(
+            Path(file_path), config, color=self.needs_color
+        )
+
+    def scan_path(self, file_path, keep_images=True, pdf_params=None):
         """Read an image or every selected page of a PDF; returns a list of results."""
         file_path = Path(file_path)
-        images = ImageUtils.load_omr_image(
-            file_path, self.tuning_config, color=self.needs_color
-        )
+        images = self.load_images(file_path, pdf_params)
         if not images:
             return [
                 ScanResult(file_path.name, STATUS_ERROR, error="File could not be read")

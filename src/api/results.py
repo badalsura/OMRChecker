@@ -318,14 +318,11 @@ class ResultsService:
                 "or the job's path_remap) if the input folder was moved.",
                 404,
             )
-        from src.utils.image import ImageUtils
 
         with self.engines.engine(
             result, template_overrides, config_overrides, use_current
         ) as (engine, info):
-            images = ImageUtils.load_omr_image(
-                path, engine.tuning_config, color=engine.needs_color
-            )
+            images = engine.load_images(path, result.get("pdf_params"))
             page = int(result.get("page") or 0)
             if not images or page >= len(images):
                 raise ResultsError(f"Could not read page {page + 1} of '{path}'", 422)
