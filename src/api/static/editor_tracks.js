@@ -163,6 +163,104 @@ function editTracks(ed, fn) {
   });
 }
 
+// Calibrate index points on the sample sheets (median position and size)
+async function calibrate(ed, button) {
+  if (ed.dirty && !(await ed.save())) return;
+  button.disabled = true;
+  button.textContent = "Calibrating…";
+  try {
+    const data = await api(`/templates/${ed.id}/generator/calibrate-index`, { method: "POST" });
+    ed.calibration = data;
+    const usable = data.points.filter((p) => p.center);
+    editTracks(ed, (o) => {
+      for (const p of o.indexPoints || []) {
+        const m = usable.find((u) => u.name === p.name);
+        if (m) {
+          p.center = m.center;
+          p.size = m.size;
+        }
+      }
+    });
+    const bad = data.points.filter((p) => p.problems.length).length;
+    toast(`Calibrated on ${data.tested} sheet(s)${bad ? `; ${bad} point(s) need attention` : ""}`, bad ? "error" : "ok", 5000);
+  } catch (error) {
+    toast(error.message, "error", 6000);
+  }
+  button.disabled = false;
+  ed.renderSide();
+  ed.draw();
+}
+
+function calibrationTable(ed) {
+  return el(
+    "table",
+    { class: "small al-table" },
+    el("tr", {}, ["Point", "Found", "Spread", "Moved", ""].map((h) => el("th", {}, h))),
+    ed.calibration.points.map((p) =>
+      el(
+        "tr",
+        { class: p.problems.length ? "err" : "" },
+        el("td", {}, p.name),
+        el("td", {}, `${p.found}/${p.found + p.missed.length}`),
+        el("td", {}, p.spread === undefined ? "–" : `${p.spread} px`),
+        el("td", {}, p.moved === undefined ? "–" : `${p.moved} px`),
+        el("td", {}, p.problems.join("; "))
+      )
+    )
+  );
+}
+
+// With no timing tracks, 4+ index points replace image alignment (ECC etc.)
+function switchToIndexPoints(ed) {
+  const t = timing(ed);
+  if (!t || Object.keys(t.options.tracks || {}).length) return;
+  const n = (t.options.indexPoints || []).length;
+  const others = processors(ed).filter((p) => ALIGNERS.includes(p.name) && p !== t);
+  if (n >= 4 && others.length) {
+    ed.edit(() => (ed.doc.preProcessors = processors(ed).filter((p) => !others.includes(p))));
+    toast("4 index points: the template now aligns on them instead of the sample image", "ok", 5000);
+  } else if (n < 4) {
+    toast(`Add ${4 - n} more index point(s): without timing tracks 4 are needed`, "", 4000);
+  }
+}
+
+function useIndexPoints(ed, suggested) {
+  editTracks(ed, (o) => (o.indexPoints = suggested.map((p) => ({ ...p }))));
+  switchToIndexPoints(ed);
+  ed.draw();
+}
+
+// Point layouts that register badly
+function pointWarnings(points, page, hasTracks) {
+  const out = [];
+  if (!points.length) return out;
+  const [pw, ph] = page;
+  const pts = points.map((p) => p.center);
+  if (!hasTracks && points.length < 5) out.push(`Only ${points.length} index point(s): with no spare point a wrong match can't be detected; 5 or more is safer.`);
+  if (pts.length >= 3) {
+    const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+    const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+    let sxx = 0, syy = 0, sxy = 0;
+    for (const [x, y] of pts) {
+      sxx += (x - cx) ** 2;
+      syy += (y - cy) ** 2;
+      sxy += (x - cx) * (y - cy);
+    }
+    const tr = sxx + syy;
+    const det = sxx * syy - sxy * sxy;
+    const small = tr / 2 - Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+    if (!hasTracks && Math.sqrt(small / pts.length) < 0.05 * Math.min(pw, ph)) out.push("The index points lie close to one line: they can't fix the page in both directions.");
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    if (!hasTracks && (Math.max(...xs) < pw / 2 || Math.min(...xs) > pw / 2 || Math.max(...ys) < ph / 2 || Math.min(...ys) > ph / 2)) out.push("All index points are on one side of the page: spread them over the page.");
+  }
+  // Mirror symmetry: every point has a twin at its 180-degree-turned place
+  const tol = 0.02 * Math.min(pw, ph);
+  const twin = (p) => pts.some((q) => Math.hypot(pw - p[0] - q[0], ph - p[1] - q[1]) < tol);
+  if (pts.length >= 2 && pts.every(twin)) out.push("The index points look the same upside down: add one that has no twin at the opposite corner, or upside-down sheets can't be told apart.");
+  return out;
+}
+
 // Typed positions for index points (exact X/Y and size, in template pixels)
 function numberInputs(ed, i, p) {
   const box = el("span", { class: "al-xy" });
@@ -242,6 +340,7 @@ export async function alignmentPick(ed, rect) {
         points.push({ name: `P${n}`, center: mark.center, size: mark.size, shape: mark.shape || "any", required: true });
         toast(`Index point P${n}: ${mark.size[0]}×${mark.size[1]} px ${mark.shape}`, "ok");
       });
+      switchToIndexPoints(ed);
     }
   } catch (error) {
     toast(error.message, "error", 5000);
@@ -526,8 +625,22 @@ export function renderAlignmentPanel(ed) {
   }
 
   // Index points
-  if (method !== "none") {
+  if (method !== "none" || (report.suggested_points || []).length) {
     const points = t?.options?.indexPoints || [];
+    const suggested = report.suggested_points || [];
+    if (suggested.length >= 4 && !points.length) {
+      box.append(
+        el(
+          "div",
+          { class: "chip" },
+          `No timing track: ${suggested.length} distinct marks near the page edges can align this sheet. `,
+          el("button", { class: "small primary", onclick: () => useIndexPoints(ed, suggested) }, "Use them as index points")
+        )
+      );
+    }
+    for (const warning of pointWarnings(points, ed.page(), Object.keys(t?.options?.tracks || {}).length > 0)) {
+      box.append(el("div", { class: "chip error" }, warning));
+    }
     if (report.symmetric) {
       box.append(
         el(
@@ -560,6 +673,10 @@ export function renderAlignmentPanel(ed) {
           );
         })
       ),
+      points.length
+        ? el("button", { class: "small", title: "Save, then measure every index point on the stored sample sheets (aligned by the tracks) and use the median position and size", onclick: (e) => calibrate(ed, e.target) }, "Calibrate on samples")
+        : null,
+      ed.calibration ? calibrationTable(ed) : null,
       modeBtn("align-index", "+ Add index point", "Click a printed mark on the page, or drag a box around it. Small dots work too. Suggestions are circled while this is on."),
       typedIndexPoint(ed)
     );

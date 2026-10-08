@@ -10,6 +10,7 @@ image and the sample sheets saved when the draft was generated.
 - POST /templates/{id}/generator/find-mark       {point | box}  -> index point
 - POST /templates/{id}/generator/adopt-box       {box}          -> field block
 - POST /templates/{id}/generator/test-alignment  {}             -> per-sample result
+- POST /templates/{id}/generator/calibrate-index {}            -> measured points
 - POST /templates/{id}/generator/acknowledge     {warnings, all} -> report
 """
 
@@ -44,6 +45,32 @@ class AckBody(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="Warning texts confirmed")
     all: bool = Field(False, description="Confirm every current warning")
     undo: bool = Field(False, description="Bring the confirmed warnings back")
+
+
+def fallback_draft(image, error, max_width=1700):
+    """An empty draft (no blocks) on the first sample, used when generation
+    raised: the editor still opens on the real sheet with the error shown."""
+    from types import SimpleNamespace
+
+    gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if gray.shape[1] > max_width:
+        scale = max_width / gray.shape[1]
+        gray = cv2.resize(gray, (max_width, int(round(gray.shape[0] * scale))), interpolation=cv2.INTER_AREA)
+    height, width = gray.shape[:2]
+    template = {
+        "pageDimensions": [int(width), int(height)],
+        "bubbleDimensions": [20, 20],
+        "preProcessors": [],
+        "fieldBlocks": {},
+    }
+    report = {
+        "warnings": [
+            f"Template generation failed ({error}). This is an empty draft on the "
+            "first sample sheet: add blocks, timing tracks or index points by hand."
+        ],
+        "generation_failed": str(error),
+    }
+    return SimpleNamespace(template=template, report=report, reference_image=gray, config=None)
 
 
 def save_samples(directory, uploads):
@@ -225,6 +252,131 @@ def register(app, ctx, secured, decode_image):
         finally:
             engine_context.__exit__(None, None, None)
         return {"sheets": out, "tested": len(out), "stored": len(files)}
+
+    @app.post(
+        "/templates/{template_id}/generator/calibrate-index",
+        tags=["templates"],
+        dependencies=secured,
+    )
+    def calibrate_index(template_id: str):
+        """
+        Measure each index point on the stored sample sheets, aligned by the
+        tracks alone: the median position and size, the spread, and the sheets
+        it was missed on. The editor stores the medians.
+        """
+        from src.template_gen import marks
+
+        directory = template_dir(template_id)
+        folder = directory / SAMPLES_DIR
+        files = sorted(folder.glob("*")) if folder.is_dir() else []
+        if not files:
+            raise HTTPException(
+                409, "No sample sheets are stored with this template (generate it again)"
+            )
+        size = page_size(template_id)
+        with ctx.engines.engine(template_id) as engine:
+            aligner = next(
+                (
+                    p
+                    for p in engine.template.pre_processors
+                    if getattr(p, "index_points", None)
+                ),
+                None,
+            )
+            if aligner is None:
+                raise HTTPException(409, "This template has no index points")
+            points = [
+                {
+                    "name": p["name"],
+                    "center": [float(v) for v in p["center"]],
+                    "size": [float(v) for v in p["size"]],
+                }
+                for p in aligner.index_points
+            ]
+            blocks = []
+            for block in engine.template.field_blocks:
+                bubbles = [b for row in block.traverse_bubbles for b in row]
+                if bubbles:
+                    bw, bh = block.bubble_dimensions
+                    blocks.append(
+                        (
+                            min(b.x for b in bubbles),
+                            min(b.y for b in bubbles),
+                            max(b.x for b in bubbles) + bw,
+                            max(b.y for b in bubbles) + bh,
+                        )
+                    )
+            # Tracks alone place the page; the points are then only measured
+            joint = getattr(aligner, "joint_fit", True)
+            aligner.joint_fit = False if len(aligner.expected) else joint
+            seen = {p["name"]: [] for p in points}
+            missed = {p["name"]: [] for p in points}
+            tested = 0
+            try:
+                for path in files[:MAX_TEST_SAMPLES]:
+                    image = decode_image(path.read_bytes(), path.name, colour=True)
+                    if image is None:
+                        continue
+                    try:
+                        result = engine.scan(image, path.name, keep_images=True)
+                    except Exception:
+                        continue
+                    aligned = result.aligned_image
+                    if aligned is None:
+                        continue
+                    tested += 1
+                    if aligned.ndim == 3:
+                        aligned = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
+                    if size[0] and (aligned.shape[1], aligned.shape[0]) != size:
+                        aligned = cv2.resize(aligned, size, interpolation=cv2.INTER_AREA)
+                    name = path.name.split("_", 1)[-1]
+                    for point in points:
+                        found = marks.find_mark_near(
+                            aligned,
+                            point["center"],
+                            (aligned.shape[1], aligned.shape[0]),
+                            radius=1.5 * max(point["size"]),
+                        )
+                        if found is not None and np.hypot(
+                            found["center"][0] - point["center"][0],
+                            found["center"][1] - point["center"][1],
+                        ) > max(point["size"]):
+                            found = None
+                        if found is None:
+                            missed[point["name"]].append(name)
+                        else:
+                            seen[point["name"]].append(
+                                ([float(v) for v in found["center"]], [float(v) for v in found["size"]])
+                            )
+            finally:
+                aligner.joint_fit = joint
+        out = []
+        for point in points:
+            found = seen[point["name"]]
+            entry = {"name": point["name"], "found": len(found), "missed": missed[point["name"]]}
+            if found:
+                centres = np.array([c for c, _ in found])
+                sizes = np.array([s for _, s in found])
+                centre = np.median(centres, axis=0)
+                measured = np.median(sizes, axis=0)
+                spread = float(np.median(np.linalg.norm(centres - centre, axis=1)))
+                entry.update(
+                    center=[round(float(v), 1) for v in centre],
+                    size=[int(round(float(v))) for v in measured],
+                    spread=round(spread, 2),
+                    moved=round(float(np.hypot(*(centre - np.array(point["center"])))), 1),
+                )
+                problems = []
+                if spread > 0.25 * float(max(measured)) or missed[point["name"]]:
+                    problems.append("pick a more distinct mark")
+                x, y = centre
+                if any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in blocks):
+                    problems.append("it lies on a bubble block")
+                entry["problems"] = problems
+            else:
+                entry["problems"] = ["not found on any sample"]
+            out.append(entry)
+        return {"points": out, "tested": tested}
 
     @app.post(
         "/templates/{template_id}/generator/acknowledge",

@@ -509,7 +509,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         try:
             result = generate_template(images, label_list, parsed_options)
         except Exception as error:
-            raise HTTPException(422, f"Template generation failed: {error}") from None
+            # Never dead-end: open an empty draft on the first real sheet
+            result = generator_routes.fallback_draft(images[0], error)
 
         template = getattr(result, "template", None) or {}
         report = getattr(result, "report", None) or {}

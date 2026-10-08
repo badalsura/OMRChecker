@@ -487,6 +487,11 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
     class FakeResult:
         def __init__(self, images):
             self.template = spec.to_template()
+            timing = self.template["preProcessors"][0]["options"]
+            corner = spec.timing_tracks["left"][0]
+            timing["indexPoints"] = [
+                {"name": "P1", "center": [float(v) for v in corner], "size": list(timing["markDimensions"])}
+            ]
             self.reference_image = blank
             self.config = {"review_params": {"max_unmarked_fill_ratio": 0.35}}
             self.report = {
@@ -556,6 +561,10 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
         assert response.json()["verified_items"] == ["q2: order"]
         response = client.post(verify, json={"undo": True})
         assert response.json()["verified_items"] == []
+        calibrated = client.post(f"/templates/{tid}/generator/calibrate-index")
+        assert calibrated.status_code == 200, calibrated.text
+        point = calibrated.json()["points"][0]
+        assert point["found"] == 1 and point["spread"] == 0 and point["moved"] < 3
         boxes = client.get(f"/templates/{tid}/generator/printed-boxes")
         assert boxes.status_code == 200 and isinstance(boxes.json()["boxes"], list)
 
@@ -629,3 +638,22 @@ def test_failed_sheet_aligned_by_hand_or_typed(tmp_path, spec):
         typed = client.get(f"/scans/{other['scan_id']}").json()
         assert typed["status"] == "ok" and typed["responses"]["q1"] == "B"
         assert typed["manual_entry"] and typed["read_error"]
+
+
+def test_generator_failure_still_opens_a_draft(tmp_path, spec, monkeypatch):
+    import src.template_gen as template_gen
+
+    def boom(*args, **kwargs):
+        raise ValueError("no luck")
+
+    monkeypatch.setattr(template_gen, "generate_template", boom)
+    image, _ = make_sheet(spec, 8)
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates/generate",
+            files=[("files", ("s1.png", png_bytes(image), "image/png"))],
+        )
+        assert response.status_code == 201, response.text
+        detail = response.json()
+        assert "no luck" in detail["report"]["warnings"][0]
+        assert client.get(f"/templates/{detail['id']}/reference.png").status_code == 200

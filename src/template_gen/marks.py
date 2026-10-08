@@ -268,6 +268,38 @@ def spread_points(candidates, page_size, line_points, max_points=4):
     return chosen
 
 
+def outer_points(candidates, page_size, max_points=6, band=0.2):
+    """
+    Index point suggestions for a sheet without timing tracks: distinct marks
+    in the outer band of the page, the one nearest each corner first, then
+    others spread out (biggest first among equals).
+    """
+    page_w, page_h = page_size
+    margin = band * min(page_w, page_h)
+
+    def edge_distance(c):
+        x, y = c["center"]
+        return min(x, y, page_w - x, page_h - y)
+
+    outer = [c for c in candidates or [] if edge_distance(c) <= margin]
+    chosen = []
+    for corner in ((0, 0), (page_w, 0), (page_w, page_h), (0, page_h)):
+        if not outer:
+            break
+        best = min(outer, key=lambda c: np.hypot(c["center"][0] - corner[0], c["center"][1] - corner[1]))
+        if best not in chosen and np.hypot(best["center"][0] - corner[0], best["center"][1] - corner[1]) < 0.45 * min(page_w, page_h):
+            chosen.append(best)
+    for c in outer:
+        if len(chosen) >= max_points:
+            break
+        if c not in chosen and all(
+            np.hypot(c["center"][0] - o["center"][0], c["center"][1] - o["center"][1]) > 0.2 * min(page_w, page_h)
+            for o in chosen
+        ):
+            chosen.append(c)
+    return chosen[:max_points]
+
+
 def asymmetric_points(candidates, page_size, max_points=4, gray=None):
     """
     Candidates with no candidate at their 180-degree-turned position: these

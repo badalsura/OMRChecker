@@ -1226,6 +1226,23 @@ def generate_template(images, labels=None, options=None):
                     "least 2 index points away from the track in the Alignment "
                     "panel, or every sheet will fail registration"
                 )
+    if not tracks:
+        # No track: suggest distinct marks near the page edges as index points
+        outer = marks.outer_points(alignment["index_candidates"], page_size)
+        alignment["suggested_points"] = [
+            marks.index_point(c, f"P{i + 1}") for i, c in enumerate(outer)
+        ]
+        warnings.append(
+            "no timing track was found, so sheets are aligned to a sample image"
+            + (
+                f"; {len(outer)} distinct mark(s) near the page edges are suggested "
+                "as index points in the Alignment panel (with 4 or more the "
+                "template aligns on them instead)"
+                if len(outer) >= 4
+                else "; add 4 or more index points in the Alignment panel for a "
+                "sturdier alignment"
+            )
+        )
     alignment["method"] = _alignment_method(pre_processors)
     alignment["sheets"] = [
         {"sheet": i, **marks.match_counts(aligned[i], tracks, alignment["index_points"])}
