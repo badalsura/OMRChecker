@@ -1,6 +1,6 @@
 // Template editor: draws the template over a reference image and lets the user
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
-import { api, displayName, el, errorList, state, toast, url } from "./api.js";
+import { add, api, displayName, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
 import { patternControl, renderChecks, renderValidation } from "./editor_checks.js";
 import * as groups from "./editor_groups.js";
@@ -964,17 +964,17 @@ export class TemplateEditor {
     if (!side) return;
     side.innerHTML = "";
     if (this.errors.length) {
-      side.append(el("h3", {}, "Validation errors"), errorList(this.errors));
+      add(side, el("h3", {}, "Validation errors"), errorList(this.errors));
     }
     const broken = groups.renderBrokenBanner(this);
-    if (broken) side.append(broken);
+    if (broken) add(side, broken);
     const o = this.multi.length > 1 ? null : this.info(this.selected);
-    if (this.multi.length > 1) side.append(groups.renderMultiSelection(this));
-    else if (o) side.append(o.kind === "block" ? this.renderBlock(o) : this.renderZone(o));
-    if (this.testResult) side.append(this.renderTest());
-    if (this.report) side.append(this.renderReport());
-    if (!o && this.multi.length < 2) side.append(this.renderPage());
-    side.append(
+    if (this.multi.length > 1) add(side, groups.renderMultiSelection(this));
+    else if (o) add(side, o.kind === "block" ? this.renderBlock(o) : this.renderZone(o));
+    if (this.testResult) add(side, this.renderTest());
+    if (this.report) add(side, this.renderReport());
+    if (!o && this.multi.length < 2) add(side, this.renderPage());
+    add(side, 
       el(
         "div",
         { class: "ed-help" },
@@ -1020,7 +1020,7 @@ export class TemplateEditor {
     const set = (fn) => this.edit(fn);
     const box = el("div", {});
     this.helpContext = "block";
-    box.append(
+    add(box, 
       el("h3", {}, "Bubble block"),
       this.input("Name", o.name, (v) => {
         v = v.trim();
@@ -1084,9 +1084,9 @@ export class TemplateEditor {
     const groupKey = `group-block:${o.name}`;
     const groupBox = el("details", { class: "ed-section", open: grouped || this.openSections.has(groupKey) || undefined });
     groupBox.addEventListener("toggle", () => (groupBox.open ? this.openSections.add(groupKey) : this.openSections.delete(groupKey)));
-    groupBox.append(el("summary", {}, "Output as one field", grouped ? el("span", { class: "chip" }, grouped) : null), groups.renderBlockGrouping(this, o));
-    box.append(groupBox);
-    if (o.labels.length) box.append(renderValidation(this, o.labels, { title: o.labels.length > 1 ? "Validation of each field" : "Validation", columns: 1 }));
+    add(groupBox, el("summary", {}, "Output as one field", grouped ? el("span", { class: "chip" }, grouped) : null), groups.renderBlockGrouping(this, o));
+    add(box, groupBox);
+    if (o.labels.length) add(box, renderValidation(this, o.labels, { title: o.labels.length > 1 ? "Validation of each field" : "Validation", columns: 1 }));
     return box;
   }
 
@@ -1098,7 +1098,7 @@ export class TemplateEditor {
     const setOpt = (k, v) => set(() => (v === "" || v === null || v === undefined ? delete opts[k] : (opts[k] = v)));
     const box = el("div", {});
     this.helpContext = "zone";
-    box.append(
+    add(box, 
       el("h3", {}, "Zone"),
       this.input("Name", o.name, (v) => {
         v = v.trim();
@@ -1135,11 +1135,11 @@ export class TemplateEditor {
           return el("label", {}, cb, " ", f);
         })
       );
-      box.append(help(el("div", { class: "field" }, "Accepted formats (none ticked = all)", list), "Accepted formats (none ticked = all)", "zone"));
-      if (raw.type === "barcode") box.append(...options.renderBarcodeOptions(this, o.name, opts, setOpt));
+      add(box, help(el("div", { class: "field" }, "Accepted formats (none ticked = all)", list), "Accepted formats (none ticked = all)", "zone"));
+      if (raw.type === "barcode") add(box, ...options.renderBarcodeOptions(this, o.name, opts, setOpt));
     }
     if (raw.type === "ocr" || raw.type === "icr") {
-      box.append(
+      add(box, 
         this.input("Allowed characters", opts.whitelist ?? "", (v) => setOpt("whitelist", v), { placeholder: "e.g. 0123456789" }),
         raw.type === "icr" ? this.num("Character boxes", opts.characterBoxes, (v) => setOpt("characterBoxes", v === null ? null : Math.max(1, Math.round(v))), { optional: true }) : null,
         raw.type === "ocr"
@@ -1152,7 +1152,7 @@ export class TemplateEditor {
         options.renderLazyOption(this, o.name, opts, setOpt)
       );
     }
-    box.append(
+    add(box, 
       this.labeled("Pattern the value must match", patternControl(opts.pattern, (v) => setOpt("pattern", v || null))),
       el(
         "div",
@@ -1241,7 +1241,7 @@ export class TemplateEditor {
 
   // Raw JSON boxes: expert settings (thresholds, alignment fine-tuning, debug outputs)
   renderRawJson(raw, jsonSetter, doc) {
-    raw.append(
+    add(raw, 
       el("summary", {}, "Advanced (JSON)"),
       el("p", { class: "muted small" }, "Expert tuning that has no form above: threshold constants, alignment fine-tuning, processing size and debug outputs live in config.json."),
       this.jsonArea("preProcessors (alignment / cleanup)", JSON.stringify(doc.preProcessors || [], null, 1), jsonSetter("preProcessors", [])),
@@ -1356,8 +1356,8 @@ export class TemplateEditor {
   renderReport() {
     const r = this.report;
     const box = el("div", { class: "ed-report" }, el("h3", {}, `Needs verification (${r.items.length - [...this.resolved].length})`));
-    if (r.summary.length) box.append(el("div", { class: "muted small" }, r.summary.map(([k, v]) => `${k}: ${v}`).join(" · ")));
-    box.append(
+    if (r.summary.length) add(box, el("div", { class: "muted small" }, r.summary.map(([k, v]) => `${k}: ${v}`).join(" · ")));
+    add(box, 
       el(
         "ul",
         {},
@@ -1387,7 +1387,7 @@ export class TemplateEditor {
         )
       )
     );
-    if (r.warnings.length) box.append(el("h3", {}, "Warnings"), el("ul", {}, r.warnings.map((w) => el("li", {}, w))));
+    if (r.warnings.length) add(box, el("h3", {}, "Warnings"), el("ul", {}, r.warnings.map((w) => el("li", {}, w))));
     return box;
   }
 

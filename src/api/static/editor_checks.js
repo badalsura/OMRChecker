@@ -1,6 +1,6 @@
 // Template editor: value validation ("validate") and cross-field checks
 // ("checks"), built from checkboxes, dropdowns and number boxes only.
-import { el, modal, toast } from "./api.js";
+import { add, el, modal, toast } from "./api.js";
 import { help } from "./editor_help.js";
 
 export const PATTERN_PRESETS = [
@@ -162,7 +162,7 @@ export function renderValidation(ed, names, opts = {}) {
   const count = ruleCount(spec);
   const details = el("details", { class: "ed-section", open: opts.open || ed.openSections.has(key) || undefined });
   details.addEventListener("toggle", () => (details.open ? ed.openSections.add(key) : ed.openSections.delete(key)));
-  details.append(
+  add(details, 
     el("summary", {}, opts.title || "Validation", count ? el("span", { class: "chip" }, `${count} rule${count > 1 ? "s" : ""}`) : el("span", { class: "muted small" }, " none")),
     names.length > 1 ? el("div", { class: "muted small" }, `Applies to each of the ${names.length} fields${mixed ? " (they had different rules; editing sets the same rule on all)" : ""}.`) : null,
     checkbox("Required", spec.required, (v) => write({ required: v })),
@@ -197,9 +197,9 @@ export function checkableNames(ed, exceptCheck) {
 export function renderChecks(ed) {
   const checks = ed.doc.checks || [];
   const box = el("div", { class: "ed-checks" });
-  if (!checks.length) box.append(el("p", { class: "muted small" }, "No checks. A check compares several reads of the same value, e.g. a barcode and its printed number."));
+  if (!checks.length) add(box, el("p", { class: "muted small" }, "No checks. A check compares several reads of the same value, e.g. a barcode and its printed number."));
   checks.forEach((check, i) => {
-    box.append(
+    add(box, 
       el(
         "div",
         { class: "ed-group" },
@@ -214,7 +214,7 @@ export function renderChecks(ed) {
       )
     );
   });
-  box.append(el("button", { class: "small", onclick: () => openCheckDialog(ed, null) }, "+ Add check"));
+  add(box, el("button", { class: "small", onclick: () => openCheckDialog(ed, null) }, "+ Add check"));
   return box;
 }
 
@@ -276,7 +276,7 @@ export function openCheckDialog(ed, index) {
   const skipFlagged = cb(draft.skipFlagged);
   const row = (label, control) => help(el("label", { class: "field" }, label, control), label, "check");
   const tick = (box, label) => help(el("label", { class: "field inline-check" }, box, ` ${label}`), label, "check");
-  body.append(
+  add(body, 
     row("Check name", nameInput),
     row("Fields to compare", el("div", { class: "stack" }, filter, picker)),
     row("Which field wins when they differ", chosen),

@@ -2,7 +2,7 @@
 // (OCR layout, barcode fallback and decoders, review thresholds
 // with the fill histogram, alignment method, learned models, PDF rendering,
 // output column order). Expert tuning stays in the config.json box.
-import { api, el, state, toast } from "./api.js";
+import { add, api, el, state, toast } from "./api.js";
 import { normalizeDropdown } from "./editor_checks.js";
 import { help } from "./editor_help.js";
 
@@ -45,7 +45,7 @@ const select = (options, value, onchange) => {
 function section(ed, key, title, ...children) {
   const details = el("details", { class: "ed-section", open: ed.openSections.has(key) || undefined });
   details.addEventListener("toggle", () => (details.open ? ed.openSections.add(key) : ed.openSections.delete(key)));
-  details.append(el("summary", {}, title), ...children);
+  add(details, el("summary", {}, title), ...children);
   return details;
 }
 
@@ -331,7 +331,7 @@ export function renderModels(ed) {
       if (current && !options.some(([v]) => v === current)) options.push([current, `${current} (not found)`]);
       return labeled(label, select(options, current, (v) => ed.setConfig("ml_params", { [key]: v || null })), "ml");
     };
-    box.append(
+    add(box, 
       picker("Bubble model", "bubble_model_path", "bubble"),
       picker("Handwriting model", "icr_model_path", "icr"),
       state.caps && state.caps.onnxruntime === false ? el("div", { class: "muted small" }, "onnxruntime is not installed on this server: models are ignored.") : null,
@@ -394,7 +394,7 @@ export function renderBarcodeDefaults(ed) {
       [list[i - 1], list[i]] = [list[i], list[i - 1]];
       apply(list.filter((e) => engines.includes(e)));
     } }, "↑");
-    box.append(el("label", { class: "row gap" }, cb, ` ${engine}`, el("span", { class: "spacer" }), up));
+    add(box, el("label", { class: "row gap" }, cb, ` ${engine}`, el("span", { class: "spacer" }), up));
   });
   return section(
     ed,

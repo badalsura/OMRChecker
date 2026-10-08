@@ -1,7 +1,7 @@
 // Template editor: grouped fields (customLabels + groupOptions), name cascades
 // (renames and deletes reach every group, validation rule, check and output
 // column in the same undo step) and broken-group repair.
-import { el, modal, toast } from "./api.js";
+import { add, el, modal, toast } from "./api.js";
 import { renderValidation } from "./editor_checks.js";
 import { help } from "./editor_help.js";
 
@@ -210,7 +210,7 @@ export function renderGroupOptions(ed, name) {
   const opts = doc.groupOptions?.[name];
   const box = el("div", { class: "ed-group-opts" });
   if (!opts) {
-    box.append(
+    add(box, 
       el("p", { class: "muted small" }, "Plain join (templates made before placeholders): an empty column vanishes and a multi-marked column puts all its values in, so later digits shift."),
       el("button", { class: "small", onclick: () => ed.edit(() => ((doc.groupOptions = doc.groupOptions || {})[name] = { ...GROUP_DEFAULTS })) }, "Use one character per column")
     );
@@ -221,7 +221,7 @@ export function renderGroupOptions(ed, name) {
       doc.groupOptions[name] = { ...doc.groupOptions[name], [key]: value };
     });
   const row = (label, key, control) => help(el("label", { class: "field" }, label, control), key === "empty" ? "groupEmpty" : key === "multi" ? "groupMulti" : "groupIssue");
-  box.append(
+  add(box, 
     row("Empty column (no bubble marked)", "empty", charPicker(opts.empty === undefined ? " " : opts.empty, (v) => set("empty", v), { allowSkip: true })),
     row("Multi-marked column", "multi", charPicker(opts.multi ?? "*", (v) => set("multi", v))),
     row("Column with an issue", "issue", charPicker(opts.issue ?? "-", (v) => set("issue", v))),
@@ -372,14 +372,14 @@ export function renderBlockGrouping(ed, o) {
     if (nameTaken(ed, v, group)) return toast(`'${v}' is already used`, "error");
     ed.edit(() => cascadeRename(doc, { [group]: v }));
   });
-  box.append(
+  add(box, 
     help(el("label", { class: "field inline-check" }, check, " Output as one field"), "outputAsOne"),
     help(el("label", { class: "field" }, "Name of the joined field", nameInput), "groupName")
   );
-  if (partOf.length) box.append(el("div", { class: "muted small" }, `Columns are already in group ${partOf.map((g) => g.name).join(", ")}: edit it on the Page panel.`));
+  if (partOf.length) add(box, el("div", { class: "muted small" }, `Columns are already in group ${partOf.map((g) => g.name).join(", ")}: edit it on the Page panel.`));
   if (group) {
-    box.append(el("h4", {}, `What each column of ${group} becomes`), renderGroupOptions(ed, group));
-    box.append(renderValidation(ed, [group], { title: `Validation of ${group}`, columns: o.labels.length }));
+    add(box, el("h4", {}, `What each column of ${group} becomes`), renderGroupOptions(ed, group));
+    add(box, renderValidation(ed, [group], { title: `Validation of ${group}`, columns: o.labels.length }));
   }
   return box;
 }
@@ -415,12 +415,12 @@ export function renderGroupList(ed) {
   const broken = new Map(brokenGroups(doc, known).map((g) => [g.name, g.missing]));
   const names = groupNames(doc);
   const box = el("div", { class: "ed-groups" });
-  if (!names.length) box.append(el("p", { class: "muted small" }, "No grouped fields. Tick \"Output as one field\" on a block, or Shift+click several blocks and choose \"Group as one field\"."));
+  if (!names.length) add(box, el("p", { class: "muted small" }, "No grouped fields. Tick \"Output as one field\" on a block, or Shift+click several blocks and choose \"Group as one field\"."));
   for (const name of names) {
     const cols = groupColumns(doc, name);
     const missing = broken.get(name);
     const opts = doc.groupOptions?.[name];
-    box.append(
+    add(box, 
       el(
         "div",
         { class: `ed-group${missing ? " broken" : ""}` },
@@ -457,7 +457,7 @@ export function openGroupDetails(ed, name) {
       return;
     }
     body.innerHTML = "";
-    body.append(
+    add(body, 
       el("div", { class: "row gap" }, el("span", { class: "mono" }, compress(groupColumns(ed.doc, name)).join(", ")), el("button", { class: "small", onclick: () => { dialog.close(); openGroupDialog(ed, { name, columns: groupColumns(ed.doc, name), existing: name }); } }, "Columns and order…")),
       el("h4", {}, "What each column becomes"),
       renderGroupOptions(ed, name),

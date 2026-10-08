@@ -87,6 +87,12 @@ export function displayName(value, fallback = "") {
   return !text || text === "null" || text === "undefined" ? fallback : text;
 }
 
+// node.append() without the "null" text a browser writes for null children
+export function add(node, ...children) {
+  node.append(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
+  return node;
+}
+
 export function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs || {})) {
