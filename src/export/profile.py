@@ -158,10 +158,12 @@ class ExportProfile:
         if mode not in ("table", "sheets", "both"):
             raise ExportError("pdf.mode must be table, sheets or both")
 
-    def columns(self, field_names, custom_labels=None):
+    def columns(self, field_names, custom_labels=None, score_sections=None):
         """
         Resolve output columns against the template's output field names (in
         template order). Returns (columns, warnings).
+        score_sections: (section names, has bands) -> score_<section> and
+        score_band columns right after "score" (only when "score" is exported).
         """
         warnings = []
         custom_labels = custom_labels or {}
@@ -190,6 +192,19 @@ class ExportProfile:
 
         for meta in self.meta:
             add(Column(meta, "meta", meta, type=META_TYPES.get(meta, "text")))
+            if meta == "score" and score_sections:
+                sections, bands = score_sections
+                for section in sections:
+                    add(
+                        Column(
+                            f"score_{section}",
+                            "meta",
+                            f"score_section:{section}",
+                            type="decimal",
+                        )
+                    )
+                if bands:
+                    add(Column("score_band", "meta", "score_band"))
         if self.include_review_status:
             add(Column("review_status", "meta", "review_status"))
         if self.include_corrected:

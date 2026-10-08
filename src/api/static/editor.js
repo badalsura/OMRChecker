@@ -4,6 +4,9 @@ import { api, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
 import { alignmentSection, blockAlignmentFields } from "./editor_align.js";
 import { ocrZoneControls } from "./editor_ocr.js";
+import { openJsonEditor } from "./editor_json.js";
+import { openScoring } from "./scoring.js";
+import { renameTemplate } from "./template_ops.js";
 
 const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc", image: "#787878" };
 const BLOCK_COLOR = "#2f6fdf";
@@ -21,6 +24,7 @@ export function parseFieldString(s) {
 }
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
+const FULL = "\u0000files:"; // undo entry covering template + config + evaluation
 const round1 = (v) => Math.round(v * 10) / 10;
 
 export class TemplateEditor {
@@ -60,7 +64,7 @@ export class TemplateEditor {
     this.dirty = false;
     this.testResult = null;
     this.errors = detail.validation_errors || [];
-    this.report = this.parseReport(detail.report);
+    this.report = detail.report_confirmed ? null : this.parseReport(detail.report);
     this.build();
     this.bgMode = detail.has_reference ? "reference" : "blank";
     await this.loadBackground();
@@ -101,7 +105,7 @@ export class TemplateEditor {
     );
     this.testInput = el("input", { type: "file", accept: "image/*,.pdf", hidden: true, onchange: (e) => this.testRead(e.target.files[0]) });
     this.bgInput = el("input", { type: "file", accept: "image/*", hidden: true, onchange: (e) => this.uploadBackground(e.target.files[0]) });
-    this.titleEl = el("span", { class: "title" }, this.detail.name);
+    this.titleEl = el("span", { class: "title editable-title", title: "Click to rename (jobs and results stay linked)", tabindex: "0", onclick: () => this.rename() }, this.detail.name);
     const toolbar = el(
       "div",
       { class: "ed-toolbar" },
@@ -127,6 +131,8 @@ export class TemplateEditor {
       el("span", { class: "sep" }),
       this.bgSel,
       btn("Colours…", "Sheet colours and colour removal (colorDropout)", () => new ColourPanel(this).open()),
+      btn("Edit JSON", "Edit template.json, config.json and evaluation.json directly", () => openJsonEditor(this)),
+      btn("Scoring…", "Answer key and marking scheme (evaluation.json)", () => openScoring(this)),
       btn("Test read…", "Save, read a sample sheet with this template and overlay the result", () => this.testInput.click()),
       this.testInput,
       this.bgInput
@@ -687,16 +693,63 @@ export class TemplateEditor {
 
   doUndo() {
     if (!this.undo.length) return;
-    this.redo.push(JSON.stringify(this.doc));
-    this.doc = JSON.parse(this.undo.pop());
+    this.takeEntry(this.undo.pop(), this.redo);
     this.afterHistory();
   }
 
   doRedo() {
     if (!this.redo.length) return;
-    this.undo.push(JSON.stringify(this.doc));
-    this.doc = JSON.parse(this.redo.pop());
+    this.takeEntry(this.redo.pop(), this.undo);
     this.afterHistory();
+  }
+
+  // Restore an undo entry, pushing the current state (same kind) on the other stack
+  takeEntry(entry, other) {
+    if (!entry.startsWith(FULL)) {
+      other.push(JSON.stringify(this.doc));
+      this.doc = JSON.parse(entry);
+      return;
+    }
+    other.push(FULL + JSON.stringify({ doc: this.doc, config: this.configText, evaluation: this.evaluationText }));
+    const s = JSON.parse(entry.slice(FULL.length));
+    this.doc = s.doc;
+    this.configText = s.config;
+    this.evaluationText = s.evaluation;
+  }
+
+  // Whole-file edits (Edit JSON, Scoring) as one undo step: {template?, configText?, evaluationText?}
+  applyFiles(files) {
+    this.pushUndo(FULL + JSON.stringify({ doc: this.doc, config: this.configText, evaluation: this.evaluationText }));
+    if (files.template !== undefined) {
+      this.doc = clone(files.template);
+      this.doc.fieldBlocks = this.doc.fieldBlocks || {};
+      this.doc.zones = this.doc.zones || {};
+    }
+    if (files.configText !== undefined) this.configText = files.configText;
+    if (files.evaluationText !== undefined) this.evaluationText = files.evaluationText;
+    this.changed();
+    this.afterHistory();
+  }
+
+  async rename() {
+    const name = await renameTemplate({ id: this.id, name: this.detail.name });
+    if (!name) return;
+    this.detail.name = name;
+    this.titleEl.textContent = name;
+  }
+
+  async confirmWarnings() {
+    if (!confirm("Mark all generator warnings and verification items as checked? They won't be shown again for this layout.")) return;
+    try {
+      const detail = await api(`/templates/${this.id}/confirm-warnings`, { method: "POST" });
+      this.detail.report_confirmed = detail.report_confirmed;
+      this.report = null;
+      this.renderSide();
+      this.draw();
+      toast("Warnings cleared", "ok");
+    } catch (error) {
+      toast(error.message, "error");
+    }
   }
 
   afterHistory() {
@@ -1267,6 +1320,7 @@ export class TemplateEditor {
       )
     );
     if (r.warnings.length) box.append(el("h3", {}, "Warnings"), el("ul", {}, r.warnings.map((w) => el("li", {}, w))));
+    box.append(el("button", { class: "small", title: "Clear these warnings for good once you have checked them (saved with the layout)", onclick: () => this.confirmWarnings() }, "Confirm all checked"));
     return box;
   }
 

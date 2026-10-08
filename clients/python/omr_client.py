@@ -215,6 +215,19 @@ class OMRClient:
             content_type="application/json",
         )
 
+    def duplicate_template(self, template_id: str, name: str) -> Dict[str, Any]:
+        """Copy template, config, answer key and reference image under a new
+        (unique) name; returns the new template. Scans stay with the original."""
+        return self._post_json(
+            f"/templates/{parse.quote(template_id)}/duplicate", {"name": name}
+        )
+
+    def rename_template(self, template_id: str, name: str) -> Dict[str, Any]:
+        """Change the display name (must be unique); the id stays the same."""
+        return self._post_json(
+            f"/templates/{parse.quote(template_id)}/rename", {"name": name}
+        )
+
     def delete_template(self, template_id: str, purge_scans: bool = False):
         return self._json(
             "DELETE",

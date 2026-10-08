@@ -34,8 +34,12 @@ import numpy as np
 from dotmap import DotMap
 
 from src.defaults import CONFIG_DEFAULTS
-from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.geometry import GeometryRecorder, print_kept_image
+from src.evaluation import (
+    EvaluationConfig,
+    evaluate_concatenated_response_detailed,
+    scoring_summary,
+)
 from src.logger import logger
 from src.ml.classifiers import load_crop_classifier
 from src.readers import read_zone, read_zones
@@ -70,6 +74,8 @@ class ScanResult:
     # How the sheet was mapped onto the template (src/geometry.py); None when
     # a step could not be recorded
     geometry: Optional[dict] = None
+    # Score details: max_score, per-section scores, verdict counts, band
+    scoring: dict = field(default_factory=dict)
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
@@ -92,6 +98,7 @@ class ScanResult:
             "timings_ms": self.timings_ms,
             "checks": self.checks,
             "validation": self.validation,
+            "scoring": self.scoring,
         }
         if self.geometry is not None:
             out["geometry"] = self.geometry
@@ -147,6 +154,9 @@ class OMREngine:
             )
             # Explanations are console tables meant for the CLI
             self.evaluation_config.should_explain_scoring = False
+            if not self.evaluation_config.grade_enabled:
+                # "grade": false keeps the answer key but switches scoring off
+                self.evaluation_config = None
 
         ml_params = self.tuning_config.ml_params
         self.image_ops = self.template.image_instance_ops
@@ -259,11 +269,14 @@ class OMREngine:
             )
             timings["rules"] = _elapsed_ms(step)
 
-        score = None
+        score, scoring = None, {}
         if self.evaluation_config is not None:
-            score = evaluate_concatenated_response(
-                responses, self.evaluation_config, Path(file_id), None
+            scoring = scoring_summary(
+                evaluate_concatenated_response_detailed(
+                    responses, self.evaluation_config, Path(file_id), None
+                )
             )
+            score = scoring["score"]
 
         review = review_items(fields, zones, rule_review)
         review.extend(self._sheet_review(fields))
@@ -279,6 +292,7 @@ class OMREngine:
             checks=checks,
             validation=validation,
             score=score,
+            scoring=scoring,
             thresholds=detailed["thresholds"],
             timings_ms=timings,
             geometry=geometry,

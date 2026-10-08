@@ -1110,6 +1110,7 @@ def overlay_payload(result, info):
         "source_path": result.get("source_path") or result.get("input_path"),
         "status": result.get("status"),
         "score": result.get("score"),
+        "scoring": result.get("scoring") or None,
         "error": result.get("error"),
         "verified": result.get("verified"),
         "corrected": is_corrected(result),
