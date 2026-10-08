@@ -272,6 +272,7 @@ def build_assignments(matches, grids, taken):
         column, unit = match["column"], match["grids"]
         if match["fields"] == 1:
             names = [_single_field_name(column, taken)]
+            field_truth[names[0]] = (column, 0, 1)
         else:
             names = _field_names(column, match["fields"], taken)
             taken.update(names)
@@ -280,8 +281,9 @@ def build_assignments(matches, grids, taken):
                 key = f"{key}_value"
             composites[key] = list(names)
             taken.add(key)
-        for position, name in enumerate(names):
-            field_truth[name] = (column, position, len(names))
+            # Composite numbers are checked as a whole (left- or right-aligned
+            # entries both read correctly), under their customLabel
+            field_truth[key] = (column, None, len(names))
         start = 0
         for k, values in zip(unit, match["values"]):
             grid = grids[k]
@@ -317,16 +319,11 @@ def truth_tokens(field_truth, labels, n_sheets):
                 table[s][name] = None
                 continue
             text = str(value).strip("\r\n")
-            if n_fields == 1:
+            if position is None:
+                table[s][name] = text  # whole value, compared with same_value
+            else:
                 text = text.strip()
                 table[s][name] = set(text) if text else set()
-            elif len(text) == n_fields:
-                char = text[position]
-                table[s][name] = set() if char in " _-" else {char}
-            elif not text.strip():
-                table[s][name] = set()
-            else:
-                table[s][name] = None
     return table
 
 

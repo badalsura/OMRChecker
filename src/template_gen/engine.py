@@ -400,6 +400,8 @@ def validate_template(template):
 def _compare(value, truth):
     if truth is None:
         return None
+    if isinstance(truth, str):
+        return naming.same_value(str(value or ""), truth)
     return set(str(value or "").replace(" ", "")) == truth
 
 
@@ -453,10 +455,14 @@ def self_check(template, images, table, page_size, reference=None, end_to_end=Fa
                 failures.append({"sheet": s, "error": result.error})
                 continue
             row = table[s] if table else None
-            for label, details in result.fields.items():
+            values = {label: details["value"] for label, details in result.fields.items()}
+            for label, value in (result.responses or {}).items():
+                if row and isinstance(row.get(label), str):
+                    values[label] = value
+            for label, value in values.items():
                 if not row or label not in row:
                     continue
-                ok = _compare(details["value"], row[label])
+                ok = _compare(value, row[label])
                 if ok is None:
                     continue
                 stats = per_field.setdefault(label, [0, 0])
@@ -960,6 +966,11 @@ def generate_template(images, labels=None, options=None):
         per_field = checks["registered"].get("per_field", {})
         for block in block_reports:
             scores = [per_field[n] for n in block["field_labels"] if n in per_field]
+            scores += [
+                per_field[key]
+                for key, subs in exact_composites.items()
+                if key in per_field and set(subs) & set(block["field_labels"])
+            ]
             if scores:
                 block["label_agreement"] = round(float(np.mean(scores)), 4)
         for label, score in sorted(per_field.items()):
