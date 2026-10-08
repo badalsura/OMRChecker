@@ -836,8 +836,43 @@ def diff_reads(old, new):
     return changes
 
 
+def group_highlights(result):
+    """
+    {column: [reason, ...]} for bubble columns of grouped values that need a
+    look: columns a group reports as multi-marked or unclear (result "groups",
+    {group: {"columns": [{"name", "state"}]}}), and the columns listed by a
+    pending review item ("fields", or "field_flags": {column: [flags]}).
+    Columns a person already decided are left out.
+    """
+    fields = result.get("fields") or {}
+    marks = {}
+
+    def add(column, reason):
+        if fields.get(column, {}).get("reviewed"):
+            return
+        reasons = marks.setdefault(column, [])
+        if reason not in reasons:
+            reasons.append(reason)
+
+    for group, details in (result.get("groups") or {}).items():
+        if not isinstance(details, dict):
+            continue
+        for column in details.get("columns") or []:
+            if isinstance(column, dict) and column.get("state") in ("multi", "issue"):
+                add(column.get("name"), f"{group}: {column['state']}")
+    for item in result.get("review") or []:
+        for column, flags in (item.get("field_flags") or {}).items():
+            for flag in flags or ["needs_review"]:
+                add(column, f"{item.get('name')}: {flag}")
+        if not item.get("field_flags"):
+            for column in item.get("fields") or []:
+                add(column, f"{item.get('name')}: needs review")
+    return marks
+
+
 def overlay_payload(result, info):
     """Everything the browser needs to draw and edit the overlay."""
+    highlights = group_highlights(result)
     flagged = {}
     for name, flag in flag_rows(result):
         flagged.setdefault(name, []).append(flag)
@@ -866,6 +901,7 @@ def overlay_payload(result, info):
                 "flags": field.get("flags") or [],
                 "flagged": name in flagged,
                 "pending": name in pending,
+                "group_flags": highlights.get(name, []),
                 "box": box,
                 "bubbles": [
                     {
@@ -994,4 +1030,8 @@ def overlay_payload(result, info):
             item for item in result.get("review") or [] if item.get("kind") == "sheet"
         ],
         "audit": (result.get("audit") or [])[-50:],
+        # Recorded page/block geometry (block border outlines, other views)
+        "geometry_recorded": bool(result.get("geometry")),
+        "blocks": (result.get("geometry") or {}).get("blocks") or {},
+        "groups": result.get("groups") or {},
     }

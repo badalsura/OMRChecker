@@ -437,6 +437,7 @@ class ScanIndex:
         kind=None,
         limit=50,
         offset=0,
+        created_after=None,
     ):
         where, params = self._filters(
             state="pending",
@@ -446,6 +447,10 @@ class ScanIndex:
             name=name,
             kind=kind,
         )
+        if created_after is not None:
+            # Items queued since a client last looked (new sheets of a running job)
+            where += " AND created_at > ?"
+            params.append(created_after)
         items = self._query(
             f"SELECT * FROM review_items {where} ORDER BY created_at, scan_id, name "
             "LIMIT ? OFFSET ?",
@@ -758,6 +763,37 @@ class ScanIndex:
             f"SELECT COUNT(DISTINCT scan_id) AS n FROM field_outcomes {where}", params
         )[0]["n"]
         return sheets, per_field
+
+    def review_states(self, pairs):
+        """{(scan_id, name): state} of review items ("pending" / "done")."""
+        states = {}
+        with self.lock:
+            for scan_id, name in pairs:
+                row = self.conn.execute(
+                    "SELECT state FROM review_items WHERE scan_id=? AND name=?",
+                    (scan_id, name),
+                ).fetchone()
+                if row is not None:
+                    states[(scan_id, name)] = row[0]
+        return states
+
+    def delete_scans(self, scan_ids):
+        """Drop scans from the index (the corrections audit trail is kept)."""
+        scan_ids = list(scan_ids)
+        if not scan_ids:
+            return
+        with self.lock:
+            for table, column in (
+                ("scans", "id"),
+                ("review_items", "scan_id"),
+                ("scan_flags", "scan_id"),
+                ("field_outcomes", "scan_id"),
+            ):
+                self.conn.executemany(
+                    f"DELETE FROM {table} WHERE {column}=?",
+                    [(scan_id,) for scan_id in scan_ids],
+                )
+            self.conn.commit()
 
     def delete_template_rows(self, template_id):
         with self.lock:

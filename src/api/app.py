@@ -12,6 +12,7 @@ import csv
 import io
 import json
 import mimetypes
+import os
 import secrets
 import shutil
 import threading
@@ -48,7 +49,7 @@ from pydantic import BaseModel, Field
 
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
-from src.api import results_routes
+from src.api import fs_routes, manage_routes, results_routes, views_routes
 from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
     ReviewError,
@@ -290,6 +291,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "field_types": FIELD_TYPES,
             "zone_types": ZONE_SCHEMA["properties"]["type"]["enum"],
             "workers": settings.effective_workers,
+            "cpu_count": os.cpu_count() or 1,
             "max_upload_mb": settings.max_upload_mb,
             "sync_max_files": settings.sync_max_files,
             "auth_required": bool(settings.api_key),
@@ -693,7 +695,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         ),
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
+        created_after: Optional[float] = Query(
+            None, description="Only items queued after this server time ('now')"
+        ),
     ):
+        # A little before the query, so an item committed meanwhile is not missed
+        now = time.time() - 2
         rows, total = ctx.index.pending_reviews(
             template_id=template_id,
             job_id=job_id,
@@ -702,6 +709,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             kind=kind,
             limit=limit,
             offset=offset,
+            created_after=created_after,
         )
         results, items = {}, []
         for row in rows:
@@ -713,7 +721,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             if not result:
                 continue
             items.append(review_item(result, row["name"]))
-        return {"items": [i for i in items if i], "total": total}
+        return {"items": [i for i in items if i], "total": total, "now": now}
 
     def review_item(result, name):
         scan_id = result["scan_id"]
@@ -805,6 +813,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             or validation.get("reasons")
             or sheet_reasons(entry),
             "fields": (entry or {}).get("fields"),
+            # Column states of a grouped value (ok / empty / multi / issue)
+            "group": (result.get("groups") or {}).get(name),
             "candidates": candidates,
             "crop_url": (
                 f"/scans/{scan_id}/crop?name={quote(name)}"
@@ -856,6 +866,11 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         ]
         if folder:
             job["folder"] = str(folder)
+            job["recursive"] = bool(recursive)
+            fs_routes.remember_folder(ctx, folder)
+        warning = manage_routes.workers_warning(workers)
+        if warning:
+            job["warnings"] = [warning]
         ctx.jobs.add_files(job, folder_files + uploaded)
         if start:
             ctx.jobs.enqueue(job)
@@ -984,6 +999,10 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     register_tool_routes(app, secured, read_upload, ctx)
     # results screen: render, correct, verify, regrade, accuracy, audit
     results_routes.register(app, ctx, secured)
+    # original / full-colour views, folder picker, deletes and bulk review
+    views_routes.register(app, ctx, secured)
+    fs_routes.register(app, ctx, secured)
+    manage_routes.register(app, ctx, secured)
     # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
     exports_module.register(app, ctx, secured)
 
