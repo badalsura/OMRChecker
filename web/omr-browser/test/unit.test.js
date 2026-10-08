@@ -168,3 +168,28 @@ test("fixed threshold mode, and Python repr() in validation reasons", async () =
   assert.equal(r.responses.q1, "A");
   assert.deepEqual(r.validation.q1.reasons, ["does not match \"it's\\\\d\""]);
 });
+
+test("group placeholders (groupOptions) follow src/utils/parsing.py", async () => {
+  const { joinGroup, columnState } = OMR._internals;
+  const col = (value, flags, review, reviewed) => ({ value, flags: flags || (value ? [] : ["empty"]), needs_review: !!review, reviewed: !!reviewed });
+  const fields = { r1: col("0"), r2: col(""), r3: col("12", ["multi_marked"], true), r4: col("4", ["low_confidence"], true), r5: col("5"), r6: col("6") };
+  const omr = {};
+  Object.keys(fields).forEach((k) => (omr[k] = fields[k].value));
+  const cols = ["r1", "r2", "r3", "r4", "r5", "r6"];
+  const defaults = { empty: " ", multi: "*", issue: "-" };
+  assert.deepEqual(joinGroup(cols, omr, defaults, fields, ""), ["0 *-56", ["ok", "empty", "multi", "issue", "ok", "ok"]]);
+  assert.equal(joinGroup(cols, omr, { empty: null, multi: "*", issue: "-" }, fields, "")[0], "0*-56");
+  assert.equal(joinGroup(cols, omr, null, fields, "")[0], "012456");
+  assert.equal(columnState("", col("", ["empty", "possible_missed_mark"], true)), "issue");
+  assert.equal(columnState("12", col("12", ["multi_marked"], false, true)), "ok");
+
+  // A blank sheet: empty columns keep their place; old templates keep the plain join
+  const blank = { width: 200, height: 120, data: new Uint8Array(200 * 120).fill(255) };
+  const plain = await OMR.loadTemplate(Object.assign({ customLabels: { both: ["q1", "q2"] } }, SMALL));
+  assert.equal((await plain.scan(blank)).responses.both, "");
+  const grouped = await OMR.loadTemplate(Object.assign({ customLabels: { both: ["q1", "q2"] }, groupOptions: { both: { empty: "_" } } }, SMALL));
+  const r = await grouped.scan(blank);
+  assert.equal(r.responses.both, "__");
+  assert.deepEqual(r.groups.both.columns.map((c) => c.state), ["empty", "empty"]);
+  assert.equal(r.groups.both.flagged, false);
+});

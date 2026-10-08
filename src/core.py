@@ -1,3 +1,4 @@
+import functools
 import os
 from collections import defaultdict
 from typing import Any
@@ -19,6 +20,25 @@ from src.utils.image import CLAHE_HELPER, ImageUtils
 from src.utils.interaction import InteractionUtils
 
 
+@functools.lru_cache(maxsize=256)
+def _ellipse_mask(h, w):
+    """Boolean inscribed-ellipse mask for an h x w bubble box (cached, read-only)."""
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(
+        mask,
+        (w // 2, h // 2),
+        (max(int(w * 0.35), 1), max(int(h * 0.35), 1)),
+        0,
+        0,
+        360,
+        255,
+        -1,
+    )
+    inside = mask > 0
+    inside.setflags(write=False)
+    return inside
+
+
 class ImageInstanceOps:
     """Class to hold fine-tuned utilities for a group of images. One instance for each processing directory."""
 
@@ -33,6 +53,34 @@ class ImageInstanceOps:
         # While companion images are tracked: geometric steps of the current
         # preprocessor (see ImagePreprocessor.record_geometry)
         self.geometry_ops = None
+        # While a sheet is read by OMREngine.scan: src.geometry.GeometryRecorder
+        self.geometry_recorder = None
+
+    def alignment_option(self, template, key, default=None):
+        """A template's "alignment" setting, else config alignment_params."""
+        overrides = getattr(template, "alignment", None) or {}
+        if key in overrides:
+            return overrides[key]
+        return self.tuning_config.alignment_params.get(key, default)
+
+    def flatten_page_outline(self, image, companions, file_path):
+        """Item 40: flatten a phone photo onto its page outline, if one is found."""
+        from src.page_outline import find_page_outline, flatten_page
+
+        outline = find_page_outline(image)
+        if outline is None:
+            logger.info(f"No page outline found in '{file_path}'; using the whole image")
+            return image
+        flat, matrix, size = flatten_page(image, outline)
+        recorder = self.geometry_recorder
+        if recorder is not None:
+            recorder.warp(matrix, size)
+            recorder.info["page_outline"] = [
+                [round(float(x), 2), round(float(y), 2)] for x, y in outline
+            ]
+        for key in list(companions or {}):
+            companions[key] = ImageUtils.four_point_transform(companions[key], outline)
+        return flat
 
     def apply_preprocessors(self, file_path, in_omr, template, companions=None):
         """
@@ -42,6 +90,9 @@ class ImageInstanceOps:
         """
         tuning_config = self.tuning_config
         pre_processors = template.pre_processors
+        recorder = self.geometry_recorder
+        if self.alignment_option(template, "page_outline", False):
+            in_omr = self.flatten_page_outline(in_omr, companions, file_path)
         # resize to conform to template, unless registration works on the original
         # pixels (or there is nothing to run, so reading resizes straight to the page)
         if pre_processors and not pre_processors[0].needs_full_resolution:
@@ -50,11 +101,13 @@ class ImageInstanceOps:
                 tuning_config.dimensions.processing_height,
             )
             in_omr = ImageUtils.resize_util(in_omr, *size)
+            if recorder is not None:
+                recorder.resize(in_omr.shape[1], in_omr.shape[0])
             for key in list(companions or {}):
                 companions[key] = ImageUtils.resize_util(companions[key], *size)
 
         # run pre_processors in sequence
-        for pre_processor in template.pre_processors:
+        for index, pre_processor in enumerate(template.pre_processors):
             if not companions:
                 in_omr = pre_processor.apply_filter(in_omr, file_path)
             else:
@@ -65,9 +118,22 @@ class ImageInstanceOps:
                 finally:
                     self.geometry_ops = None
                 if in_omr is not None:
-                    self.follow_geometry(pre_processor, ops, companions, file_path)
+                    # Re-runs on companions must not add steps to the record
+                    self.geometry_recorder = None
+                    try:
+                        self.follow_geometry(pre_processor, ops, companions, file_path)
+                    finally:
+                        self.geometry_recorder = recorder
             if in_omr is None:
                 break
+            if recorder is not None:
+                mode = getattr(pre_processor, "geometry", "unknown")
+                if mode == "none":
+                    recorder.filter(index, type(pre_processor).__name__)
+                elif mode != "recorded":
+                    recorder.invalidate(f"{type(pre_processor).__name__} geometry")
+                elif tuple(recorder.size) != (in_omr.shape[1], in_omr.shape[0]):
+                    recorder.invalidate(f"{type(pre_processor).__name__} size")
         return in_omr
 
     @staticmethod
@@ -97,8 +163,15 @@ class ImageInstanceOps:
             result["multi_roll"],
         )
 
-    def read_omr_response_detailed(self, template, image, name, save_dir=None):
-        """Read all bubble fields, returning per-field values, confidence and review flags."""
+    def read_omr_response_detailed(
+        self, template, image, name, save_dir=None, print_image=None
+    ):
+        """
+        Read all bubble fields, returning per-field values, confidence and review
+        flags. print_image: an aligned copy that keeps the printed form (see
+        src.geometry.print_kept_image), used to find block borders when the
+        image read has its print dropped out.
+        """
         config = self.tuning_config
         auto_align = config.alignment_params.auto_align
         img = image.copy()
@@ -108,6 +181,13 @@ class ImageInstanceOps:
         )
         if img.max() > img.min():
             img = ImageUtils.normalize_util(img)
+        print_img = None
+        if print_image is not None:
+            print_img = ImageUtils.resize_util(
+                print_image, template.page_dimensions[0], template.page_dimensions[1]
+            )
+            if print_img.max() > print_img.min():
+                print_img = ImageUtils.normalize_util(print_img)
         # Processing copies
         transp_layer = img.copy()
         final_marked = img.copy()
@@ -249,7 +329,7 @@ class ImageInstanceOps:
                 field_block.shift, field_block.shift_y = self.snap_field_block(
                     img, field_block, snap_radius
                 )
-        rectify_failed = self.rectify_field_blocks(img, template)
+        rectify_failed = self.rectify_field_blocks(img, template, print_img)
 
         final_align = None
         if config.outputs.show_image_level >= 2:
@@ -552,6 +632,7 @@ class ImageInstanceOps:
             "multi_roll": multi_roll,
             "field_details": field_details,
             "aligned_image": img,
+            "print_image": print_img,
             "thresholds": {
                 "global": round(float(global_thr), 2),
                 "global_std": round(float(global_std_thresh), 2),
@@ -560,27 +641,49 @@ class ImageInstanceOps:
             },
         }
 
-    def rectify_field_blocks(self, img, template):
+    def rectify_field_blocks(self, img, template, print_img=None):
         """
-        Fit blocks with rectifyOnBorder onto their printed borders (src/rectify.py).
-        Returns the names of blocks where that failed (their fields get flagged).
+        Fit blocks with rectifyOnBorder onto their printed borders, and blocks
+        with blockPerspective onto their printed bubble outlines (src/rectify.py).
+        Borders are searched on print_img when given (print kept), bubbles are
+        still read on img. Returns the names of blocks where that failed (their
+        fields get flagged).
         """
-        alignment = self.tuning_config.alignment_params
-        default = alignment.get("rectify_on_border", False)
+        default = self.alignment_option(template, "rectify_on_border", False)
+        perspective = self.alignment_option(template, "block_perspective", False)
+        verify = self.alignment_option(template, "verify_bubble_fit", True)
+        search = self.alignment_option(template, "rectify_search_px", 20)
+        search_img = img if print_img is None else print_img
         failed = set()
         for field_block in template.field_blocks:
             if field_block.rectified:
                 from src.rectify import reset_offsets
 
                 reset_offsets(field_block)
+            field_block.last_rectification = None
             enabled = field_block.rectify_on_border
-            if not (default if enabled is None else enabled):
+            border_on = default if enabled is None else enabled
+            fit = getattr(field_block, "block_perspective", None)
+            bubbles_on = perspective if fit is None else fit
+            if not (border_on or bubbles_on):
                 continue
-            from src.rectify import apply_offsets, rectify_field_block
-
-            result = rectify_field_block(
-                img, field_block, alignment.get("rectify_search_px", 20)
+            from src.rectify import (
+                apply_offsets,
+                fit_block_by_bubbles,
+                rectify_field_block,
             )
+
+            result = None
+            if border_on:
+                result = rectify_field_block(
+                    search_img, field_block, search, verify=verify
+                )
+            if bubbles_on and (result is None or not result.ok):
+                fitted = fit_block_by_bubbles(
+                    search_img, field_block, search, verify=verify
+                )
+                if fitted.ok or result is None:
+                    result = fitted
             field_block.last_rectification = result.to_dict()
             if result.ok:
                 apply_offsets(field_block, result.offsets)
@@ -659,19 +762,7 @@ class ImageInstanceOps:
         roi = img[max(y, 0) : y + box_h, max(x, 0) : x + box_w]
         if roi.size == 0:
             return 0.0
-        h, w = roi.shape[:2]
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.ellipse(
-            mask,
-            (w // 2, h // 2),
-            (max(int(w * 0.35), 1), max(int(h * 0.35), 1)),
-            0,
-            0,
-            360,
-            255,
-            -1,
-        )
-        inside = roi[mask > 0]
+        inside = roi[_ellipse_mask(*roi.shape[:2])]
         if inside.size == 0:
             return 0.0
         return float(np.count_nonzero(inside < threshold)) / float(inside.size)
@@ -837,27 +928,32 @@ class ImageInstanceOps:
         # Sort the Q bubbleValues
         # TODO: Change var name of q_vals
         q_vals = sorted(q_vals_orig)
-        # Find the FIRST LARGE GAP and set it as threshold:
+        # Find the FIRST LARGE GAP and set it as threshold (vectorised; the first
+        # index of the largest jump, exactly as the old element-by-element loop):
         ls = (looseness + 1) // 2
         l = len(q_vals) - ls
         max1, thr1 = MIN_JUMP, global_default_threshold
-        for i in range(ls, l):
-            jump = q_vals[i + ls] - q_vals[i - ls]
-            if jump > max1:
-                max1 = jump
-                thr1 = q_vals[i - ls] + jump / 2
+        lows = np.asarray(q_vals[: max(l - ls, 0)], dtype=np.float64)
+        jumps = np.asarray(q_vals[2 * ls : l + ls], dtype=np.float64) - lows
+        if jumps.size:
+            best = int(np.argmax(jumps))
+            if jumps[best] > max1:
+                max1 = float(jumps[best])
+                thr1 = float(lows[best] + jumps[best] / 2)
 
         # NOTE: thr2 is deprecated, thus is JUMP_DELTA
         # Make use of the fact that the JUMP_DELTA(Vertical gap ofc) between
         # values at detected jumps would be atleast 20
         max2, thr2 = MIN_JUMP, global_default_threshold
         # Requires atleast 1 gray box to be present (Roll field will ensure this)
-        for i in range(ls, l):
-            jump = q_vals[i + ls] - q_vals[i - ls]
-            new_thr = q_vals[i - ls] + jump / 2
-            if jump > max2 and abs(thr1 - new_thr) > JUMP_DELTA:
-                max2 = jump
-                thr2 = new_thr
+        if jumps.size:
+            new_thrs = lows + jumps / 2
+            far = np.flatnonzero(np.abs(thr1 - new_thrs) > JUMP_DELTA)
+            if far.size:
+                best = int(far[np.argmax(jumps[far])])
+                if jumps[best] > max2:
+                    max2 = float(jumps[best])
+                    thr2 = float(new_thrs[best])
         if max1 == MIN_JUMP and len(q_vals) >= 4:
             # No single large jump (e.g. pencil and partial marks fill the gap between
             # empty and dark bubbles): fall back to Otsu's two-class split instead of

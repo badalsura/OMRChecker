@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OMR Station</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/results_views.css">
+  <link rel="stylesheet" href="/static/editor_tools.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%232f6fdf'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -37,6 +39,7 @@
             <span>or click to choose files</span>
             <input id="scan-files" type="file" multiple accept="image/*,.pdf" hidden>
           </div>
+          <div id="scan-pdf"></div>
           <div class="stats" id="scan-stats"></div>
           <div class="row gap">
             <button id="scan-export" class="small ghost">Export CSV</button>
@@ -62,6 +65,7 @@
         <label class="field inline">Scan <input id="rv-scan" placeholder="any" size="12"></label>
         <label class="field inline"><input type="checkbox" id="rv-wide"> Wide context</label>
         <button id="rv-load" class="primary">Load queue</button>
+        <button id="rv-accept-bulk" class="ghost" title="Accept every pending item under these filters with the value the engine read. Nothing is deleted; who and when is recorded.">Accept all as read…</button>
         <span class="spacer"></span>
         <span id="rv-progress" class="muted"></span>
       </div>
@@ -118,11 +122,30 @@
             <button id="res-zoom-in" class="small ghost" title="Zoom in (+)">+</button>
             <label class="small muted"><input type="checkbox" id="res-overlay" checked> overlay (O)</label>
             <span class="sep"></span>
+            <label class="small muted" title="Aligned: the corrected page the engine read. Full colour: the same page in its original colours (no colour dropout, no grey), to tell pencil from pen. Original: the scan as it came off the scanner, with every outline mapped back through the saved page transform.">View
+              <select id="res-mode" class="small">
+                <option value="aligned">Aligned</option>
+                <option value="color">Aligned, full colour</option>
+                <option value="original">Original as background</option>
+              </select>
+              <span class="help-i" tabindex="0" title="Aligned: the corrected page the engine read. Full colour: the same page in its original colours (no colour dropout, no grey). Original: the scan as it came off the scanner, outlines mapped back through the saved page transform. All views replay the geometry the engine recorded; clicking a bubble corrects it in every view.">ⓘ</span>
+            </label>
+            <label class="small muted" title="Two pages next to each other; zoom, scroll and hover move both (S)"><input type="checkbox" id="res-sbs"> side by side (S)</label>
+            <label id="res-left-wrap" class="small muted hidden" title="What the left pane shows; the right pane shows the View choice">left
+              <select id="res-left" class="small">
+                <option value="original">Original</option>
+                <option value="color">Full colour</option>
+                <option value="aligned">Aligned</option>
+              </select>
+            </label>
+            <label class="small muted" title="Show the block borders the engine found (solid) or fitted (dashed) (B)"><input type="checkbox" id="res-borders"> borders (B)</label>
+            <span class="sep"></span>
             <button id="res-regrade" class="small" title="Re-read with different settings (R)">Regrade…</button>
             <span class="spacer"></span>
             <button id="res-accuracy" class="small ghost">Accuracy</button>
             <button id="res-remap" class="small ghost" title="Input folders moved?">Path remap</button>
             <button id="res-export" class="small ghost">Export…</button>
+            <button id="res-delete" class="small ghost danger" title="Delete this sheet's result (asks first; recorded in the audit log)">Delete…</button>
           </div>
           <div class="res-canvas-wrap"><canvas id="res-canvas"></canvas><div id="res-status" class="ed-status"></div></div>
         </div>
@@ -131,7 +154,7 @@
       <div class="keys muted">
         Click a bubble to mark/unmark it · click a zone or a field to edit its value ·
         <kbd>J</kbd>/<kbd>K</kbd> next/previous sheet · <kbd>V</kbd> verify ·
-        <kbd>N</kbd> next flagged field · <kbd>E</kbd> edit selected · <kbd>F</kbd> fit · wheel zoom, drag to pan
+        <kbd>N</kbd> next flagged field · <kbd>E</kbd> edit selected · <kbd>F</kbd> fit · <kbd>S</kbd> side by side · <kbd>B</kbd> borders · wheel zoom, drag to pan
       </div>
     </section>
 
@@ -151,17 +174,30 @@
           </label>
           <label class="field">Worker processes <input id="job-workers" type="number" min="1" placeholder="auto"></label>
         </div>
+        <div id="job-workers-warning" class="small fs-warn"></div>
+        <div id="job-pdf"></div>
         <div class="row gap wrap source-row">
-          <div class="source-box">
-            <strong>Upload files</strong>
+          <div class="source-box" data-help>
+            <strong>Upload files <span class="help-i" tabindex="0" title="Copies the sheets from this computer to the server. Use it when the server is another machine, or for a few hundred sheets.">ⓘ</span></strong>
             <div class="row gap">
               <input id="job-files" type="file" multiple accept="image/*,.pdf">
               <label class="small muted"><input id="job-dir-mode" type="checkbox"> pick a folder</label>
             </div>
+            <div class="help-line small muted">Copies the sheets from this computer to the server. Use it when the server is another machine, or for a few hundred sheets.</div>
           </div>
-          <div class="source-box">
-            <strong>…or a folder on the server</strong>
-            <input id="job-folder" placeholder="/scans/batch-01" size="40">
+          <div class="source-box" data-help>
+            <strong>…or a folder on the server <span class="help-i" tabindex="0" title="Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.">ⓘ</span></strong>
+            <div class="row gap wrap">
+              <input id="job-folder" placeholder="D:\scans\batch-01" size="40" spellcheck="false" autocomplete="off">
+              <button id="job-browse" class="small" type="button" title="Pick a folder on the server">Browse…</button>
+              <select id="job-recent" class="small" title="The last 10 folders jobs were started from"><option value="">Recent folders…</option></select>
+            </div>
+            <div class="row gap wrap">
+              <label class="small"><input id="job-recursive" type="checkbox" checked> Include subfolders <span class="help-i" tabindex="0" title="Also read the sheets in every folder inside this one. Untick to read only the files directly in this folder.">ⓘ</span></label>
+              <span id="job-folder-check" class="small muted"></span>
+            </div>
+            <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.</div>
+            <div class="small muted">Examples: Windows <code>D:\scans\batch-01</code> · network share <code>\\server\scans\batch-01</code> · Linux <code>/srv/scans/batch-01</code></div>
           </div>
         </div>
         <div class="row gap">
@@ -192,10 +228,10 @@
           </div>
           <div class="panel">
             <h2>Auto-generate from samples</h2>
-            <p class="muted">Upload ~20 filled sample sheets and, optionally, a labels CSV (a <code>file</code> column plus one column per field). The draft opens in the editor with the items that need verification highlighted.</p>
+            <p class="muted">Upload ~20 filled sample sheets and, optionally, a labels file: CSV or Excel (.xlsx) with a file-name column (“File Name”, “file”, … any spelling) plus one column per field. An answer-string column such as <code>ANS</code> (“CB A*D…”: space = blank, * = several marks) is split into q1, q2, … The draft opens in the editor with the items that need verification highlighted.</p>
             <label class="field">Name <input id="gen-name" placeholder="e.g. Admission form"></label>
             <label class="field">Sample sheets <input id="gen-files" type="file" multiple accept="image/*,.pdf"></label>
-            <label class="field">Labels CSV <input id="gen-labels" type="file" accept=".csv,text/csv"></label>
+            <label class="field">Labels (CSV or .xlsx) <input id="gen-labels" type="file" accept=".csv,.txt,.tsv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
             <details><summary class="muted">Options (JSON)</summary><textarea id="gen-options" rows="3" placeholder='{"bubble_size": [30, 30]}'></textarea></details>
             <button id="gen-run" class="primary">Generate draft</button>
             <span id="gen-status" class="muted"></span>

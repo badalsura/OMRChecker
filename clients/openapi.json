@@ -1017,6 +1017,24 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "created_after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only items queued after this server time ('now')",
+              "title": "Created After"
+            },
+            "description": "Only items queued after this server time ('now')"
           }
         ],
         "responses": {
@@ -1383,6 +1401,45 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Delete Job",
+        "description": "Delete a job and every scan it produced (results, stored images and\nuploaded files). Files of a server folder are never deleted. A running\njob must be cancelled first.",
+        "operationId": "delete_job_jobs__job_id__delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2123,6 +2180,19 @@
               "default": "jpg",
               "title": "Format"
             }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(dropout|print)$",
+              "description": "dropout: the image the bubbles were read on; print: the same page with the print kept (where block borders were searched)",
+              "default": "dropout",
+              "title": "View"
+            },
+            "description": "dropout: the image the bubbles were read on; print: the same page with the print kept (where block borders were searched)"
           }
         ],
         "responses": {
@@ -2186,6 +2256,17 @@
               "title": "Preview"
             },
             "description": "The last regrade preview"
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(dropout|print)$",
+              "default": "dropout",
+              "title": "View"
+            }
           }
         ],
         "responses": {
@@ -2620,6 +2701,1476 @@
         }
       }
     },
+    "/templates/{template_id}/align/samples": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "List Samples",
+        "operationId": "list_samples_templates__template_id__align_samples_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Add Samples",
+        "operationId": "add_samples_templates__template_id__align_samples_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_add_samples_templates__template_id__align_samples_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/align/samples/{name}": {
+      "delete": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Delete Sample",
+        "operationId": "delete_sample_templates__template_id__align_samples__name__delete",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/align/preview": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Align Preview",
+        "description": "Read one sheet with the (unsaved) template; return its geometry to draw.",
+        "operationId": "align_preview_templates__template_id__align_preview_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlignBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/align/test": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Align Test",
+        "description": "Run on every sample; list the blocks whose border was not found.",
+        "operationId": "align_test_templates__template_id__align_test_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestBody",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scans/{scan_id}/views/{view}": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan View",
+        "description": "view=original: the colour scan with every outline mapped back through\nthe recorded page transform (map: fields -> {box, bubbles: {value:\nquad}}, zones -> quad, blocks -> {corners, status}; quads in image\npixels, TL TR BR BL). view=color: the aligned page in full colour\n(same coordinates as /render). Nothing is re-detected.",
+        "operationId": "scan_view_scans__scan_id__views__view__get",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          },
+          {
+            "name": "view",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "View"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(jpg|png)$",
+              "default": "jpg",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scans/{scan_id}/views/{view}/image": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan View Image",
+        "operationId": "scan_view_image_scans__scan_id__views__view__image_get",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          },
+          {
+            "name": "view",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "View"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(jpg|png)$",
+              "default": "jpg",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/roots": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Roots",
+        "description": "Starting points of the folder picker: drives, or the allowed folders.",
+        "operationId": "fs_roots_fs_roots_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/browse": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Browse",
+        "description": "Sub-folders of a server folder with the images and PDFs directly in each.",
+        "operationId": "fs_browse_fs_browse_get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Folder to list",
+              "title": "Path"
+            },
+            "description": "Folder to list"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/check": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Check",
+        "description": "ok, images and pdfs for a pasted path, or a plain error message.",
+        "operationId": "fs_check_fs_check_get",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Folder to check",
+              "title": "Path"
+            },
+            "description": "Folder to check"
+          },
+          {
+            "name": "recursive",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Count subfolders too",
+              "default": true,
+              "title": "Recursive"
+            },
+            "description": "Count subfolders too"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fs/recent": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "summary": "Fs Recent",
+        "operationId": "fs_recent_fs_recent_get",
+        "parameters": [
+          {
+            "name": "check_exists",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": false,
+              "title": "Check Exists"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/results/{scan_id}": {
+      "delete": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Delete Scan",
+        "description": "Delete one scan: its result, stored images and uploaded copy. The\noriginal file of a server-folder job is left alone. An audit record\n(kind \"delete\") keeps who deleted what and when.",
+        "operationId": "delete_scan_results__scan_id__delete",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/counts": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Review Counts",
+        "description": "Pending items under the queue filters, per field/zone name (for the\nname filter, which ignores the name filter itself), and how many were\nqueued since a time. \"now\" is the server time to pass as since next.",
+        "operationId": "review_counts_review_counts_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "scan_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scan Id"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Name"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(field|zone|check|custom_label|sheet)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Also count items queued after this server time",
+              "title": "Since"
+            },
+            "description": "Also count items queued after this server time"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/states": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Review States",
+        "description": "For each queue item: \"pending\", \"done\" (with who decided it, when and\nthe value) or \"gone\" (the scan was deleted or regraded). The queue\nscreen uses it to skip items someone else already decided.",
+        "operationId": "review_states_review_states_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/accept-bulk": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Accept Bulk",
+        "description": "Accept every pending item under the filters as read (their values stay\nas the engine read them). Nothing is deleted: each item is settled with\nwho accepted it and when (review_log action \"bulk_accepted\", plus an\naudit record per item), so it can be traced and changed later. No\ntraining samples are written for these unchecked values.",
+        "operationId": "accept_bulk_review_accept_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptBulkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ocr/capabilities": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Ocr Capabilities",
+        "description": "OCR engines available on this server, installed languages, defaults.",
+        "operationId": "ocr_capabilities_ocr_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/results/{scan_id}/zone-image/{zone}": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Zone Image",
+        "description": "The saved crop of an image zone (student photo, signature).",
+        "operationId": "zone_image_results__scan_id__zone_image__zone__get",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          },
+          {
+            "name": "zone",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Zone"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/answer-key/parse": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Parse Answer Key",
+        "description": "Rows of a CSV or Excel (.xlsx) answer key; the GUI maps the columns.",
+        "operationId": "parse_answer_key_templates_answer_key_parse_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_parse_answer_key_templates_answer_key_parse_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/duplicate": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Duplicate Template",
+        "description": "Copy the template, config, answer key (evaluation.json) and reference\nimage into a new layout. Scans and results stay with the original.",
+        "operationId": "duplicate_template_templates__template_id__duplicate_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/rename": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Rename Template",
+        "description": "Change the display name; the id stays, so jobs and results stay linked.",
+        "operationId": "rename_template_templates__template_id__rename_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/confirm-warnings": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Confirm Warnings",
+        "description": "Mark the generator's warnings and verification list as checked, for good.",
+        "operationId": "confirm_warnings_templates__template_id__confirm_warnings_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/validate": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Validate Json",
+        "description": "Check template.json, config.json and evaluation.json with the engine's\nown rules, without saving. Returns {template, config, evaluation}: lists\nof {path, message}; engine errors go to the file they most likely belong to.",
+        "operationId": "validate_json_templates__template_id__validate_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/read-sheet": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Read Sheet",
+        "description": "Read one sheet with the saved template; nothing is stored.",
+        "operationId": "read_sheet_templates__template_id__read_sheet_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_read_sheet_templates__template_id__read_sheet_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/score-preview": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Score Preview",
+        "description": "Score one sheet's responses with a draft evaluation.json (not saved).",
+        "operationId": "score_preview_templates__template_id__score_preview_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/find-track": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Find Track",
+        "description": "Find the timing marks inside a box drawn over a strip of marks.",
+        "operationId": "find_track_templates__template_id__generator_find_track_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BoxBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/find-mark": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Find Mark",
+        "description": "The printed mark under a click (or inside a box): an index point.",
+        "operationId": "find_mark_templates__template_id__generator_find_mark_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/adopt-box": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Adopt Box",
+        "description": "Turn a printed box into a field block (bubble grid found inside it).",
+        "operationId": "adopt_box_templates__template_id__generator_adopt_box_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BoxBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/test-alignment": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Test Alignment",
+        "description": "Re-run the saved template's alignment on the sample sheets kept from\ngeneration: per sheet, the status, the marks matched and the index\npoints found, read on the aligned page the engine produced.",
+        "operationId": "test_alignment_templates__template_id__generator_test_alignment_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/acknowledge": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Acknowledge",
+        "description": "Confirm (clear) generator warnings; they stay listed as confirmed.",
+        "operationId": "acknowledge_templates__template_id__generator_acknowledge_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AckBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/models": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Template Models",
+        "description": "ONNX models in the template folder and the server's model folders.",
+        "operationId": "template_models_templates__template_id__models_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/exports": {
       "post": {
         "tags": [
@@ -2971,6 +4522,194 @@
   },
   "components": {
     "schemas": {
+      "AcceptBulkBody": {
+        "properties": {
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "scan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(field|zone|check|custom_label|sheet)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 20000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "description": "Items handled by this call (repeat while remaining > 0)",
+            "default": 2000
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected",
+            "description": "The pending count the user confirmed; refused (409) when more items are pending now, so nothing unseen is accepted"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before",
+            "description": "Only items queued at or before this server time (the 'now' of the /review/counts the user confirmed), so later arrivals stay pending"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "Defaults to the X-User header"
+          }
+        },
+        "type": "object",
+        "title": "AcceptBulkBody"
+      },
+      "AckBody": {
+        "properties": {
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "description": "Warning texts confirmed"
+          },
+          "all": {
+            "type": "boolean",
+            "title": "All",
+            "description": "Confirm every current warning",
+            "default": false
+          },
+          "undo": {
+            "type": "boolean",
+            "title": "Undo",
+            "description": "Bring the confirmed warnings back",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "AckBody"
+      },
+      "AlignBody": {
+        "properties": {
+          "sample": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample",
+            "description": "Sample name, or 'reference' (default) for the reference image"
+          },
+          "template": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template",
+            "description": "Unsaved template.json from the editor (default: the saved one)"
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alignment",
+            "description": "Template \"alignment\" overrides, e.g. {\"rectify_on_border\": true}"
+          },
+          "view": {
+            "type": "string",
+            "title": "View",
+            "description": "'print' (borders) or 'dropout' image",
+            "default": "print"
+          },
+          "image": {
+            "type": "boolean",
+            "title": "Image",
+            "description": "Include the aligned page as a data URL",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "AlignBody"
+      },
       "Body_add_job_files_jobs__job_id__files_post": {
         "properties": {
           "files": {
@@ -2987,6 +4726,23 @@
           "files"
         ],
         "title": "Body_add_job_files_jobs__job_id__files_post"
+      },
+      "Body_add_samples_templates__template_id__align_samples_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_add_samples_templates__template_id__align_samples_post"
       },
       "Body_create_job_jobs_post": {
         "properties": {
@@ -3058,6 +4814,30 @@
             "title": "Start",
             "description": "false: add more files, then /start",
             "default": true
+          },
+          "pdf_dpi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Dpi",
+            "description": "PDF render DPI or 'auto'"
+          },
+          "pdf_page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Page",
+            "description": "PDF pages: '1', '2-4', '3-' or 'all'"
           }
         },
         "type": "object",
@@ -3085,6 +4865,30 @@
             "type": "string",
             "title": "Save Images",
             "default": "all"
+          },
+          "pdf_dpi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Dpi",
+            "description": "PDF render DPI or 'auto'"
+          },
+          "pdf_page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdf Page",
+            "description": "PDF pages: '1', '2-4', '3-' or 'all'"
           }
         },
         "type": "object",
@@ -3143,7 +4947,7 @@
               }
             ],
             "title": "Labels",
-            "description": "CSV: a file/filename column plus one column per field"
+            "description": "CSV or .xlsx: a file-name column (any spelling, e.g. 'File Name') plus one column per field; answer strings expand to q1..qN"
           },
           "name": {
             "anyOf": [
@@ -3174,6 +4978,34 @@
           "files"
         ],
         "title": "Body_generate_templates_generate_post"
+      },
+      "Body_parse_answer_key_templates_answer_key_parse_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_parse_answer_key_templates_answer_key_parse_post"
+      },
+      "Body_read_sheet_templates__template_id__read_sheet_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_read_sheet_templates__template_id__read_sheet_post"
       },
       "Body_sheet_colors_tools_colors_post": {
         "properties": {
@@ -3250,6 +5082,25 @@
           "files"
         ],
         "title": "Body_upload_template_templates_post"
+      },
+      "BoxBody": {
+        "properties": {
+          "box": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Box",
+            "description": "[x, y, w, h]"
+          }
+        },
+        "type": "object",
+        "required": [
+          "box"
+        ],
+        "title": "BoxBody"
       },
       "BubbleToggle": {
         "properties": {
@@ -3483,6 +5334,114 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "ItemRef": {
+        "properties": {
+          "scan_id": {
+            "type": "string",
+            "title": "Scan Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scan_id",
+          "name"
+        ],
+        "title": "ItemRef"
+      },
+      "MarkBody": {
+        "properties": {
+          "point": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Point",
+            "description": "[x, y] of a click"
+          },
+          "box": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Box",
+            "description": "[x, y, w, h] of a drawn box"
+          }
+        },
+        "type": "object",
+        "title": "MarkBody"
+      },
+      "NameBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "New display name (must be unique)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "NameBody"
+      },
+      "PreviewBody": {
+        "properties": {
+          "evaluation": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evaluation",
+            "description": "Draft evaluation.json"
+          },
+          "responses": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responses",
+            "description": "Concatenated responses of one sheet"
+          },
+          "scan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Id",
+            "description": "Use the stored responses of this scan instead"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evaluation"
+        ],
+        "title": "PreviewBody"
+      },
       "RegradeBody": {
         "properties": {
           "template_overrides": {
@@ -3573,6 +5532,20 @@
         "type": "object",
         "title": "ReviewBody"
       },
+      "StatesBody": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemRef"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "title": "StatesBody"
+      },
       "SuggestBody": {
         "properties": {
           "target": {
@@ -3601,6 +5574,108 @@
           "target"
         ],
         "title": "SuggestBody"
+      },
+      "TestBody": {
+        "properties": {
+          "template": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template"
+          },
+          "alignment": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alignment"
+          },
+          "samples": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Samples",
+            "description": "Default: all samples"
+          }
+        },
+        "type": "object",
+        "title": "TestBody"
+      },
+      "ValidateBody": {
+        "properties": {
+          "template": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template",
+            "description": "template.json to check (default: the saved one)"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config",
+            "description": "config.json to check (default: the saved one)"
+          },
+          "evaluation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation",
+            "description": "evaluation.json to check (default: the saved one)"
+          },
+          "clear": {
+            "items": {},
+            "type": "array",
+            "title": "Clear",
+            "description": "Files to treat as absent, e.g. [\"evaluation\"] when it was emptied"
+          },
+          "engine": {
+            "type": "boolean",
+            "title": "Engine",
+            "description": "Also build the engine (overlaps, groups, assets)",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ValidateBody"
       },
       "ValidationError": {
         "properties": {

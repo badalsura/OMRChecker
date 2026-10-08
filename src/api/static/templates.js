@@ -1,6 +1,7 @@
 // Templates tab: list, upload, auto-generate, and open the editor.
-import { api, chip, el, errorList, fmtTime, loadTemplates, on, toast, url } from "./api.js";
+import { api, chip, displayName, el, errorList, fmtTime, loadTemplates, on, toast, url } from "./api.js";
 import { TemplateEditor } from "./editor.js";
+import { duplicateTemplate, renameTemplate } from "./template_ops.js";
 
 let editor = null;
 
@@ -27,7 +28,7 @@ function renderTable(templates) {
       el(
         "tr",
         {},
-        el("td", {}, el("a", { href: "#", onclick: (e) => (e.preventDefault(), openEditor(t.id)) }, t.name)),
+        el("td", {}, el("a", { href: "#", onclick: (e) => (e.preventDefault(), openEditor(t.id)) }, displayName(t.name, t.id))),
         el("td", { class: "mono muted" }, t.id),
         el("td", {}, chip(t.status, t.status)),
         el("td", {}, t.field_blocks),
@@ -39,12 +40,14 @@ function renderTable(templates) {
           { class: "actions" },
           el("button", { class: "small primary", onclick: () => openEditor(t.id) }, "Edit"),
           el("a", { class: "button small", href: url(`/templates/${t.id}/layout.png`), target: "_blank" }, "Layout"),
+          el("button", { class: "small", title: "Copy this layout (template, config, answer key, reference image) under a new name and open the copy", onclick: async () => { const copy = await duplicateTemplate(t); if (copy) openEditor(copy.id); } }, "Duplicate"),
+          el("button", { class: "small", title: "Change the name; jobs, results and review items stay linked", onclick: () => renameTemplate(t) }, "Rename"),
           el(
             "button",
             {
               class: "small danger",
               onclick: async () => {
-                if (!confirm(`Delete template '${t.name}'? Stored scans are kept.`)) return;
+                if (!confirm(`Delete template '${displayName(t.name, t.id)}'? Stored scans are kept.`)) return;
                 try {
                   await api(`/templates/${t.id}`, { method: "DELETE" });
                   toast("Template deleted");
@@ -87,7 +90,7 @@ async function upload() {
   for (const f of files) form.append("files", f, f.name);
   try {
     const detail = await api("/templates", { method: "POST", form });
-    toast(`Template '${detail.name}' uploaded`, "ok");
+    toast(`Template '${displayName(detail.name, detail.id)}' uploaded`, "ok");
     document.getElementById("tpl-files").value = "";
     await loadTemplates();
   } catch (error) {

@@ -25,6 +25,7 @@ from src.defaults import CONFIG_DEFAULTS
 from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import console, logger
 from src.readers import read_zone, read_zones
+from src.readers.image_zone import attach_zone_images, save_zone_images
 from src.template import Template
 from src.utils.file import Paths, setup_dirs_for_paths, setup_outputs_for_template
 from src.utils.image import ImageUtils
@@ -130,6 +131,8 @@ def process_dir(
         excluded_files.extend(
             Path(exclude_file) for exclude_file in evaluation_config.get_exclude_files()
         )
+        if not evaluation_config.grade_enabled:
+            evaluation_config = None
 
     omr_files = [f for f in omr_files if f not in excluded_files]
 
@@ -281,7 +284,12 @@ def _process_single_image(
     )
     response_dict = detailed["omr_response"]
     final_marked, multi_marked = detailed["final_marked"], detailed["multi_marked"]
-    zone_engines = {"barcode_params": tuning_config.barcode_params.toDict()}
+    zone_engines = {
+        "barcode_params": tuning_config.barcode_params.toDict(),
+        "ocr_params": (
+            tuning_config.ocr_params.toDict() if "ocr_params" in tuning_config else {}
+        ),
+    }
     if variants:
         zone_results = template.read_zones_with_variants(
             detailed["aligned_image"], variants, zone_engines
@@ -290,12 +298,18 @@ def _process_single_image(
         zone_results = read_zones(
             template.zones, detailed["aligned_image"], zone_engines
         )
+    save_zone_images(
+        attach_zone_images(zone_results, template.zones, file_id),
+        outputs_namespace.paths.output_dir.joinpath("ZoneImages"),
+    )
     for zone_name, zone_result in zone_results.items():
         response_dict[zone_name] = zone_result.value
 
     # TODO: move inner try catch here
     # concatenate roll nos, set unmarked responses, etc
-    omr_response = get_concatenated_response(response_dict, template)
+    omr_response = get_concatenated_response(
+        response_dict, template, detailed["field_details"]
+    )
     zones = {name: zone.to_dict() for name, zone in zone_results.items()}
     checks, rule_review = {}, []
     if template.rules:

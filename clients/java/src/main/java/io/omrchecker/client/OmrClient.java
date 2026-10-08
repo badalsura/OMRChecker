@@ -105,6 +105,16 @@ public class OmrClient {
         return multipart("/templates", fields, uploads(paths));
     }
 
+    /** Copy template, config, answer key and reference image under a new unique name. */
+    public String duplicateTemplate(String templateId, String name) throws IOException, InterruptedException {
+        return postJson("/templates/" + enc(templateId) + "/duplicate", Map.of("name", name));
+    }
+
+    /** Change the display name (must be unique); the id stays the same. */
+    public String renameTemplate(String templateId, String name) throws IOException, InterruptedException {
+        return postJson("/templates/" + enc(templateId) + "/rename", Map.of("name", name));
+    }
+
     /** Same as {@link #uploadTemplate} but returns only the new template id. */
     public String uploadTemplateId(String name, Collection<Path> paths) throws IOException, InterruptedException {
         return (String) Json.parseObject(uploadTemplate(name, paths)).get("id");
@@ -216,6 +226,34 @@ public class OmrClient {
         if (reviewer != null) body.put("reviewer", reviewer);
         return send("POST", "/scans/" + enc(scanId) + "/review", null,
                 HttpRequest.BodyPublishers.ofString(Json.write(body)), "application/json");
+    }
+
+    /** Pending total and per-name counts; params: template_id, job_id, scan_id, name, kind, since. */
+    public String reviewCounts(Map<String, String> params) throws IOException, InterruptedException {
+        return get("/review/counts", params);
+    }
+
+    /** Accept pending items under the filters as read (who and when are recorded; nothing is deleted).
+     *  filters: template_id, job_id, scan_id, name, kind, expected, before, limit. */
+    public String acceptReviewBulk(Map<String, Object> filters) throws IOException, InterruptedException {
+        return postJson("/review/accept-bulk", filters != null ? filters : Map.of());
+    }
+
+    // ------------------------------------------------------------ housekeeping
+
+    /** Delete one sheet's result and stored images (audited). */
+    public String deleteScan(String scanId) throws IOException, InterruptedException {
+        return send("DELETE", "/results/" + enc(scanId), null, null, null);
+    }
+
+    /** Delete a finished job and its results (audited); server-folder files are never touched. */
+    public String deleteJob(String jobId) throws IOException, InterruptedException {
+        return send("DELETE", "/jobs/" + enc(jobId), null, null, null);
+    }
+
+    /** Is this server folder usable? {ok, images, pdfs} or {ok: false, error}. */
+    public String checkFolder(String path, boolean recursive) throws IOException, InterruptedException {
+        return get("/fs/check", Map.of("path", path, "recursive", String.valueOf(recursive)));
     }
 
     // ------------------------------------------------------------ results

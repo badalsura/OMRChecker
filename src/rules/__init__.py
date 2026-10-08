@@ -13,6 +13,7 @@ stored result after manual corrections (reapply_rules()).
 
 from src.rules.checks import CheckRule, resolve
 from src.rules.validation import VALIDATION_FLAG, ValidationRule
+from src.utils.parsing import group_options_for, join_group
 
 __all__ = ["RuleSet", "reapply_rules", "VALIDATION_FLAG"]
 
@@ -21,6 +22,7 @@ class RuleSet:
     def __init__(self, template, validate_spec=None, checks_spec=None):
         self.global_empty = template.global_empty_val or ""
         self.custom_labels = dict(template.custom_labels)
+        self.template = template
         self.zones = {zone.name: zone for zone in template.zones}
         base_names = set(template.all_parsed_labels) | set(self.custom_labels)
 
@@ -213,6 +215,15 @@ class _Run:
         if name in self.check_values:
             return self.check_values[name]
         if name in self.rules.custom_labels:
+            options = group_options_for(self.rules.template, name)
+            if options is not None:
+                return join_group(
+                    self.rules.custom_labels[name],
+                    self.omr,
+                    options,
+                    self.fields,
+                    self.rules.global_empty,
+                )[0]
             return "".join(
                 str(self.omr.get(col, "")) for col in self.rules.custom_labels[name]
             )
@@ -276,6 +287,13 @@ class _Run:
         # Columns and zones first, so blanked columns show in their custom labels
         for name in sorted(pending, key=lambda n: n in self.rules.custom_labels):
             self.validate(name)
+        # Groups with placeholders show columns their validation flagged
+        for label in self.rules.custom_labels:
+            if label in self.overrides or label in self.rules.outputs:
+                continue
+            if group_options_for(self.rules.template, label) is not None:
+                if label in self.responses:
+                    self.responses[label] = self.base_value(label)
         for rule in self.rules.checks:
             self.run_check(rule)
         return self.checks, self.validation, self.review
@@ -430,7 +448,11 @@ def reapply_rules(result, template, omr_response=None):
     corrections). Updates responses, checks, validation, review and status in
     place. Lazy zones that were never read stay unread.
     """
-    from src.utils.parsing import get_concatenated_response
+    from src.utils.parsing import (
+        describe_groups,
+        get_concatenated_response,
+        group_review_items,
+    )
 
     rules = getattr(template, "rules", None)
     fields = result.get("fields") or {}
@@ -439,7 +461,7 @@ def reapply_rules(result, template, omr_response=None):
         omr_response = {name: f.get("value", "") for name, f in fields.items()}
         for name, zone in zones.items():
             omr_response[name] = zone.get("value", "")
-    result["responses"] = get_concatenated_response(omr_response, template)
+    result["responses"] = get_concatenated_response(omr_response, template, fields)
     if rules is None:
         return result
     checks, validation, extra = rules.apply(
@@ -448,6 +470,12 @@ def reapply_rules(result, template, omr_response=None):
     result["checks"] = checks
     result["validation"] = validation
     result["review"] = review_items(fields, zones, extra)
+    groups = describe_groups(omr_response, template, fields)
+    result["review"].extend(group_review_items(groups, result["review"]))
+    if groups:
+        result["groups"] = groups
+    else:
+        result.pop("groups", None)
     if result.get("status") != "error":
         result["status"] = "needs_review" if result["review"] else "ok"
     return result

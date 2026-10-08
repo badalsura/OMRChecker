@@ -46,6 +46,7 @@ from src.api.worker import (
     template_hash,
     template_version,
 )
+from src.readers.image_zone import save_zone_images
 
 DEFAULT_USER = "local"
 
@@ -318,14 +319,11 @@ class ResultsService:
                 "or the job's path_remap) if the input folder was moved.",
                 404,
             )
-        from src.utils.image import ImageUtils
 
         with self.engines.engine(
             result, template_overrides, config_overrides, use_current
         ) as (engine, info):
-            images = ImageUtils.load_omr_image(
-                path, engine.tuning_config, color=engine.needs_color
-            )
+            images = engine.load_images(path, result.get("pdf_params"))
             page = int(result.get("page") or 0)
             if not images or page >= len(images):
                 raise ResultsError(f"Could not read page {page + 1} of '{path}'", 422)
@@ -335,9 +333,79 @@ class ResultsService:
             )
         return scanned, path, info
 
-    def render(self, scan_id, preview=False):
+    def replay(self, result, view="dropout"):
+        """
+        The aligned page rebuilt from the original file with the geometry
+        stored in result.json: nothing is detected again, so the image is the
+        one the engine read (view "dropout") or the same page with the print
+        kept (view "print", the copy block borders were searched on).
+        """
+        from src.geometry import print_kept_image, warp_to_aligned
+        from src.utils.image import ImageUtils
+
+        geometry = result.get("geometry") or {}
+        path, tried = self.source_of(result)
+        if path is None:
+            raise ResultsError(
+                "The original file was not found (tried: "
+                + ", ".join(tried or ["no path recorded"])
+                + "). Set a path remap (GUI: Results > Path remap, OMR_PATH_REMAP, "
+                "or the job's path_remap) if the input folder was moved.",
+                404,
+            )
+        regrade = result.get("regrade") or {}
+        with self.engines.engine(
+            result,
+            regrade.get("template_overrides"),
+            regrade.get("config_overrides"),
+        ) as (engine, info):
+            template = engine.template
+            colour = engine.needs_color or (
+                view == "print" and template.color_dropout.mode != "grey"
+            )
+            images = ImageUtils.load_omr_image(
+                path, engine.tuning_config, color=colour
+            )
+            page = int(result.get("page") or 0)
+            if not images or page >= len(images):
+                raise ResultsError(f"Could not read page {page + 1} of '{path}'", 422)
+            name, image = images[page]
+            size = [int(image.shape[1]), int(image.shape[0])]
+            if size != list(geometry.get("source_size") or size):
+                raise ResultsError(
+                    "The original file's size differs from the one that was read", 409
+                )
+            if view == "print":
+                image = print_kept_image(
+                    image,
+                    engine.image_ops.alignment_option(
+                        template, "rectify_print_image", "auto"
+                    ),
+                )
+            elif image.ndim == 3:
+                image = template.prepare_image(image)[0]
+
+            processors = template.pre_processors
+
+            def filters(step, im):
+                index = int(step.get("index", -1))
+                if 0 <= index < len(processors):
+                    return processors[index].apply_filter(im, name)
+                return im
+
+            aligned = warp_to_aligned(geometry, image, filters)
+            page_w, page_h = template.page_dimensions
+            aligned = ImageUtils.resize_util(aligned, page_w, page_h)
+            if aligned.max() > aligned.min():
+                aligned = ImageUtils.normalize_util(aligned)
+        return aligned, path, info
+
+    def render(self, scan_id, preview=False, view="dropout"):
         """Aligned image + metadata for a scan, re-read from its source when possible."""
-        key = f"{scan_id}:preview" if preview else scan_id
+        if preview:
+            key = f"{scan_id}:preview"
+        else:
+            key = scan_id if view in (None, "dropout") else f"{scan_id}:{view}"
         cached = self.renders.get(key)
         if cached is not None:
             return cached
@@ -345,34 +413,54 @@ class ResultsService:
             raise ResultsError("No regrade preview for this scan; run it again", 404)
         result = self.load(scan_id)
         regrade = result.get("regrade") or {}
-        meta = {"image_source": None, "drift": [], "warnings": []}
+        meta = {"image_source": None, "drift": [], "warnings": [], "view": view}
         image = None
         source_error = None
-        try:
-            scanned, path, info = self.reread(
-                result,
-                regrade.get("template_overrides"),
-                regrade.get("config_overrides"),
-            )
-            if scanned.aligned_image is None:
-                raise ResultsError(scanned.error or "Sheet registration failed", 422)
-            image = scanned.aligned_image
-            meta.update(
-                {
-                    "image_source": "source",
-                    "resolved_path": str(path),
-                    "template_version_used": info["template_version"],
-                    "exact_template": info["exact"],
-                    "drift": drift(result, scanned),
-                }
-            )
-            if not info["exact"]:
-                meta["warnings"].append(
-                    "The template changed since this sheet was read and the old "
-                    "version was not archived; the current template was used."
+        if result.get("geometry"):
+            # Stored geometry: replay it, never detect again
+            try:
+                image, path, info = self.replay(result, view or "dropout")
+                meta.update(
+                    {
+                        # Built from the source file like a re-read, but by
+                        # replaying the stored geometry
+                        "image_source": "source",
+                        "geometry_replayed": True,
+                        "resolved_path": str(path),
+                        "template_version_used": info["template_version"],
+                        "exact_template": info["exact"],
+                    }
                 )
-        except ResultsError as error:
-            source_error = str(error)
+            except ResultsError as error:
+                source_error = str(error)
+            except Exception as error:  # a broken record must not break viewing
+                source_error = f"Could not replay the stored geometry: {error}"
+        if image is None and not result.get("geometry"):
+            try:
+                scanned, path, info = self.reread(
+                    result,
+                    regrade.get("template_overrides"),
+                    regrade.get("config_overrides"),
+                )
+                if scanned.aligned_image is None:
+                    raise ResultsError(scanned.error or "Sheet registration failed", 422)
+                image = scanned.aligned_image
+                meta.update(
+                    {
+                        "image_source": "source",
+                        "resolved_path": str(path),
+                        "template_version_used": info["template_version"],
+                        "exact_template": info["exact"],
+                        "drift": drift(result, scanned),
+                    }
+                )
+                if not info["exact"]:
+                    meta["warnings"].append(
+                        "The template changed since this sheet was read and the old "
+                        "version was not archived; the current template was used."
+                    )
+            except ResultsError as error:
+                source_error = str(error)
         if image is None:
             stored = self.ctx.aligned_image(scan_id)
             if stored is None:
@@ -386,8 +474,8 @@ class ResultsService:
         self.renders.put(key, image, meta)
         return self.renders.get(key)
 
-    def encoded(self, scan_id, fmt="jpg", preview=False):
-        item = self.render(scan_id, preview)
+    def encoded(self, scan_id, fmt="jpg", preview=False, view="dropout"):
+        item = self.render(scan_id, preview, view)
         if fmt not in item["encoded"]:
             image = item["image"]
             if fmt == "png":
@@ -576,6 +664,8 @@ class ResultsService:
         )
         new = scanned.to_dict()
         record = json.loads(json.dumps(result))
+        # The new read's geometry (or none) replaces the old one
+        record.pop("geometry", None)
         for key, value in new.items():
             if key != "file_id":
                 record[key] = value
@@ -640,6 +730,7 @@ class ResultsService:
             )
             del history[:-20]
             scan_dir = self.ctx.data.scan_dir(scan_id)
+            save_zone_images(scanned.zone_images, scan_dir / "zones")
             if result.get("has_images") and scanned.aligned_image is not None:
                 cv2.imwrite(
                     str(scan_dir / "aligned.png"), scanned.aligned_image, PNG_FAST
@@ -836,8 +927,43 @@ def diff_reads(old, new):
     return changes
 
 
+def group_highlights(result):
+    """
+    {column: [reason, ...]} for bubble columns of grouped values that need a
+    look: columns a group reports as multi-marked or unclear (result "groups",
+    {group: {"columns": [{"name", "state"}]}}), and the columns listed by a
+    pending review item ("fields", or "field_flags": {column: [flags]}).
+    Columns a person already decided are left out.
+    """
+    fields = result.get("fields") or {}
+    marks = {}
+
+    def add(column, reason):
+        if fields.get(column, {}).get("reviewed"):
+            return
+        reasons = marks.setdefault(column, [])
+        if reason not in reasons:
+            reasons.append(reason)
+
+    for group, details in (result.get("groups") or {}).items():
+        if not isinstance(details, dict):
+            continue
+        for column in details.get("columns") or []:
+            if isinstance(column, dict) and column.get("state") in ("multi", "issue"):
+                add(column.get("name"), f"{group}: {column['state']}")
+    for item in result.get("review") or []:
+        for column, flags in (item.get("field_flags") or {}).items():
+            for flag in flags or ["needs_review"]:
+                add(column, f"{item.get('name')}: {flag}")
+        if not item.get("field_flags"):
+            for column in item.get("fields") or []:
+                add(column, f"{item.get('name')}: needs review")
+    return marks
+
+
 def overlay_payload(result, info):
     """Everything the browser needs to draw and edit the overlay."""
+    highlights = group_highlights(result)
     flagged = {}
     for name, flag in flag_rows(result):
         flagged.setdefault(name, []).append(flag)
@@ -866,6 +992,7 @@ def overlay_payload(result, info):
                 "flags": field.get("flags") or [],
                 "flagged": name in flagged,
                 "pending": name in pending,
+                "group_flags": highlights.get(name, []),
                 "box": box,
                 "bubbles": [
                     {
@@ -980,6 +1107,7 @@ def overlay_payload(result, info):
         "source_path": result.get("source_path") or result.get("input_path"),
         "status": result.get("status"),
         "score": result.get("score"),
+        "scoring": result.get("scoring") or None,
         "error": result.get("error"),
         "verified": result.get("verified"),
         "corrected": is_corrected(result),
@@ -993,5 +1121,49 @@ def overlay_payload(result, info):
         "sheet_review": [
             item for item in result.get("review") or [] if item.get("kind") == "sheet"
         ],
+        "geometry": geometry_overlay(result.get("geometry")),
         "audit": (result.get("audit") or [])[-50:],
+        # Recorded page/block geometry (block border outlines, other views)
+        "geometry_recorded": bool(result.get("geometry")),
+        "blocks": (result.get("geometry") or {}).get("blocks") or {},
+        "groups": result.get("groups") or {},
+    }
+
+
+BLOCK_COLOURS = {"found": "#1e9e3a", "fitted": "#1e9e3a", "failed": "#d62828"}
+
+
+def geometry_overlay(geometry):
+    """
+    What the overlay draws from the stored geometry record: each fitted
+    block's border (green when used, red when it failed) and the page-level
+    alignment facts. None for results read before geometry was recorded.
+    """
+    if not geometry:
+        return None
+    blocks = []
+    for name, block in (geometry.get("blocks") or {}).items():
+        status = block.get("status") or "failed"
+        blocks.append(
+            {
+                "name": name,
+                "corners": block.get("corners"),
+                "status": status,
+                "method": block.get("method"),
+                "level": block.get("level"),
+                "reason": block.get("reason") or "",
+                "used": status in ("found", "fitted"),
+                "color": BLOCK_COLOURS.get(status, "#d62828"),
+            }
+        )
+    return {
+        "blocks": blocks,
+        "rotation": geometry.get("rotation", 0),
+        "residual": geometry.get("residual"),
+        "margin_trim": geometry.get("margin_trim"),
+        "page_outline": geometry.get("page_outline"),
+        "index_points": geometry.get("index_points"),
+        "aligned_size": geometry.get("aligned_size"),
+        "source_size": geometry.get("source_size"),
+        "views": ["dropout", "print"],
     }

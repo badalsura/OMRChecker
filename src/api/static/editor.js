@@ -1,9 +1,23 @@
 // Template editor: draws the template over a reference image and lets the user
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
-import { api, el, errorList, state, toast, url } from "./api.js";
+import { add, api, displayName, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
+import { alignmentSection, blockAlignmentFields } from "./editor_align.js";
+import { ocrZoneControls } from "./editor_ocr.js";
+import { openJsonEditor } from "./editor_json.js";
+import { openScoring } from "./scoring.js";
+import { renameTemplate } from "./template_ops.js";
+import { alignmentPick, drawAlignment, renderAlignmentPanel } from "./editor_tracks.js";
+import { renderWarnings } from "./generator_warnings.js";
+import { patternControl, renderChecks, renderValidation } from "./editor_checks.js";
+import * as groups from "./editor_groups.js";
+import { help } from "./editor_help.js";
+import * as options from "./editor_options.js";
 
-const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc" };
+// Track and index-point tools sit inside the Alignment options section
+options.registerAlignmentExtension((ed) => renderAlignmentPanel(ed));
+
+const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc", image: "#787878" };
 const BLOCK_COLOR = "#2f6fdf";
 const HIGHLIGHT = "#ff8a00";
 const HANDLE = 8;
@@ -19,6 +33,7 @@ export function parseFieldString(s) {
 }
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
+const FULL = "\u0000files:"; // undo entry covering template + config + evaluation
 const round1 = (v) => Math.round(v * 10) / 10;
 
 export class TemplateEditor {
@@ -38,6 +53,9 @@ export class TemplateEditor {
     this.errors = [];
     this.keyHandler = (e) => this.onKey(e);
     this.resolved = new Set();
+    this.multi = []; // Shift+click selection of several blocks
+    this.openSections = new Set(); // <details> sections kept open across re-renders
+    this.afterEditHooks = []; // open dialogs refreshing themselves after an edit
   }
 
   // ------------------------------------------------------------------ open
@@ -55,10 +73,11 @@ export class TemplateEditor {
     this.undo = [];
     this.redo = [];
     this.selected = null;
+    this.multi = [];
     this.dirty = false;
     this.testResult = null;
     this.errors = detail.validation_errors || [];
-    this.report = this.parseReport(detail.report);
+    this.report = detail.report_confirmed ? null : this.parseReport(detail.report);
     this.build();
     this.bgMode = detail.has_reference ? "reference" : "blank";
     await this.loadBackground();
@@ -99,7 +118,7 @@ export class TemplateEditor {
     );
     this.testInput = el("input", { type: "file", accept: "image/*,.pdf", hidden: true, onchange: (e) => this.testRead(e.target.files[0]) });
     this.bgInput = el("input", { type: "file", accept: "image/*", hidden: true, onchange: (e) => this.uploadBackground(e.target.files[0]) });
-    this.titleEl = el("span", { class: "title" }, this.detail.name);
+    this.titleEl = el("span", { class: "title editable-title", title: "Click to rename (jobs and results stay linked)", tabindex: "0", onclick: () => this.rename() }, displayName(this.detail.name, this.id));
     const toolbar = el(
       "div",
       { class: "ed-toolbar" },
@@ -125,6 +144,8 @@ export class TemplateEditor {
       el("span", { class: "sep" }),
       this.bgSel,
       btn("Colours…", "Sheet colours and colour removal (colorDropout)", () => new ColourPanel(this).open()),
+      btn("Edit JSON", "Edit template.json, config.json and evaluation.json directly", () => openJsonEditor(this)),
+      btn("Scoring…", "Answer key and marking scheme (evaluation.json)", () => openScoring(this)),
       btn("Test read…", "Save, read a sample sheet with this template and overlay the result", () => this.testInput.click()),
       this.testInput,
       this.bgInput
@@ -309,7 +330,7 @@ export class TemplateEditor {
     const testZones = (overlay && this.testResult.zones) || {};
 
     for (const o of this.objects()) {
-      const isSel = this.selected && this.selected.kind === o.kind && this.selected.name === o.name;
+      const isSel = (this.selected && this.selected.kind === o.kind && this.selected.name === o.name) || this.multi.some((m) => m.kind === o.kind && m.name === o.name);
       const hl = highlighted.has(o.name);
       if (o.kind === "block") {
         ctx.lineWidth = 1;
@@ -332,21 +353,22 @@ export class TemplateEditor {
             ctx.font = `${Math.max(10, S(o.bh) * 0.6)}px ui-monospace, monospace`;
             const lx = o.horizontal ? o.x + o.w + 6 : o.x + f * o.lg;
             const ly = o.horizontal ? o.y + f * o.lg + o.bh * 0.8 : o.y + o.h + o.bh * 0.8;
-            ctx.fillText(tf.value === "" ? "·" : tf.value, X(lx), Y(ly));
+            ctx.fillText(tf.value === "" || tf.value === null || tf.value === undefined ? "·" : String(tf.value), X(lx), Y(ly));
           }
         }
         this.strokeBox(o, isSel ? BLOCK_COLOR : hl ? HIGHLIGHT : "rgba(47,111,223,0.8)", isSel ? 2 : hl ? 2.5 : 1.25, hl && !isSel);
-        this.label(o, `${o.name} · ${o.labels[0] || ""}${o.nF > 1 ? "…" + o.labels[o.nF - 1] : ""}`, hl ? HIGHLIGHT : BLOCK_COLOR);
+        this.label(o, `${o.name}${o.labels.length ? " · " + o.labels[0] : ""}${o.nF > 1 && o.labels[o.nF - 1] ? "…" + o.labels[o.nF - 1] : ""}`, hl ? HIGHLIGHT : BLOCK_COLOR);
       } else {
         const color = ZONE_COLORS[o.raw.type] || "#333";
         ctx.fillStyle = color + "18";
         ctx.fillRect(X(o.x), Y(o.y), S(o.w), S(o.h));
         this.strokeBox(o, hl && !isSel ? HIGHLIGHT : color, isSel ? 2.5 : hl ? 2.5 : 1.5, hl && !isSel);
         const tz = testZones[o.name];
-        this.label(o, `${o.name} (${o.raw.type})${tz ? " = " + (tz.value || "∅") : ""}`, tz?.needs_review ? "#d0342c" : color);
+        this.label(o, `${o.name}${o.raw.type ? ` (${o.raw.type})` : ""}${tz ? " = " + (tz.value === null || tz.value === undefined || tz.value === "" ? "∅" : tz.value) : ""}`, tz?.needs_review ? "#d0342c" : color);
       }
       if (isSel) this.drawHandles(o);
     }
+    drawAlignment(this); // timing tracks and index points (editor_tracks.js)
     // alignment guides
     ctx.strokeStyle = "#ff2d95";
     ctx.lineWidth = 1;
@@ -485,10 +507,16 @@ export class TemplateEditor {
       return;
     }
     const o = this.hitObject(p);
+    if (o && e.shiftKey && o.kind === "block") {
+      this.toggleMulti(o);
+      return;
+    }
     if (o) {
+      this.multi = [];
       this.select(o);
       this.drag = { type: "move", start: p, orig: { x: o.x, y: o.y }, snapshot: JSON.stringify(this.doc) };
     } else {
+      this.multi = [];
       this.select(null);
       this.drag = { type: "pan", sx: e.clientX, sy: e.clientY, ox: this.view.ox, oy: this.view.oy };
     }
@@ -542,6 +570,11 @@ export class TemplateEditor {
       const b = this.rubber;
       this.rubber = null;
       const rect = { x: Math.round(Math.min(b.x0, b.x1)), y: Math.round(Math.min(b.y0, b.y1)), w: Math.round(Math.abs(b.x1 - b.x0)), h: Math.round(Math.abs(b.y1 - b.y0)) };
+      if (this.mode && this.mode.startsWith("align")) {
+        alignmentPick(this, rect); // Alignment panel tools (editor_tracks.js)
+        this.draw();
+        return;
+      }
       if (rect.w > 4 && rect.h > 4) {
         if (this.mode === "add-block") this.createBlock(rect);
         else this.createZone(rect);
@@ -644,6 +677,18 @@ export class TemplateEditor {
     this.draw();
   }
 
+  // Shift+click: several blocks, to group their columns as one field
+  toggleMulti(o) {
+    if (!this.multi.length && this.selected?.kind === "block" && this.selected.name !== o.name) this.multi = [{ ...this.selected }];
+    const i = this.multi.findIndex((s) => s.name === o.name);
+    if (i >= 0) this.multi.splice(i, 1);
+    else this.multi.push({ kind: "block", name: o.name });
+    this.selected = this.multi.length === 1 ? { ...this.multi[0] } : null;
+    if (this.multi.length <= 1) this.multi = [];
+    this.renderSide();
+    this.draw();
+  }
+
   setMode(mode) {
     this.mode = this.mode === mode ? null : mode;
     this.addBlockBtn.classList.toggle("active", this.mode === "add-block");
@@ -668,6 +713,11 @@ export class TemplateEditor {
     }
     this.renderSide();
     this.draw();
+    this.runAfterEditHooks();
+  }
+
+  runAfterEditHooks() {
+    for (const fn of this.afterEditHooks.slice()) fn();
   }
 
   changed() {
@@ -685,25 +735,74 @@ export class TemplateEditor {
 
   doUndo() {
     if (!this.undo.length) return;
-    this.redo.push(JSON.stringify(this.doc));
-    this.doc = JSON.parse(this.undo.pop());
+    this.takeEntry(this.undo.pop(), this.redo);
     this.afterHistory();
   }
 
   doRedo() {
     if (!this.redo.length) return;
-    this.undo.push(JSON.stringify(this.doc));
-    this.doc = JSON.parse(this.redo.pop());
+    this.takeEntry(this.redo.pop(), this.undo);
     this.afterHistory();
+  }
+
+  // Restore an undo entry, pushing the current state (same kind) on the other stack
+  takeEntry(entry, other) {
+    if (!entry.startsWith(FULL)) {
+      other.push(JSON.stringify(this.doc));
+      this.doc = JSON.parse(entry);
+      return;
+    }
+    other.push(FULL + JSON.stringify({ doc: this.doc, config: this.configText, evaluation: this.evaluationText }));
+    const s = JSON.parse(entry.slice(FULL.length));
+    this.doc = s.doc;
+    this.configText = s.config;
+    this.evaluationText = s.evaluation;
+  }
+
+  // Whole-file edits (Edit JSON, Scoring) as one undo step: {template?, configText?, evaluationText?}
+  applyFiles(files) {
+    this.pushUndo(FULL + JSON.stringify({ doc: this.doc, config: this.configText, evaluation: this.evaluationText }));
+    if (files.template !== undefined) {
+      this.doc = clone(files.template);
+      this.doc.fieldBlocks = this.doc.fieldBlocks || {};
+      this.doc.zones = this.doc.zones || {};
+    }
+    if (files.configText !== undefined) this.configText = files.configText;
+    if (files.evaluationText !== undefined) this.evaluationText = files.evaluationText;
+    this.changed();
+    this.afterHistory();
+  }
+
+  async rename() {
+    const name = await renameTemplate({ id: this.id, name: this.detail.name });
+    if (!name) return;
+    this.detail.name = name;
+    this.titleEl.textContent = name;
+  }
+
+  async confirmWarnings() {
+    if (!confirm("Mark all generator warnings and verification items as checked? They won't be shown again for this layout.")) return;
+    try {
+      const detail = await api(`/templates/${this.id}/confirm-warnings`, { method: "POST" });
+      this.detail.report_confirmed = detail.report_confirmed;
+      this.report = null;
+      this.renderSide();
+      this.draw();
+      toast("Warnings cleared", "ok");
+    } catch (error) {
+      toast(error.message, "error");
+    }
   }
 
   afterHistory() {
     if (this.selected && !this.info(this.selected)) this.selected = null;
+    this.multi = this.multi.filter((s) => this.info(s));
     this.dirty = true;
     this.lastNudge = null;
     this.updateButtons();
     this.renderSide();
     this.draw();
+    this.runAfterEditHooks();
   }
 
   uniqueName(base, dict) {
@@ -715,6 +814,18 @@ export class TemplateEditor {
 
   allLabels() {
     return new Set(Object.keys(this.doc.fieldBlocks).flatMap((n) => this.blockInfo(n).labels));
+  }
+
+  groupColumns(name) {
+    return groups.groupColumns(this.doc, name);
+  }
+
+  expandLabels(list) {
+    return groups.expand(list);
+  }
+
+  compressLabels(list) {
+    return groups.compress(list);
   }
 
   nextNumber(prefix) {
@@ -787,13 +898,23 @@ export class TemplateEditor {
     });
   }
 
-  deleteSelected() {
+  async deleteSelected() {
     const o = this.info(this.selected);
     if (!o) return;
+    // Groups, validation rules, checks and output columns lose the removed names
+    const removed = o.kind === "block" ? o.labels.filter((l) => !Object.keys(this.doc.fieldBlocks).some((b) => b !== o.name && this.blockInfo(b).labels.includes(l))) : [o.name];
+    const mode = await groups.askGroupImpact(this.doc, removed, `Deleting ${o.kind} ${o.name}`);
+    if (!mode) return;
+    if (o.kind === "zone") {
+      const checks = (this.doc.checks || []).filter((c) => (c.sources || []).includes(o.name)).map((c) => c.name);
+      if (checks.length && !confirm(`Zone ${o.name} is compared in check(s) ${checks.join(", ")}. Delete it and remove it from them?`)) return;
+    }
     this.edit(() => {
       if (o.kind === "block") delete this.doc.fieldBlocks[o.name];
       else delete this.doc.zones[o.name];
+      groups.cascadeRemove(this.doc, removed, mode);
       this.selected = null;
+      this.multi = [];
     });
   }
 
@@ -812,11 +933,40 @@ export class TemplateEditor {
     this.draw();
   }
 
+  // Rename a block, zone or group; called inside edit(), so references in
+  // groups, validation rules, checks and output columns change in the same undo step
   renameKey(dictName, oldName, newName) {
     const dict = this.doc[dictName];
     const out = {};
     for (const [k, v] of Object.entries(dict)) out[k === oldName ? newName : k] = v;
     this.doc[dictName] = out;
+    // Block names are not referenced elsewhere; zones and groups are output names
+    if (dictName !== "fieldBlocks") groups.cascadeRename(this.doc, { [oldName]: newName });
+  }
+
+  // New field labels for a block: same count renames everywhere; fewer asks
+  // what to do with groups that used the dropped columns
+  async setFieldLabels(o, strings) {
+    const before = o.labels;
+    const after = strings.flatMap(parseFieldString);
+    const others = new Set(Object.keys(this.doc.fieldBlocks).filter((b) => b !== o.name).flatMap((b) => this.blockInfo(b).labels));
+    const map = {};
+    before.forEach((label, i) => {
+      if (i < after.length && after[i] !== label) map[label] = after[i];
+    });
+    const dropped = before.slice(after.length).filter((l) => !others.has(l) && !after.includes(l));
+    let mode = "drop";
+    if (dropped.length) {
+      mode = await groups.askGroupImpact(this.doc, dropped, `Shrinking ${o.name} to ${after.length} field(s)`);
+      if (!mode) return this.renderSide();
+    }
+    this.edit(() => {
+      this.doc.fieldBlocks[o.name].fieldLabels = strings;
+      groups.cascadeRename(this.doc, map);
+      if (dropped.length) groups.cascadeRemove(this.doc, dropped, mode);
+    });
+    const renamed = Object.keys(map).length;
+    if (renamed && groups.groupsUsing(this.doc, Object.values(map)).length) toast(`Renamed ${renamed} column(s) in the grouped fields too`, "ok");
   }
 
   // ------------------------------------------------------------------ keyboard
@@ -880,19 +1030,22 @@ export class TemplateEditor {
     if (!side) return;
     side.innerHTML = "";
     if (this.errors.length) {
-      side.append(el("h3", {}, "Validation errors"), errorList(this.errors));
+      add(side, el("h3", {}, "Validation errors"), errorList(this.errors));
     }
-    const o = this.info(this.selected);
-    if (o) side.append(o.kind === "block" ? this.renderBlock(o) : this.renderZone(o));
-    if (this.testResult) side.append(this.renderTest());
-    if (this.report) side.append(this.renderReport());
-    if (!o) side.append(this.renderPage());
-    side.append(
+    const broken = groups.renderBrokenBanner(this);
+    if (broken) add(side, broken);
+    const o = this.multi.length > 1 ? null : this.info(this.selected);
+    if (this.multi.length > 1) add(side, groups.renderMultiSelection(this));
+    else if (o) add(side, o.kind === "block" ? this.renderBlock(o) : this.renderZone(o));
+    if (this.testResult) add(side, this.renderTest());
+    if (this.report) add(side, this.renderReport());
+    if (!o && this.multi.length < 2) add(side, this.renderPage());
+    add(side, 
       el(
         "div",
         { class: "ed-help" },
         el("h3", {}, "Shortcuts"),
-        "Drag to move · handles resize (blocks stretch their bubble spacing) · arrows nudge (Shift ×10) · ",
+        "Drag to move · handles resize (blocks stretch their bubble spacing) · arrows nudge (Shift ×10) · Shift+click blocks to group them · ",
         "Del delete · Ctrl+D duplicate · Ctrl+Z / Ctrl+Shift+Z undo / redo · Ctrl+S save · B / Z draw block / zone · ",
         "wheel zoom · drag empty space, right-drag or Space+drag to pan · Tab cycles selection · F fit"
       )
@@ -900,9 +1053,10 @@ export class TemplateEditor {
   }
 
   input(label, value, onchange, attrs = {}) {
-    const input = el("input", { value: value ?? "", ...attrs });
+    const { help: helpKey, ...rest } = attrs;
+    const input = el("input", { value: value ?? "", ...rest });
     input.addEventListener("change", () => onchange(input.value, input));
-    return el("label", { class: "field" }, label, input);
+    return help(el("label", { class: "field" }, label, input), helpKey || label, this.helpContext);
   }
 
   num(label, value, onchange, attrs = {}) {
@@ -911,13 +1065,18 @@ export class TemplateEditor {
       const n = Number(v);
       if (!Number.isFinite(n) || n < 0) return toast(`${label} must be a positive number`, "error");
       onchange(n);
-    }, { type: "number", step: attrs.step || "1", min: "0", placeholder: attrs.placeholder || "" });
+    }, { type: "number", step: attrs.step || "1", min: "0", placeholder: attrs.placeholder || "", help: attrs.help });
   }
 
-  dropdown(label, value, options, onchange) {
-    const sel = el("select", {}, options.map(([v, t]) => el("option", { value: v, selected: v === value }, t)));
+  dropdown(label, value, options, onchange, attrs = {}) {
+    const sel = el("select", {}, options.map(([v, t]) => el("option", { value: v, selected: v === value }, t ?? v ?? "")));
     sel.addEventListener("change", () => onchange(sel.value));
-    return el("label", { class: "field" }, label, sel);
+    return help(el("label", { class: "field" }, label, sel), attrs.help || label, this.helpContext);
+  }
+
+  // Any control with a caption and help (key or text)
+  labeled(label, control, helpKey) {
+    return help(el("label", { class: "field" }, label, control), helpKey || label, this.helpContext);
   }
 
   renderBlock(o) {
@@ -926,7 +1085,8 @@ export class TemplateEditor {
     const custom = !raw.fieldType;
     const set = (fn) => this.edit(fn);
     const box = el("div", {});
-    box.append(
+    this.helpContext = "block";
+    add(box, 
       el("h3", {}, "Bubble block"),
       this.input("Name", o.name, (v) => {
         v = v.trim();
@@ -937,7 +1097,7 @@ export class TemplateEditor {
           this.selected = { kind: "block", name: v };
         });
       }),
-      this.dropdown("Field type", raw.fieldType || "", [["", "Custom values"], ...types.map((t) => [t, `${t} (${this.fieldTypes()[t].bubbleValues.join("")})`])], (v) =>
+      this.dropdown("Field type", raw.fieldType || "", [["", "Custom values"], ...types.map((t) => [t, `${t} (${(this.fieldTypes()[t]?.bubbleValues || []).join("")})`])], (v) =>
         set(() => {
           if (v) {
             raw.fieldType = v;
@@ -960,7 +1120,7 @@ export class TemplateEditor {
         ? this.dropdown("Direction (how values are laid out)", raw.direction || "vertical", [["horizontal", "horizontal: values left→right, fields stacked"], ["vertical", "vertical: values top→bottom, fields side by side"]], (v) => set(() => (raw.direction = v)))
         : null,
       this.input("Field labels (e.g. q1..20 or roll1..6, comma separated)", (raw.fieldLabels || []).join(", "), (v) =>
-        set(() => (raw.fieldLabels = v.split(",").map((s) => s.trim()).filter(Boolean)))
+        this.setFieldLabels(o, v.split(",").map((s) => s.trim()).filter(Boolean))
       ),
       el("div", { class: "muted small", style: { marginBottom: "8px" } }, `${o.nF} field(s): ${o.labels.slice(0, 4).join(", ")}${o.nF > 4 ? " … " + o.labels[o.nF - 1] : ""}`),
       el(
@@ -983,8 +1143,17 @@ export class TemplateEditor {
       ),
       raw.rectifyOnBorder
         ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })
-        : null
+        : null,
+      blockAlignmentFields(this, raw)
     );
+    // Grouping (one output field) and validation of the block's columns
+    const grouped = groups.blockGroup(this.doc, o.labels);
+    const groupKey = `group-block:${o.name}`;
+    const groupBox = el("details", { class: "ed-section", open: grouped || this.openSections.has(groupKey) || undefined });
+    groupBox.addEventListener("toggle", () => (groupBox.open ? this.openSections.add(groupKey) : this.openSections.delete(groupKey)));
+    add(groupBox, el("summary", {}, "Output as one field", grouped ? el("span", { class: "chip" }, grouped) : null), groups.renderBlockGrouping(this, o));
+    add(box, groupBox);
+    if (o.labels.length) add(box, renderValidation(this, o.labels, { title: o.labels.length > 1 ? "Validation of each field" : "Validation", columns: 1 }));
     return box;
   }
 
@@ -995,7 +1164,8 @@ export class TemplateEditor {
     const set = (fn) => this.edit(fn);
     const setOpt = (k, v) => set(() => (v === "" || v === null || v === undefined ? delete opts[k] : (opts[k] = v)));
     const box = el("div", {});
-    box.append(
+    this.helpContext = "zone";
+    add(box, 
       el("h3", {}, "Zone"),
       this.input("Name", o.name, (v) => {
         v = v.trim();
@@ -1032,31 +1202,27 @@ export class TemplateEditor {
           return el("label", {}, cb, " ", f);
         })
       );
-      box.append(el("div", { class: "field" }, "Accepted formats (none ticked = all)", list));
+      add(box, help(el("div", { class: "field" }, "Accepted formats (none ticked = all)", list), "Accepted formats (none ticked = all)", "zone"));
+      if (raw.type === "barcode") add(box, ...options.renderBarcodeOptions(this, o.name, opts, setOpt));
     }
     if (raw.type === "ocr" || raw.type === "icr") {
-      box.append(
+      add(box, 
         this.input("Allowed characters", opts.whitelist ?? "", (v) => setOpt("whitelist", v), { placeholder: "e.g. 0123456789" }),
         raw.type === "icr" ? this.num("Character boxes", opts.characterBoxes, (v) => setOpt("characterBoxes", v === null ? null : Math.max(1, Math.round(v))), { optional: true }) : null,
         raw.type === "ocr"
           ? el(
               "div",
-              { class: "two" },
-              this.input("Language", opts.lang ?? "", (v) => setOpt("lang", v), { placeholder: "eng" }),
-              this.num("Page seg. mode", opts.psm, (v) => setOpt("psm", v === null ? null : Math.min(13, Math.round(v))), { optional: true, placeholder: "7" })
+              {},
+              this.labeled("Layout (page segmentation mode)", options.psmControl(opts.psm, (v) => setOpt("psm", v)))
             )
-          : null
+          : null,
+        options.renderLazyOption(this, o.name, opts, setOpt)
       );
     }
-    box.append(
-      this.input("Pattern (regex the value must match)", opts.pattern ?? "", (v) => {
-        try {
-          if (v) new RegExp(v);
-          setOpt("pattern", v);
-        } catch (e) {
-          toast("Invalid regular expression", "error");
-        }
-      }),
+    // Direction, engines, language, image zone options (editor_ocr.js)
+    box.append(...ocrZoneControls(this, raw, opts, setOpt, o.name));
+    add(box, 
+      this.labeled("Pattern the value must match", patternControl(opts.pattern, (v) => setOpt("pattern", v || null))),
       el(
         "div",
         { class: "two" },
@@ -1068,7 +1234,8 @@ export class TemplateEditor {
         typeof opts.colorDropout === "object" && opts.colorDropout ? "page-json" : opts.colorDropout || "",
         [["", "same as the page"], ["grey", "none (plain grey)"], ["red", "red channel"], ["green", "green channel"], ["blue", "blue channel"], ["max", "brightest channel"], ...(typeof opts.colorDropout === "object" && opts.colorDropout ? [["page-json", JSON.stringify(opts.colorDropout)]] : [])],
         (v) => v !== "page-json" && setOpt("colorDropout", v === "" ? null : v === "grey" ? "grey" : { mode: v })
-      )
+      ),
+      renderValidation(this, [o.name], { title: "Validation", columns: opts.characterBoxes || undefined })
     );
     return box;
   }
@@ -1095,6 +1262,10 @@ export class TemplateEditor {
         toast(`${key}: ${e.message}`, "error");
       }
     };
+    this.helpContext = "page";
+    const rawKey = "raw-json";
+    const raw = el("details", { class: "ed-section", open: this.openSections.has(rawKey) || undefined });
+    raw.addEventListener("toggle", () => (raw.open ? this.openSections.add(rawKey) : this.openSections.delete(rawKey)));
     return el(
       "div",
       {},
@@ -1121,8 +1292,28 @@ export class TemplateEditor {
         )
       ),
       this.renderThreshold(),
+      alignmentSection(this),
       el("div", { class: "muted small" }, `${Object.keys(doc.fieldBlocks).length} blocks · ${this.allLabels().size} fields · ${Object.keys(doc.zones).length} zones`),
-      el("h3", {}, "Advanced"),
+      el("h3", {}, "Grouped fields"),
+      groups.renderGroupList(this),
+      el("h3", {}, "Cross-field checks"),
+      renderChecks(this),
+      el("h3", {}, "Options"),
+      options.renderOutputColumns(this),
+      options.renderAlignment(this),
+      options.renderReviewParams(this),
+      options.renderModels(this),
+      options.renderPdfParams(this),
+      options.renderBarcodeDefaults(this),
+      this.renderRawJson(raw, jsonSetter, doc)
+    );
+  }
+
+  // Raw JSON boxes: expert settings (thresholds, alignment fine-tuning, debug outputs)
+  renderRawJson(raw, jsonSetter, doc) {
+    add(raw, 
+      el("summary", {}, "Advanced (JSON)"),
+      el("p", { class: "muted small" }, "Expert tuning that has no form above: threshold constants, alignment fine-tuning, processing size and debug outputs live in config.json."),
       this.jsonArea("preProcessors (alignment / cleanup)", JSON.stringify(doc.preProcessors || [], null, 1), jsonSetter("preProcessors", [])),
       this.jsonArea("customLabels (joined columns)", JSON.stringify(doc.customLabels || {}, null, 1), jsonSetter("customLabels", undefined), 3),
       this.jsonArea("outputColumns (CSV order)", JSON.stringify(doc.outputColumns || [], null, 1), jsonSetter("outputColumns", undefined), 2),
@@ -1137,6 +1328,7 @@ export class TemplateEditor {
         this.updateButtons();
       }, 4)
     );
+    return raw;
   }
 
   // config.json values edited through the form (the JSON box stays the source)
@@ -1234,8 +1426,8 @@ export class TemplateEditor {
   renderReport() {
     const r = this.report;
     const box = el("div", { class: "ed-report" }, el("h3", {}, `Needs verification (${r.items.length - [...this.resolved].length})`));
-    if (r.summary.length) box.append(el("div", { class: "muted small" }, r.summary.map(([k, v]) => `${k}: ${v}`).join(" · ")));
-    box.append(
+    if (r.summary.length) add(box, el("div", { class: "muted small" }, r.summary.map(([k, v]) => `${k}: ${v}`).join(" · ")));
+    add(box, 
       el(
         "ul",
         {},
@@ -1259,13 +1451,13 @@ export class TemplateEditor {
                 this.draw();
               },
             },
-            item.title ? el("strong", {}, item.title + ": ") : null,
+            displayName(item.title) ? el("strong", {}, displayName(item.title) + ": ") : null,
             item.text
           )
         )
       )
     );
-    if (r.warnings.length) box.append(el("h3", {}, "Warnings"), el("ul", {}, r.warnings.map((w) => el("li", {}, w))));
+    box.append(renderWarnings(this, r.warnings)); // confirm-to-clear (generator_warnings.js)
     return box;
   }
 
@@ -1303,7 +1495,7 @@ export class TemplateEditor {
                 }
               },
             },
-            `${item.name}: ${(item.flags || []).join(", ")}`
+            `${displayName(item.name, item.kind || "sheet")}: ${(item.flags || []).join(", ")}`
           )
         )
       ),

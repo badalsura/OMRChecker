@@ -326,7 +326,34 @@ def register_to_reference(
         "shift_ratio": round(float(shift), 4),
         "ok": ok,
         "rotated_180": bool(rotated),
+        # Private: lets replay_registration warp another rendering of the sheet
+        "_matrix": matrix.astype(np.float64).tolist(),
     }
+
+
+def replay_registration(image, page_info, registration, page_size, flip_all=False):
+    """
+    Warp another rendering of a sheet (e.g. its colour-dropout image) exactly
+    as rectify_pages + register_to_reference warped the grey one.
+    """
+    quad = np.float32(page_info["corners"])
+    if page_info.get("rotated_90"):
+        quad = np.roll(quad, 1, axis=0)
+    page = flatten_illumination(warp_quad(image, quad, page_size)[0])
+    if registration.get("rotated_180"):
+        page = cv2.rotate(page, cv2.ROTATE_180)
+    matrix = registration.get("_matrix")
+    if matrix is not None:
+        page = cv2.warpPerspective(
+            page,
+            np.array(matrix, dtype=np.float64),
+            (int(page_size[0]), int(page_size[1])),
+            flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+    if flip_all:
+        page = cv2.rotate(page, cv2.ROTATE_180)
+    return page
 
 
 def flatten_illumination(gray, scale=0.25):

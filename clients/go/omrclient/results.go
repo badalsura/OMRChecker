@@ -187,3 +187,50 @@ func (c *Client) DownloadExport(ctx context.Context, exportID, outPath string) e
 	}
 	return f.Close()
 }
+
+// DeleteScan deletes one sheet's result and stored images (audited).
+func (c *Client) DeleteScan(ctx context.Context, scanID string) (map[string]interface{}, error) {
+	var out map[string]interface{}
+	return out, c.doJSON(ctx, http.MethodDelete, "/results/"+url.PathEscape(scanID), nil, nil, "", &out)
+}
+
+// DeleteJob deletes a finished job and every result it produced (audited).
+// Files in a server folder are never deleted.
+func (c *Client) DeleteJob(ctx context.Context, jobID string) (map[string]interface{}, error) {
+	var out map[string]interface{}
+	return out, c.doJSON(ctx, http.MethodDelete, "/jobs/"+url.PathEscape(jobID), nil, nil, "", &out)
+}
+
+// ReviewCounts returns the pending total and per-name counts under the filters
+// (template_id, job_id, scan_id, name, kind, since).
+func (c *Client) ReviewCounts(ctx context.Context, filters map[string]string) (map[string]interface{}, error) {
+	v := url.Values{}
+	for k, val := range filters {
+		if val != "" {
+			v.Set(k, val)
+		}
+	}
+	var out map[string]interface{}
+	return out, c.doJSON(ctx, http.MethodGet, "/review/counts", v, nil, "", &out)
+}
+
+// AcceptReviewBulk accepts pending review items under the filters as read
+// (template_id, job_id, scan_id, name, kind, expected, before, limit). Nothing
+// is deleted; who and when are recorded per item.
+func (c *Client) AcceptReviewBulk(ctx context.Context, filters map[string]interface{}) (map[string]interface{}, error) {
+	if filters == nil {
+		filters = map[string]interface{}{}
+	}
+	var out map[string]interface{}
+	return out, c.postJSON(ctx, http.MethodPost, "/review/accept-bulk", filters, &out)
+}
+
+// CheckFolder reports whether a server folder can be read and how many
+// images and PDFs it holds.
+func (c *Client) CheckFolder(ctx context.Context, path string, recursive bool) (map[string]interface{}, error) {
+	v := url.Values{}
+	v.Set("path", path)
+	v.Set("recursive", strconv.FormatBool(recursive))
+	var out map[string]interface{}
+	return out, c.doJSON(ctx, http.MethodGet, "/fs/check", v, nil, "", &out)
+}

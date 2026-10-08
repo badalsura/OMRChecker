@@ -376,6 +376,19 @@ func (c *Client) UploadTemplateFiles(ctx context.Context, name string, files []F
 	return &out, c.multipart(ctx, "/templates", fields, "files", files, &out)
 }
 
+// DuplicateTemplate copies template, config, answer key and reference image
+// under a new unique name. Scans and results stay with the original.
+func (c *Client) DuplicateTemplate(ctx context.Context, id, name string) (*Template, error) {
+	var out Template
+	return &out, c.postJSON(ctx, http.MethodPost, "/templates/"+url.PathEscape(id)+"/duplicate", map[string]string{"name": name}, &out)
+}
+
+// RenameTemplate changes the display name (must be unique); the id stays.
+func (c *Client) RenameTemplate(ctx context.Context, id, name string) (*Template, error) {
+	var out Template
+	return &out, c.postJSON(ctx, http.MethodPost, "/templates/"+url.PathEscape(id)+"/rename", map[string]string{"name": name}, &out)
+}
+
 func (c *Client) DeleteTemplate(ctx context.Context, id string, purgeScans bool) error {
 	q := url.Values{"purge_scans": {strconv.FormatBool(purgeScans)}}
 	return c.doJSON(ctx, http.MethodDelete, "/templates/"+url.PathEscape(id), q, nil, "", nil)

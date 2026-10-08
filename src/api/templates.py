@@ -116,7 +116,7 @@ class TemplateStore:
         template = read_json(directory / "template.json", {}) or {}
         return {
             "id": template_id,
-            "name": meta.get("name", template_id),
+            "name": meta.get("name") or template_id,
             "status": meta.get("status", "ready"),
             "created_at": meta.get("created_at"),
             "updated_at": meta.get("updated_at"),
@@ -328,6 +328,7 @@ ZONE_COLORS = {
     "qrcode": (160, 40, 160),
     "ocr": (30, 140, 30),
     "icr": (20, 120, 220),
+    "image": (120, 120, 120),
 }
 
 

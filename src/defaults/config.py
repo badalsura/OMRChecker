@@ -37,6 +37,15 @@ CONFIG_DEFAULTS = DotMap(
             "rectify_on_border": False,
             # How far (px) the border may sit from where the template expects it
             "rectify_search_px": 20,
+            # Image the borders are searched on when a colour dropout removes
+            # the print: "auto"/"darkest" (darkest channel) or "grey"
+            "rectify_print_image": "auto",
+            # Fit blocks without a printed box onto their bubble outlines
+            "block_perspective": False,
+            # Find the page outline in phone photos before registration
+            "page_outline": False,
+            # Reject a block correction that makes the printed bubbles fit worse
+            "verify_bubble_fit": True,
         },
         "review_params": {
             # Intensity distance from the threshold that counts as fully confident
@@ -77,6 +86,31 @@ CONFIG_DEFAULTS = DotMap(
             # Send zones read by an engine other than zxing to review
             "review_fallback_decodes": False,
         },
+        "ocr_params": {
+            # OCR engines (src/readers/text_reader.py). A build may change these
+            # defaults through ocr_build.json (packaging/ocr_models.md)
+            "default_engine": "tesseract",
+            "fallback_engine": "none",
+            "paddle_det_model": "mobile",
+            "paddle_rec_model": "mobile",
+            "paddle_lang": "en",
+            "paddle_model_dir": None,
+            # "best" traineddata when the build bundled it, else the system install
+            "tessdata": "best",
+            "langs": ["eng"],
+            # Retry other layout modes on an empty / invalid read
+            "multi_psm": True,
+            # Second binarisation (denoise + adaptive threshold) at low confidence
+            "cleanup_pass": True,
+            # Two engines reading different text send the zone to review
+            "disagree_to_review": True,
+            # Pass the zone pattern to Tesseract as user patterns
+            "user_patterns": True,
+            # Review when any character is below this confidence; 0 = off
+            "min_char_confidence": 0,
+            # PaddleOCR reads boxed handwriting as well when its models are installed
+            "icr_second_reader": "auto",
+        },
         "outputs": {
             "show_image_level": 0,
             "save_image_level": 0,
@@ -86,3 +120,8 @@ CONFIG_DEFAULTS = DotMap(
     },
     _dynamic=False,
 )
+
+# A build may choose other OCR defaults (packaging/ocr_build.json)
+from src.readers.ocr_build import apply_build_defaults  # noqa: E402
+
+apply_build_defaults(CONFIG_DEFAULTS)

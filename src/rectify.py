@@ -18,6 +18,12 @@ A border that is not found, or a correction that is not plausible (corner moves
 beyond the search margin, not near-rectangular, or the bubbles fit worse at the
 corrected positions than before), leaves the page alignment untouched; the block's
 fields get the rectify_failed flag.
+
+Two-level search ("outerBorderPadding"): the outer frame first, then the inner
+box relative to it. Blocks without a printed box can be fitted to their bubble
+outlines instead ("blockPerspective" / alignment block_perspective), with the
+same safety limits. The bubble-fit safety check can be switched off with
+alignment verify_bubble_fit (default on).
 """
 
 import cv2
@@ -34,12 +40,27 @@ MIN_FIT_RATIO = 0.97
 
 
 class RectifyResult:
-    def __init__(self, ok, reason="", offsets=None, corners=None, expected=None):
+    def __init__(
+        self,
+        ok,
+        reason="",
+        offsets=None,
+        corners=None,
+        expected=None,
+        method="border",
+        level=None,
+        status=None,
+    ):
         self.ok = ok
         self.reason = reason
         self.offsets = offsets
         self.corners = corners
         self.expected = expected
+        # "border" (printed box) or "bubbles" (fitted to the bubble outlines)
+        self.method = method
+        # Two-level search: "outer" frame or "inner" box used; None: one level
+        self.level = level
+        self._status = status
 
     @property
     def max_shift(self):
@@ -47,35 +68,80 @@ class RectifyResult:
             return None
         return float(np.max(np.linalg.norm(self.corners - self.expected, axis=1)))
 
+    @property
+    def status(self):
+        if self.ok:
+            return "found" if self.method == "border" else "fitted"
+        return self._status or "failed"
+
     def to_dict(self):
-        out = {"ok": self.ok, "reason": self.reason}
+        out = {
+            "ok": self.ok,
+            "reason": self.reason,
+            "status": self.status,
+            "method": self.method,
+            "level": self.level,
+        }
         if self.max_shift is not None:
             out["max_corner_shift"] = round(self.max_shift, 2)
+        if self.corners is not None:
+            out["corners"] = _round_points(self.corners)
+        if self.expected is not None:
+            out["expected"] = _round_points(self.expected)
         return out
+
+
+def _round_points(points):
+    return [[round(float(x), 2), round(float(y), 2)] for x, y in points]
 
 
 def block_bubbles(field_block):
     return [bubble for strip in field_block.traverse_bubbles for bubble in strip]
 
 
-def padding_of(field_block):
-    padding = getattr(field_block, "border_padding", None)
-    if padding is None:
+def _pair(value):
+    if value is None:
         return None
-    if isinstance(padding, (int, float)):
-        return float(padding), float(padding)
-    return float(padding[0]), float(padding[1])
+    if isinstance(value, (int, float)):
+        return float(value), float(value)
+    return float(value[0]), float(value[1])
 
 
-def rectify_field_block(img, field_block, search_px):
-    """
-    Find the block's printed border and return a RectifyResult whose offsets
-    are per-bubble (dx, dy) corrections relative to the template positions.
-    """
+def padding_of(field_block):
+    return _pair(getattr(field_block, "border_padding", None))
+
+
+def outer_padding_of(field_block):
+    return _pair(getattr(field_block, "outer_border_padding", None))
+
+
+def block_box(field_block):
     x0, y0 = (float(v) for v in field_block.origin)
     width, height = (float(v) for v in field_block.dimensions)
-    x1, y1 = x0 + width, y0 + height
-    padding = padding_of(field_block)
+    return x0, y0, x0 + width, y0 + height
+
+
+def _box_corners(x0, y0, x1, y1, pad_x=0.0, pad_y=0.0):
+    return np.float32(
+        [
+            [x0 - pad_x, y0 - pad_y],
+            [x1 + pad_x, y0 - pad_y],
+            [x1 + pad_x, y1 + pad_y],
+            [x0 - pad_x, y1 + pad_y],
+        ]
+    )
+
+
+def find_border(img, field_block, padding, search_px, offset=(0.0, 0.0)):
+    """
+    Look for a printed rectangle `padding` outside the block's bubbles, its
+    search window moved by `offset`. Returns (corners, expected corners) in
+    image pixels (expected = where the template puts it, without the offset),
+    or a reason string.
+    """
+    x0, y0, x1, y1 = block_box(field_block)
+    ox, oy = float(offset[0]), float(offset[1])
+    sx0, sy0, sx1, sy1 = x0 + ox, y0 + oy, x1 + ox, y1 + oy
     search = float(search_px)
     # Where to look, as offsets outside the bubbles' bounding box
     if padding is None:
@@ -84,10 +150,10 @@ def rectify_field_block(img, field_block, search_px):
         centre_x, centre_y = padding
     margin = int(np.ceil(max(centre_x, centre_y) + search + 3))
     img_h, img_w = img.shape[:2]
-    left, top = int(x0) - margin, int(y0) - margin
-    right, bottom = int(np.ceil(x1)) + margin, int(np.ceil(y1)) + margin
+    left, top = int(sx0) - margin, int(sy0) - margin
+    right, bottom = int(np.ceil(sx1)) + margin, int(np.ceil(sy1)) + margin
     if left < 0 or top < 0 or right > img_w or bottom > img_h:
-        return RectifyResult(False, "search window outside the page")
+        return "search window outside the page"
     region = img[top:bottom, left:right]
     _, dark = cv2.threshold(region, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
@@ -107,8 +173,8 @@ def rectify_field_block(img, field_block, search_px):
     )
 
     # Expected line positions in region coordinates
-    lo_x, hi_x = x0 - left, x1 - left
-    lo_y, hi_y = y0 - top, y1 - top
+    lo_x, hi_x = sx0 - left, sx1 - left
+    lo_y, hi_y = sy0 - top, sy1 - top
     sides = {}
     for name, mask, along, expected, outward in (
         ("top", horizontal, (lo_x, hi_x), lo_y - centre_y, -1),
@@ -118,7 +184,7 @@ def rectify_field_block(img, field_block, search_px):
     ):
         line = _fit_side(mask, along, expected, search)
         if line is None:
-            return RectifyResult(False, f"{name} border not found")
+            return f"{name} border not found"
         sides[name] = line
 
     corners = np.float32(
@@ -141,26 +207,88 @@ def rectify_field_block(img, field_block, search_px):
         pad_x = ((lo_x - found_left) + (found_right - hi_x)) / 2
         pad_y = ((lo_y - found_top) + (found_bottom - hi_y)) / 2
         if min(pad_x, pad_y) < -2 or max(pad_x, pad_y) > 2 * search + 2:
-            return RectifyResult(False, "border gap implausible")
+            return "border gap implausible"
     else:
         pad_x, pad_y = padding
-    expected = np.float32(
-        [
-            [x0 - pad_x, y0 - pad_y],
-            [x1 + pad_x, y0 - pad_y],
-            [x1 + pad_x, y1 + pad_y],
-            [x0 - pad_x, y1 + pad_y],
-        ]
+    return corners, _box_corners(x0, y0, x1, y1, pad_x, pad_y)
+
+
+def rectify_field_block(img, field_block, search_px, verify=True):
+    """
+    Find the block's printed border and return a RectifyResult whose offsets
+    are per-bubble (dx, dy) corrections relative to the template positions.
+
+    With "outerBorderPadding" on the block the search has two levels: the
+    large outer frame is found first and the inner box is searched for where
+    the outer frame puts it; when only the outer frame is found, its fit is
+    used. verify=False (alignment verify_bubble_fit) skips the check that the
+    printed bubbles fit at least as well after the correction.
+    """
+    search = float(search_px)
+    outer_padding = outer_padding_of(field_block)
+    offset = (0.0, 0.0)
+    outer = None
+    level = None
+    if outer_padding is not None:
+        outer = find_border(img, field_block, outer_padding, search)
+        if isinstance(outer, str):
+            return RectifyResult(
+                False,
+                f"outer {outer}",
+                level="outer",
+                status="skipped" if "outside the page" in outer else None,
+            )
+        homography = cv2.getPerspectiveTransform(outer[1], outer[0])
+        x0, y0, x1, y1 = block_box(field_block)
+        centre = np.float32([[[(x0 + x1) / 2, (y0 + y1) / 2]]])
+        moved = cv2.perspectiveTransform(centre, homography)[0, 0]
+        offset = (float(moved[0] - centre[0, 0, 0]), float(moved[1] - centre[0, 0, 1]))
+        level = "inner"
+
+    # The outer frame already places the block: search the inner box closely
+    inner_search = search if outer is None else max(4.0, search / 2.0)
+    inner = find_border(
+        img, field_block, padding_of(field_block), inner_search, offset
     )
-    result = RectifyResult(False, corners=corners, expected=expected)
-    if result.max_shift > search:
+    result = None
+    if not isinstance(inner, str):
+        result = _quad_result(
+            img,
+            field_block,
+            inner,
+            inner_search + float(np.hypot(*offset)),
+            level,
+            verify,
+        )
+        if result.ok or outer is None:
+            return result
+    elif outer is None:
+        return RectifyResult(
+            False,
+            inner,
+            status="skipped" if "outside the page" in inner else None,
+        )
+    # Inner box not found (or not plausible): use the outer frame's fit
+    fallback = _quad_result(img, field_block, outer, search, "outer", verify)
+    return fallback if fallback.ok or result is None else result
+
+
+def _quad_result(img, field_block, found, allowed, level, verify):
+    corners, expected = found
+    result = RectifyResult(False, corners=corners, expected=expected, level=level)
+    if result.max_shift > allowed:
         result.reason = "correction larger than the search margin"
         return result
     if not _near_rectangular(corners):
         result.reason = "border is not near-rectangular"
         return result
-
     homography = cv2.getPerspectiveTransform(expected, corners)
+    return _finish(img, field_block, result, homography, verify)
+
+
+def _finish(img, field_block, result, homography, verify):
+    """Per-bubble offsets from a block homography, after the bubble-fit check."""
+    box_w, box_h = field_block.bubble_dimensions
     bubbles = block_bubbles(field_block)
     centres = np.float32(
         [[b.x + box_w / 2.0, b.y + box_h / 2.0] for b in bubbles]
@@ -170,15 +298,115 @@ def rectify_field_block(img, field_block, search_px):
 
     # Never make things worse silently: the printed bubbles must fit at least as
     # well at the corrected positions as at the page-aligned ones
-    shift = (field_block.shift, getattr(field_block, "shift_y", 0))
-    before = _bubble_fit(img, bubbles, box_w, box_h, [shift] * len(bubbles))
-    after = _bubble_fit(img, bubbles, box_w, box_h, offsets)
-    if after < before * MIN_FIT_RATIO:
-        result.reason = "bubbles fit worse after rectification"
-        return result
+    if verify:
+        shift = (field_block.shift, getattr(field_block, "shift_y", 0))
+        before = _bubble_fit(img, bubbles, box_w, box_h, [shift] * len(bubbles))
+        after = _bubble_fit(img, bubbles, box_w, box_h, offsets)
+        if after < before * MIN_FIT_RATIO:
+            result.reason = "bubbles fit worse after rectification"
+            return result
     result.ok = True
     result.offsets = [tuple(int(v) for v in o) for o in offsets]
     return result
+
+
+# Bubble-outline fit (blocks without a printed box)
+MIN_FITTED_BUBBLES = 6
+MIN_RING_SCORE = 0.25
+
+
+def fit_block_by_bubbles(img, field_block, search_px, verify=True):
+    """
+    Per-block perspective correction for a block without a printed box: find
+    each printed bubble outline near its expected place, fit a homography to
+    them (RANSAC) and map the block's corners and bubbles through it. Same
+    safety limits as the border fit.
+    """
+    search = float(search_px)
+    box_w, box_h = (float(v) for v in field_block.bubble_dimensions)
+    bubbles = block_bubbles(field_block)
+    x0, y0, x1, y1 = block_box(field_block)
+    expected_box = _box_corners(x0, y0, x1, y1)
+    if len(bubbles) < MIN_FITTED_BUBBLES:
+        return RectifyResult(
+            False, "too few bubbles to fit", expected=expected_box, method="bubbles"
+        )
+    centres = np.float32([[b.x + box_w / 2.0, b.y + box_h / 2.0] for b in bubbles])
+    distances = np.linalg.norm(centres[:, None] - centres[None], axis=2)
+    np.fill_diagonal(distances, np.inf)
+    pitch = float(distances.min())
+    radius = int(max(2, min(search, 0.45 * pitch)))
+    shift = np.float32([field_block.shift, getattr(field_block, "shift_y", 0)])
+
+    ring_w, ring_h = int(round(box_w)) + 4, int(round(box_h)) + 4
+    ring = np.zeros((ring_h, ring_w), np.float32)
+    cv2.ellipse(
+        ring,
+        (ring_w // 2, ring_h // 2),
+        (max(int(box_w / 2) - 1, 1), max(int(box_h / 2) - 1, 1)),
+        0,
+        0,
+        360,
+        1.0,
+        2,
+    )
+    img_h, img_w = img.shape[:2]
+    darkness = 255.0 - img.astype(np.float32)
+    expected_pts, found_pts = [], []
+    for centre in centres:
+        cx, cy = centre + shift
+        left = int(round(cx - ring_w / 2.0)) - radius
+        top = int(round(cy - ring_h / 2.0)) - radius
+        right, bottom = left + ring_w + 2 * radius, top + ring_h + 2 * radius
+        if left < 0 or top < 0 or right > img_w or bottom > img_h:
+            continue
+        window = darkness[top:bottom, left:right]
+        if float(window.std()) < 1.0:
+            continue
+        scores = cv2.matchTemplate(window, ring, cv2.TM_CCOEFF_NORMED)
+        _, best, _, (bx, by) = cv2.minMaxLoc(scores)
+        if best < MIN_RING_SCORE or bx in (0, 2 * radius) or by in (0, 2 * radius):
+            continue
+        # Window centred on the expected place (to within half a pixel)
+        found = (
+            cx + bx - radius + _parabola(scores[by, bx - 1 : bx + 2]),
+            cy + by - radius + _parabola(scores[by - 1 : by + 2, bx]),
+        )
+        expected_pts.append(centre)
+        found_pts.append(found)
+    if len(found_pts) < MIN_FITTED_BUBBLES:
+        return RectifyResult(
+            False, "too few bubble outlines found", expected=expected_box,
+            method="bubbles",
+        )
+    expected_pts = np.float32(expected_pts)
+    found_pts = np.float32(found_pts)
+    spread = np.linalg.eigvalsh(np.cov((expected_pts - expected_pts.mean(0)).T))
+    if spread[0] < 1.0:
+        return RectifyResult(
+            False, "bubbles lie on one line", expected=expected_box, method="bubbles"
+        )
+    homography, inliers = cv2.findHomography(
+        expected_pts, found_pts, cv2.RANSAC, 2.0
+    )
+    if homography is None or int(inliers.sum()) < max(
+        MIN_FITTED_BUBBLES, len(found_pts) // 2
+    ):
+        return RectifyResult(
+            False, "bubble outlines do not agree", expected=expected_box,
+            method="bubbles",
+        )
+    corners = cv2.perspectiveTransform(expected_box[None], homography)[0]
+    result = RectifyResult(
+        False, corners=corners, expected=expected_box, method="bubbles"
+    )
+    if result.max_shift > search:
+        result.reason = "correction larger than the search margin"
+        return result
+    if not _near_rectangular(corners):
+        result.reason = "fitted block is not near-rectangular"
+        return result
+    return _finish(img, field_block, result, homography, verify)
 
 
 def apply_offsets(field_block, offsets):
@@ -196,6 +424,17 @@ def reset_offsets(field_block):
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+def _parabola(values):
+    """Sub-pixel peak offset in [-0.5, 0.5] from three neighbouring scores."""
+    if len(values) != 3:
+        return 0.0
+    a, b, c = (float(v) for v in values)
+    denominator = a - 2 * b + c
+    if abs(denominator) < 1e-9:
+        return 0.0
+    return float(np.clip(0.5 * (a - c) / denominator, -0.5, 0.5))
 
 
 def _fit_side(mask, along, expected, search):

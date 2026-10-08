@@ -32,6 +32,9 @@ ZONE_REVIEW_FLAGS = {
     "engine_unavailable",
     "no_icr_model",
     "read_error",
+    # OCR: two engines read different text; one character below minCharConfidence
+    "engine_disagree",
+    "low_char_confidence",
 }
 
 
@@ -55,7 +58,7 @@ def finalize(
 
 
 def read_zone(zone, image, engines=None):
-    from src.readers import barcode, icr, ocr
+    from src.readers import barcode, icr, image_zone, ocr
 
     engines = engines or {}
     box = [*zone.origin, *zone.dimensions]
@@ -65,9 +68,13 @@ def read_zone(zone, image, engines=None):
                 zone, image, engines.get("barcode_params")
             )
         elif zone.type == "ocr":
-            result = ocr.read_ocr_zone(zone, image)
+            result = ocr.read_ocr_zone(zone, image, engines.get("ocr_params"))
         elif zone.type == "icr":
-            result = icr.read_icr_zone(zone, image, engines.get("icr"))
+            result = icr.read_icr_zone(
+                zone, image, engines.get("icr"), engines.get("ocr_params")
+            )
+        elif zone.type == "image":
+            result = image_zone.read_image_zone(zone, image)
         else:
             raise ValueError(f"Unknown zone type: {zone.type}")
     except Exception as error:  # a broken zone must not lose the rest of the sheet

@@ -1,0 +1,12 @@
+.git
+**/__pycache__
+**/node_modules
+venv
+build
+dist
+inputs
+outputs
+omr_data
+models
+datasets
+*.onnx

@@ -1,5 +1,7 @@
 // Review queue: keyboard-driven, optimistic, prefetching.
-import { api, chip, confidenceColor, el, on, toast, url } from "./api.js";
+import { api, chip, confidenceColor, displayName, el, emit, modal, on, toast, url } from "./api.js";
+
+const POLL_MS = 5000;
 
 const q = {
   buffer: [],
@@ -12,6 +14,12 @@ const q = {
   loading: false,
   exhausted: false,
   inFlight: 0,
+  since: null, // server time of the last look for new items
+  newCount: 0, // items added at the end since the queue was loaded
+  doneAtCount: 0, // q.done when q.total was last read from the server
+  othersSkipped: [], // names of people whose items were skipped
+  pollTimer: null,
+  countsTimer: null,
 };
 
 const key = (item) => `${item.scan_id}/${item.name}`;
@@ -20,6 +28,7 @@ export function initReview() {
   document.getElementById("rv-load").addEventListener("click", () => load());
   document.getElementById("rv-template").addEventListener("change", refreshNames);
   document.getElementById("rv-wide").addEventListener("change", () => show());
+  document.getElementById("rv-accept-bulk").addEventListener("click", acceptBulk);
   on("templates", refreshNames);
   on("review-changed", refreshBadge);
   on("review-scan", (scanId) => {
@@ -36,6 +45,7 @@ export function initReview() {
     load();
   });
   refreshBadge();
+  startPolling();
 }
 
 export async function refreshBadge() {
@@ -55,13 +65,125 @@ async function refreshNames() {
   const current = select.value;
   try {
     const summary = await api(`/review/summary${template ? `?template_id=${encodeURIComponent(template)}` : ""}`);
-    select.innerHTML = "";
-    select.append(el("option", { value: "" }, `All (${summary.total})`));
-    for (const row of summary.by_name) select.append(el("option", { value: row.name }, `${row.name} (${row.n})`));
-    if ([...select.options].some((o) => o.value === current)) select.value = current;
+    fillNames(summary.by_name, summary.total, current);
   } catch (e) {
     /* ignore */
   }
+}
+
+function fillNames(rows, total, current) {
+  const select = document.getElementById("rv-name");
+  if (current === undefined) current = select.value;
+  select.innerHTML = "";
+  select.append(el("option", { value: "" }, `All (${total})`));
+  const names = new Set();
+  for (const row of rows) {
+    if (names.has(row.name)) continue;
+    names.add(row.name);
+    const n = rows.filter((r) => r.name === row.name).reduce((sum, r) => sum + r.n, 0);
+    select.append(el("option", { value: row.name }, `${displayName(row.name, "(no name)")} (${n})`));
+  }
+  // Keep the chosen name even when nothing is left for it
+  if (current && !names.has(current)) select.append(el("option", { value: current }, `${current} (0)`));
+  select.value = current || "";
+}
+
+function filterParams(extra) {
+  const params = new URLSearchParams(extra || {});
+  for (const [k, v] of Object.entries(q.filters)) if (v) params.set(k, v);
+  return params;
+}
+
+// Pending count and per-name counts from the server, after a save or skip
+function refreshCounts(delay = 400) {
+  clearTimeout(q.countsTimer);
+  q.countsTimer = setTimeout(async () => {
+    if (q.inFlight) return refreshCounts(300);
+    try {
+      const data = await api(`/review/counts?${filterParams()}`);
+      q.total = data.total;
+      q.doneAtCount = q.done;
+      if (document.getElementById("rv-template").value === (q.filters.template_id || "")) fillNames(data.by_name, data.all_names);
+      updateProgress();
+    } catch (e) {
+      /* ignore */
+    }
+  }, delay);
+}
+
+function reviewTabOpen() {
+  const tab = document.getElementById("tab-review");
+  return tab && tab.classList.contains("active") && !document.hidden;
+}
+
+function startPolling() {
+  clearInterval(q.pollTimer);
+  q.pollTimer = setInterval(() => {
+    if (!reviewTabOpen() || q.since === null) return;
+    pollNew();
+    checkStates();
+  }, POLL_MS);
+}
+
+// New items of a running job (or from another screen) go to the end of the list
+async function pollNew() {
+  try {
+    const data = await api(`/review?${filterParams({ limit: "200", created_after: String(q.since) })}`);
+    let added = 0;
+    for (const item of data.items) {
+      if (q.seen.has(key(item))) continue;
+      q.seen.add(key(item));
+      q.buffer.push(item);
+      added++;
+    }
+    q.since = data.now;
+    if (!added) return;
+    const wasFinished = !current();
+    q.newCount += added;
+    q.exhausted = false;
+    refreshCounts(0);
+    if (wasFinished) show();
+    else updateProgress();
+  } catch (e) {
+    /* offline for a moment: try again on the next tick */
+  }
+}
+
+// Items someone else already decided are marked "done by X" and skipped
+async function checkStates() {
+  const ahead = q.buffer.slice(q.pos, q.pos + 40).filter((item) => item.decided === undefined && !item.doneBy && !item.gone);
+  if (!ahead.length) return;
+  let data;
+  try {
+    data = await api("/review/states", { method: "POST", json: { items: ahead.map((i) => ({ scan_id: i.scan_id, name: i.name })) } });
+  } catch (e) {
+    return;
+  }
+  const byKey = Object.fromEntries(data.items.map((s) => [`${s.scan_id}/${s.name}`, s]));
+  let currentChanged = false;
+  for (const item of ahead) {
+    const st = byKey[key(item)];
+    if (!st || st.state === "pending") continue;
+    if (item.decided !== undefined) continue; // saved here meanwhile
+    if (st.state === "done") {
+      item.doneBy = st.by || "someone";
+      item.doneValue = st.value;
+    } else item.gone = true;
+    if (item === current()) currentChanged = true;
+  }
+  if (currentChanged) {
+    const input = document.querySelector("#rv-main .rv-value");
+    const untouched = !input || input.value === (current().value || "");
+    if (untouched && document.activeElement === input) {
+      if (current().doneBy) q.othersSkipped.push(current().doneBy);
+      move(1);
+    }
+    else show();
+  }
+}
+
+function othersDone(item) {
+  return item && item.decided === undefined && (item.doneBy || item.gone);
 }
 
 function readFilters() {
@@ -76,10 +198,11 @@ function readFilters() {
 }
 
 async function load() {
-  Object.assign(q, { buffer: [], pos: 0, seen: new Set(), skipped: new Set(), done: 0, exhausted: false });
+  Object.assign(q, { buffer: [], pos: 0, seen: new Set(), skipped: new Set(), done: 0, exhausted: false, since: null, newCount: 0, doneAtCount: 0, othersSkipped: [] });
   q.filters = readFilters();
   await fetchMore();
   show();
+  checkStates();
 }
 
 async function fetchMore() {
@@ -90,6 +213,8 @@ async function fetchMore() {
     for (const [k, v] of Object.entries(q.filters)) if (v) params.set(k, v);
     const data = await api(`/review?${params}`);
     q.total = data.total;
+    q.doneAtCount = q.done;
+    if (q.since === null && data.now !== undefined) q.since = data.now;
     let added = 0;
     for (const item of data.items) {
       if (q.seen.has(key(item))) continue;
@@ -118,8 +243,15 @@ function pad() {
 }
 
 function updateProgress() {
-  const remaining = Math.max(q.total - q.done, 0);
-  document.getElementById("rv-progress").textContent = `Reviewed ${q.done} this session · ${remaining} pending · ${q.skipped.size} skipped`;
+  const remaining = Math.max(q.total - (q.done - q.doneAtCount), 0);
+  const parts = [`Reviewed ${q.done} this session`, `${remaining} pending`, `${q.skipped.size} skipped`];
+  if (q.othersSkipped.length) {
+    const names = [...new Set(q.othersSkipped)];
+    parts.push(`${q.othersSkipped.length} done by ${names.slice(0, 3).join(", ")}${names.length > 3 ? "…" : ""}`);
+  }
+  const progress = document.getElementById("rv-progress");
+  progress.textContent = parts.join(" · ");
+  if (q.newCount) progress.append(" ", el("span", { class: "chip ok", title: "Added to the end of the list while you were reviewing" }, `${q.newCount} new item${q.newCount === 1 ? "" : "s"}`));
 }
 
 function show() {
@@ -194,8 +326,17 @@ function show() {
           (item.flags || []).map((f) => chip(f, "flag"))
         ),
         el("div", { class: "rv-meta" }, "Read as: ", el("code", {}, item.value === "" ? "(blank)" : item.value), item.decided !== undefined ? el("span", {}, " · you saved: ", el("code", {}, item.decided === "" ? "(blank)" : item.decided)) : null),
+        othersDone(item)
+          ? el(
+              "div",
+              { class: "res-warning" },
+              item.gone ? "This item is no longer pending (the sheet was deleted, regraded or settled elsewhere)." : `Done by ${item.doneBy}${item.doneValue !== undefined && item.doneValue !== null ? ` (value ${item.doneValue === "" ? "blank" : item.doneValue})` : ""}. Saving here changes their decision.`,
+              " ",
+              el("button", { class: "small", onclick: () => move(1) }, "Next")
+            )
+          : null,
         (item.reasons || []).length ? el("div", { class: "rv-meta rv-reasons" }, item.reasons.join("; ")) : null,
-        item.fields ? el("div", { class: "rv-meta" }, "Columns: ", el("code", {}, item.fields.join(", ")), " (space = blank column)") : null,
+        item.fields ? el("div", { class: "rv-meta" }, "Columns: ", groupColumns(item), " (space = blank column)") : null,
         input,
         item.options ? optionsBox : null,
         (item.candidates || []).length
@@ -313,6 +454,7 @@ function submit(input, item) {
   if (firstTime) q.done++;
   q.inFlight++;
   api(`/scans/${item.scan_id}/review`, { method: "POST", json: body })
+    .then(() => emit("review-saved", { scan_id: item.scan_id, name: item.name }))
     .catch((error) => {
       toast(`${item.name} on ${item.file_id}: ${error.message}`, "error", 6000);
       if (firstTime) q.done--;
@@ -322,15 +464,106 @@ function submit(input, item) {
       q.inFlight--;
       if (q.inFlight === 0) refreshBadge();
       updateProgress();
+      refreshCounts();
     });
   move(1);
 }
 
 function move(delta, skip = false) {
   const item = current();
-  if (skip && item && item.decided === undefined) q.skipped.add(key(item));
+  if (skip && item && item.decided === undefined) {
+    q.skipped.add(key(item));
+    refreshCounts();
+  }
   q.pos = Math.max(0, Math.min(q.pos + delta, q.buffer.length));
+  // Going forward, step over items someone else decided meanwhile
+  while (delta > 0 && othersDone(current())) {
+    const done = current();
+    if (done.doneBy) q.othersSkipped.push(done.doneBy);
+    q.pos++;
+  }
   show();
+  checkStates();
+}
+
+// Columns of a grouped value, coloured by what each column read as
+function groupColumns(item) {
+  const states = {};
+  for (const column of (item.group && item.group.columns) || []) if (column && column.name) states[column.name] = column.state;
+  const flagged = new Set(Object.keys(item.field_flags || {}));
+  return item.fields.map((name, index) => {
+    const state = states[name] || (flagged.has(name) ? "issue" : "");
+    const bad = state === "multi" || state === "issue" || flagged.has(name);
+    return el(
+      "span",
+      {},
+      index ? ", " : "",
+      el("code", { class: bad ? "rv-col-bad" : state === "empty" ? "rv-col-empty" : "", title: state ? `${name}: ${state}` : name }, name)
+    );
+  });
+}
+
+// "Accept as read" for every pending item under the filters: recorded with
+// who and when, nothing is deleted
+async function acceptBulk() {
+  const filters = readFilters();
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) if (v) params.set(k, v);
+  let counts;
+  try {
+    counts = await api(`/review/counts?${params}`);
+  } catch (error) {
+    toast(error.message, "error");
+    return;
+  }
+  if (!counts.total) return toast("Nothing pending under these filters", "", 2000);
+  const described = Object.entries(filters)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k.replace("_id", "")} ${v}`)
+    .join(", ");
+  const status = el("div", { class: "small muted" });
+  const go = el(
+    "button",
+    {
+      class: "primary",
+      onclick: async () => {
+        go.disabled = true;
+        let accepted = 0;
+        try {
+          for (;;) {
+            const done = await api("/review/accept-bulk", { method: "POST", json: { ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v)), expected: counts.total, before: counts.now } });
+            accepted += done.accepted;
+            status.textContent = `Accepted ${accepted} of ${counts.total}…`;
+            if (!done.remaining || !done.accepted) {
+              if (done.errors && done.errors.length) toast(`${done.errors.length} sheet(s) could not be updated: ${done.errors[0].error}`, "error", 8000);
+              break;
+            }
+          }
+          dialog.close();
+          toast(`Accepted ${accepted} item(s) as read`, "ok");
+          refreshBadge();
+          refreshNames();
+          emit("review-saved", {});
+          if (q.since !== null) load();
+        } catch (error) {
+          go.disabled = false;
+          toast(error.message, "error", 8000);
+        }
+      },
+    },
+    `Accept ${counts.total} as read`
+  );
+  const dialog = modal(
+    "Accept the queue as read?",
+    el(
+      "div",
+      {},
+      el("p", {}, `${counts.total} pending item(s)${described ? ` (${described})` : ""} will keep the values the engine read and leave the queue.`),
+      el("p", { class: "small muted" }, "Nothing is deleted. Each item is recorded as accepted in bulk, with your name and the time, so it can be traced and changed later in Results. Items that arrive after you opened this dialog stay in the queue."),
+      status
+    ),
+    [go]
+  );
 }
 
 // Small crops (a single bubble row) are upscaled so they are easy to read

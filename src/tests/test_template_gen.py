@@ -275,3 +275,187 @@ def test_cli(tmp_path, sheets, spec):
     assert validate_template(template) == []
     report = json.loads((out / "generation_report.json").read_text())
     assert report["label_agreement"] >= 0.98
+
+
+# --------------------------------------------------------------------------
+# Plan items 10 / 16: label files, exact naming, alignment report, boxes
+# --------------------------------------------------------------------------
+from src.template_gen import boxes as gen_boxes  # noqa: E402
+from src.template_gen import marks as gen_marks  # noqa: E402
+from src.template_gen import naming  # noqa: E402
+from src.template_gen.bubbles import Grid  # noqa: E402
+from src.utils.label_files import LabelFileError, parse_label_file  # noqa: E402
+
+
+def _xlsx_bytes(rows):
+    openpyxl = pytest.importorskip("openpyxl")
+    import io
+
+    book = openpyxl.Workbook()
+    sheet = book.active
+    for row in rows:
+        sheet.append(row)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def test_label_file_xlsx_file_name_and_answer_string():
+    content = _xlsx_bytes(
+        [
+            ["File Name", "pcode", "ANS"],
+            ["000001.jpg", 1051, "CB A*"],
+            ["000002.jpg", "01052", "AB"],
+        ]
+    )
+    labels, info = parse_label_file(
+        content, ["scans/000002.jpg", "000001.JPG"], "labels.xlsx"
+    )
+    assert info["format"] == "xlsx" and info["file_column"] == "File Name"
+    assert info["answer_columns"] == {"ANS": {"prefix": "q", "questions": 5}}
+    first, second = labels
+    # Matched by name (any case/folder), Excel's dropped zero restored
+    assert second["pcode"] == "01051" and first["pcode"] == "01052"
+    assert [second[f"q{i}"] for i in range(1, 6)] == ["C", "B", "", "A", "*"]
+    assert [first[f"q{i}"] for i in range(1, 6)] == ["A", "B", "", "", ""]
+
+
+@pytest.mark.parametrize("header", ["FILE-NAME", "file_name", "Image Name", " filename "])
+def test_label_file_name_column_any_spelling(header):
+    text = f"{header};q1\nb.png;A\na.png;C\n".encode()
+    labels, info = parse_label_file(text, ["a.png", "b.png"], "x.csv")
+    assert info["file_column"].strip() == header.strip()
+    assert labels == [{"q1": "C"}, {"q1": "A"}]
+
+
+def test_label_file_errors_and_student_name_column():
+    with pytest.raises(LabelFileError):
+        parse_label_file(b"q1\nA\n", ["a.png", "b.png"], "x.csv")
+    with pytest.raises(LabelFileError):
+        parse_label_file(b"\xd0\xcf\x11", ["a.png"], "old.xls")
+    # A "Name" column of student names is data, rows go by order
+    labels, info = parse_label_file(b"Name,q1\nAsha,A\nRavi,B\n", ["a.png", "b.png"])
+    assert info["file_column"] is None and labels[1] == {"Name": "Ravi", "q1": "B"}
+
+
+def _digit_fills(values, order, sheets, constant=False):
+    """Fills (S, 10, cols) of a vertical digit grid marking `values`."""
+    cols = len(values[0])
+    fills = np.zeros((sheets, 10, cols))
+    for s in range(sheets):
+        text = values[0 if constant else s]
+        for c, ch in enumerate(text):
+            if ch != " ":
+                fills[s, order.index(ch), c] = 120.0
+    return fills
+
+
+def test_exact_naming_constant_column_and_digit_order():
+    order = list("1234567890")
+    grid = Grid(x0=100, y0=100, dx=30, dy=30, cols=4, rows=10, bubble=[20, 20])
+    fills = [_digit_fills(["3962"], order, 6, constant=True)]
+    labels = [{"subject": "3962", "name": f"s{i}"} for i in range(6)]
+    matches = naming.match_grids([grid], fills, 60.0, labels)
+    assert len(matches) == 1
+    match = matches[0]
+    assert match["column"] == "subject" and match["order"] == "1..9,0"
+    assignments, composites, truth = naming.build_assignments(matches, [grid], set())
+    assert assignments[0]["field_labels"] == ["subject1", "subject2", "subject3", "subject4"]
+    assert composites == {"subject": ["subject1", "subject2", "subject3", "subject4"]}
+    table = naming.truth_tokens(truth, labels, 6)
+    assert table[0]["subject"] == "3962"
+
+
+def test_exact_naming_ragged_hundreds_column():
+    digits = list("0123456789")
+    main = Grid(x0=130, y0=100, dx=30, dy=30, cols=2, rows=10, bubble=[20, 20])
+    ragged = Grid(x0=100, y0=100, dx=0, dy=30, cols=1, rows=2, bubble=[20, 20])
+    values = ["028", "126", "048", "010", "139"]
+    fills_main = np.zeros((5, 10, 2))
+    fills_ragged = np.zeros((5, 2, 1))
+    for s, v in enumerate(values):
+        fills_ragged[s, digits.index(v[0]), 0] = 100
+        for c in range(2):
+            fills_main[s, digits.index(v[c + 1]), c] = 100
+    labels = [{"marks1": v} for v in values]
+    matches = naming.match_grids([main, ragged], [fills_main, fills_ragged], 50.0, labels)
+    assert matches and matches[0]["grids"] == [1, 0]
+    assignments, composites, _ = naming.build_assignments(matches, [main, ragged], set())
+    assert composites == {"marks1": ["marks1_1", "marks1_2", "marks1_3"]}
+    assert assignments[1]["values"] == ["0", "1"]
+
+
+def test_symmetric_tracks_and_asymmetric_index_points():
+    page = (400, 600)
+    left = [[20, 50 + 50 * i] for i in range(10)]
+    right = [[380, 50 + 50 * i] for i in range(10)]
+    tracks = {
+        "left": {"marks": left, "pitch": 50.0},
+        "right": {"marks": right, "pitch": 50.0},
+    }
+    assert gen_marks.tracks_symmetric(tracks, page)
+    lopsided = {"left": {"marks": left[:7], "pitch": 50.0}, "right": tracks["right"]}
+    assert not gen_marks.tracks_symmetric(lopsided, page)
+    dot = {"center": [60, 300], "size": [12, 12], "shape": "circle", "area": 110}
+    twin_a = {"center": [100, 100], "size": [12, 12], "shape": "circle", "area": 110}
+    twin_b = {"center": [300, 500], "size": [12, 12], "shape": "circle", "area": 110}
+    chosen = gen_marks.asymmetric_points([twin_a, twin_b, dot], page)
+    assert [c["center"] for c in chosen] == [[60, 300]]
+    point = gen_marks.index_point(chosen[0], "P1")
+    assert point == {
+        "name": "P1", "center": [60.0, 300.0], "size": [12, 12],
+        "shape": "circle", "required": True,
+    }
+
+
+def _marks_page():
+    page = np.full((600, 400), 255, np.uint8)
+    for i in range(10):
+        cv2.rectangle(page, (10, 45 + 50 * i), (30, 55 + 50 * i), 0, -1)
+    cv2.circle(page, (200, 300), 7, 0, -1)
+    return page
+
+
+def test_find_marks_in_box_and_mark_near_small_dot():
+    page = _marks_page()
+    track = gen_marks.find_marks_in_box(page, [0, 20, 45, 560], (400, 600))
+    assert track["orientation"] == "vertical" and len(track["marks"]) == 10
+    assert abs(track["pitch"] - 50) < 1
+    dot = gen_marks.find_mark_near(page, [204, 296], (400, 600))
+    assert dot["shape"] == "circle" and abs(dot["center"][0] - 200) < 1.5
+    counts = gen_marks.match_counts(
+        page, {"left": {"marks": track["marks"], "pitch": 50.0}},
+        [gen_marks.index_point(dot, "P1")],
+    )
+    assert counts["tracks"]["left"] == [10, 10] and counts["index_points"]["P1"]
+
+
+def test_printed_boxes_border_gap_and_adopt():
+    page = np.full((800, 600), 255, np.uint8)
+    cv2.rectangle(page, (90, 90), (290, 310), 0, 2)  # box around a 4x5 grid
+    for r in range(5):
+        for c in range(4):
+            cv2.circle(page, (120 + 45 * c, 120 + 42 * r), 12, 0, 2)
+    cv2.rectangle(page, (350, 400), (560, 700), 0, 2)  # an empty box
+    found = gen_boxes.detect_printed_boxes(page, (600, 800))
+    assert any(abs(b[0] - 90) <= 3 and abs(b[1] - 90) <= 3 for b in found)
+    grid = Grid(x0=120, y0=120, dx=45, dy=42, cols=4, rows=5, bubble=[25, 25])
+    fit = gen_boxes.border_for_grid(grid, found, [grid])
+    assert fit is not None and all(10 <= g <= 25 for g in fit[1])
+    block, info = gen_boxes.block_from_box(page, fit[0], (600, 800))
+    assert info["rows"] * info["cols"] == 20 and block["rectifyOnBorder"]
+    report = gen_boxes.boxes_report(found, [grid], {0: "B1"})
+    assert any(r["blocks"] == ["B1"] for r in report)
+    assert any(not r["blocks"] and not r["adoptable"] for r in report)
+
+
+def test_generator_report_alignment_and_info(generated):
+    report = generated.report
+    alignment = report["alignment"]
+    assert alignment["method"] == "tracks"
+    assert alignment["summary"] and "marks, pitch" in alignment["summary"][0]
+    assert len(alignment["sheets"]) == len(report["sheets"])
+    for entry in alignment["sheets"]:
+        assert entry["expected"] > 0 and entry["found"] <= entry["expected"]
+    assert isinstance(report["info"], list)
+    assert not any("page edges" in w for w in report["warnings"])

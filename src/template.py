@@ -29,6 +29,8 @@ class Template:
 
         json_object = open_template_with_defaults(template_path, overrides)
         self.color_dropout = normalize_dropout(json_object.get("colorDropout"))
+        # Template-level alignment settings over config alignment_params
+        self.alignment = dict(json_object.get("alignment") or {})
         (
             custom_labels_object,
             field_blocks_object,
@@ -59,6 +61,12 @@ class Template:
         self.setup_field_blocks(field_blocks_object)
         self.setup_zones(zones_object)
         self.parse_custom_labels(custom_labels_object)
+        # Optional per-group placeholders (src/utils/parsing.py join_group)
+        self.group_options = {
+            name: dict(options or {})
+            for name, options in (json_object.get("groupOptions") or {}).items()
+            if name in self.custom_labels
+        }
         # Optional "validate" and "checks" (src/rules); rule outputs are columns
         self.rules = RuleSet(
             self, json_object.get("validate"), json_object.get("checks")
@@ -153,6 +161,8 @@ class Template:
             )
             # Registration preprocessors warp straight into template coordinates
             pre_processor_instance.page_dimensions = self.page_dimensions
+            # Registration may use the template's blocks (timing-mark joint fit)
+            pre_processor_instance.template = self
             self.pre_processors.append(pre_processor_instance)
 
     def setup_field_blocks(self, field_blocks_object):
@@ -356,6 +366,9 @@ class FieldBlock:
         # Border rectification: None inherits alignment_params.rectify_on_border
         self.rectify_on_border = field_block_object.get("rectifyOnBorder")
         self.border_padding = field_block_object.get("borderPadding")
+        self.outer_border_padding = field_block_object.get("outerBorderPadding")
+        # Bubble-outline perspective fit: None inherits alignment block_perspective
+        self.block_perspective = field_block_object.get("blockPerspective")
         self.origin = origin
         self.bubble_dimensions = bubble_dimensions
         self.calculate_block_dimensions(

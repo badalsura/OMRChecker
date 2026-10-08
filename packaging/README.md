@@ -43,7 +43,10 @@ supported. On Windows 7 use **Chrome 109** (the last Chrome for Win7) or
 ### OCR (Tesseract)
 
 `tesserocr` has no Windows wheels, so the Windows build uses `pytesseract`,
-which runs `tesseract.exe`. To bundle it:
+which runs `tesseract.exe`. The GitHub Actions build (`build-windows.yml`)
+bundles it automatically: it installs the UB Mannheim build with Chocolatey and
+copies `tesseract.exe`, its DLLs and the English/OSD data into
+`packaging\tesseract\`. For a local build, bundle it by hand:
 
 1. Install the UB Mannheim build (https://github.com/UB-Mannheim/tesseract/wiki;
    the 5.x installers run on Windows 7 x64) and copy its install folder
@@ -55,6 +58,11 @@ which runs `tesseract.exe`. To bundle it:
 
 Without Tesseract, OCR zones go to manual review; bubbles, barcodes and QR codes
 are unaffected. `--selftest` prints `"tesseract": true/false`.
+
+Model choice (Tesseract "best" or "fast", extra languages such as Hindi,
+PaddleOCR mobile/server as default or fallback engine): run
+`python packaging/fetch_ocr_models.py` before building; see
+[ocr_models.md](ocr_models.md).
 
 ### Learned models (ONNX Runtime) on Windows 7
 
@@ -86,6 +94,73 @@ which PyInstaller does not bundle. Without it pyzbar does not load and
   (`vcruntime140.dll`, `msvcp140.dll`); if a DLL error mentions `VCRUNTIME140_1`
   install `vc_redist.x64.exe` from Microsoft.
 * Windows 7 "N"/"KN" editions additionally need the Media Feature Pack for OpenCV.
+
+### Optional features on the Windows 7 build
+
+The portable exe stays pinned to Python 3.8 and the libraries in
+`requirements-win7.txt`. Every optional engine switches itself off cleanly when
+it cannot load there, and the feature that needs it falls back (OCR zones and
+ICR go to review, bubbles use thresholding, barcodes use the built-in decoder).
+`--selftest` prints an `"engines"` block, and `GET /health` returns `"engines"`,
+saying which ones loaded:
+
+```
+"engines": {
+  "onnxruntime": {"available": true,  "detail": "1.19.2"},
+  "tesseract":   {"available": false, "detail": "not found; OCR zones go to review"},
+  "paddleocr":   {"available": false, "detail": "not included in this build"},
+  "zxing": {...}, "pyzbar": {...}, "xlsx": {...}, "pdf": {...}, "sql": {...}
+}
+```
+
+## Docker server (optional, not for Windows 7)
+
+**Docker Desktop does not run on Windows 7** (it needs Windows 10 or 11, and
+Docker Toolbox for Windows 7 was discontinued years ago). The Docker image is for
+sites with **one newer machine** (Windows 10/11 with Docker Desktop, or a Linux
+server): it runs the full server with current Python, Tesseract (English and
+Hindi/Devanagari), ONNX Runtime and every export. The Windows 7 PCs then use it
+through the browser, with **Chrome 109** or **Firefox ESR 115** (the last
+versions for Windows 7), at `http://<server>:8000/`. No install on the Win7 PCs.
+
+```
+docker compose up -d --build          # from the repository root
+docker compose logs -f omr
+curl http://localhost:8000/health     # "engines" lists what loaded
+```
+
+* Data lives in the `omr_data` volume (`/data` in the container).
+* Put scan folders in `./scans` (mounted read-only at `/scans`, the only folder
+  server-side jobs may read; `OMR_ALLOWED_DIRS`).
+* Optional ONNX models (bubble, ICR, PaddleOCR) go in `./models`, mounted at
+  `/app/models`; point `config.json` at them.
+* Set `OMR_API_KEY` (e.g. in a `.env` file next to `docker-compose.yml`) on a
+  shared network. Open port 8000 in the host firewall for the Win7 PCs.
+
+## Release checklist: test on a real Windows 7 machine
+
+CI runs on Windows Server 2022, and the build has never been run on Windows 7.
+Before each release, on a real **Windows 7 SP1 x64** PC (not a VM snapshot of a
+newer Windows; a Win7 VM is acceptable if no PC is available):
+
+- [ ] KB2533623 and KB2999226 installed; note whether KB3068708/KB3080149 are.
+- [ ] Unzip `OMRChecker-portable-win64.zip` to a folder with no admin rights
+      (e.g. the Desktop) and run `OMRChecker.exe --version`.
+- [ ] `OMRChecker.exe --selftest` exits 0. Record its `"engines"` block in the
+      release notes (onnxruntime, tesseract, paddleocr, zxing, pyzbar).
+- [ ] For each engine that is `false`, confirm the feature falls back as
+      described above and the GUI shows a clear message instead of an error.
+- [ ] Start `OMRChecker.exe`; the control window opens; the GUI loads in
+      **Chrome 109** and in **Firefox ESR 115**. Scan one sample sheet, open the
+      Results tab overlay and the review screen (colour toggle, full colour view).
+- [ ] `OMRChecker.exe --bulk samples\... --template ... --workers 2` writes
+      `results.csv`; the onefile exe does the same.
+- [ ] With Tesseract copied next to the exe, an OCR zone reads; without it, the
+      zone goes to review.
+- [ ] From the Win7 browser, open a Docker server (if the site uses one) and run
+      one job through it.
+- [ ] Note the Windows build, browser versions and any missing updates in the
+      release notes.
 
 ## Building
 

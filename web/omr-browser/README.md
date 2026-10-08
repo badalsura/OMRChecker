@@ -247,3 +247,29 @@ Serve `.wasm` as `application/wasm`. The demo's "Engine libraries" section and i
 - Colour photos are converted with OpenCV's BT.601 weights (and the colour dropout is bit-exact on the same pixels). JPEG decoders differ slightly between browsers and libjpeg, so on real photos expect agreement within the review flags rather than bit-exact means.
 - Barcodes: the Python-only `opencv` (QR) and `pyzbar` engines in `barcode_params.engines` are skipped. A QR zone needs zxing-wasm; linear codes fall back to the built-in decoder. zxing-wasm's own preprocessing attempts are not identical to Python's zxing-cpp attempts, so a code at the edge of readability can be read by one engine and not the other.
 - Rules: `pattern` and regex normalizers run as JavaScript regular expressions (`(?P<name>)`, `(?P=name)`, `\A` and `\Z` are translated). Python-only syntax (for example possessive quantifiers or inline flags mid-pattern) is rejected like an invalid pattern, and `\d` / `\w` match ASCII only. A whole-number float bound written with a decimal point (`"range": [1.0, 5.0]`) shows as `[1, 5]` in the failure reason, where Python prints `[1.0, 5.0]`.
+
+## Optional OCR readers (omr-ocr.js)
+
+OCR zones stay unread (flagged `engine_unavailable`) unless the page opts in.
+`omr-ocr.js` has ready-made readers; each loads its engine from a CDN only when
+first used, so nothing is bundled and offline pages are unaffected:
+
+```html
+<script src="omr.js"></script>
+<script src="omr-ocr.js"></script>
+<script>
+  // tesseract.js (same engine and models as the server); honours zone direction
+  OMR.registerZoneReader("ocr", OMROCR.withDirection(OMROCR.tesseractReader({ lang: "eng" })));
+  // or Tesseract first, PaddleOCR PP-OCRv5 (onnxruntime-web, model hosted by you) as fallback
+  const paddle = OMROCR.paddleReader({ modelUrl: "/models/en_PP-OCRv5_mobile_rec.onnx", dictUrl: "/models/ppocrv5_en_dict.txt" });
+  OMR.registerZoneReader("ocr", OMROCR.withDirection(OMROCR.withFallback(OMROCR.tesseractReader(), paddle)));
+</script>
+```
+
+`withDirection` applies the zone's `direction` option (`rot90cw`, `rot90ccw`,
+`rot180`, `auto`) like `src/readers/text_reader.py`; `withFallback` reads with
+the second engine when the first read is empty, below `minConfidence` or fails
+the pattern, and flags `engine_disagree` (review) when the two differ. Image
+zones (`type: "image"`) are read without review; the gray crop is on
+the zone result's non-enumerable `crop` property (not serialised).
+
