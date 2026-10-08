@@ -163,6 +163,57 @@ function editTracks(ed, fn) {
   });
 }
 
+// Typed positions for index points (exact X/Y and size, in template pixels)
+function numberInputs(ed, i, p) {
+  const box = el("span", { class: "al-xy" });
+  const parts = [
+    ["X", () => p.center[0], (o, v) => (o.indexPoints[i].center = [v, o.indexPoints[i].center[1]])],
+    ["Y", () => p.center[1], (o, v) => (o.indexPoints[i].center = [o.indexPoints[i].center[0], v])],
+    ["W", () => p.size[0], (o, v) => (o.indexPoints[i].size = [Math.max(1, v), o.indexPoints[i].size[1]])],
+    ["H", () => p.size[1], (o, v) => (o.indexPoints[i].size = [o.indexPoints[i].size[0], Math.max(1, v)])],
+  ];
+  for (const [label, get, set] of parts) {
+    const input = el("input", { type: "number", class: "small", step: "1", value: Math.round(get()), title: `${label} in template pixels`, style: "width:4.5em" });
+    input.addEventListener("change", () => {
+      const v = Number(input.value);
+      if (!Number.isFinite(v)) return;
+      editTracks(ed, (o) => set(o, v));
+      ed.draw();
+    });
+    box.append(label, input);
+  }
+  return box;
+}
+
+function typedIndexPoint(ed) {
+  const inputs = ["X", "Y", "W", "H"].map((label) => el("input", { type: "number", class: "small", step: "1", placeholder: label, title: `${label} in template pixels`, style: "width:4.5em" }));
+  const addTyped = async () => {
+    const [x, y, w, h] = inputs.map((i) => Number(i.value));
+    if (!inputs[0].value || !inputs[1].value) return toast("Type X and Y first");
+    let size = [w || 0, h || 0];
+    let shape = "any";
+    try {
+      // Look for a printed mark at that spot on the reference sheet
+      const mark = await api(`/templates/${ed.id}/generator/find-mark`, { method: "POST", json: { point: [x, y] } });
+      const off = Math.hypot(mark.center[0] - x, mark.center[1] - y);
+      if (!size[0] || !size[1]) size = mark.size;
+      shape = mark.shape || "any";
+      toast(`Mark found ${Math.round(off)} px from the typed point (${mark.size[0]}×${mark.size[1]})`, off > Math.max(...mark.size) ? "error" : "ok", 5000);
+    } catch (error) {
+      if (!size[0] || !size[1]) return toast(`No mark found there; type its W and H too. ${error.message}`, "error", 5000);
+      toast("No mark found at that spot on the reference sheet; added as typed", "error", 5000);
+    }
+    editTracks(ed, (o) => {
+      const points = (o.indexPoints = o.indexPoints || []);
+      let n = points.length + 1;
+      while (points.some((p) => p.name === `P${n}`)) n++;
+      points.push({ name: `P${n}`, center: [x, y], size, shape, required: true });
+    });
+    ed.draw();
+  };
+  return el("div", { class: "row gap small", title: "Add an index point at an exact position" }, "Add at", ...inputs, el("button", { class: "small", onclick: addTyped }, "Add"));
+}
+
 // ---------------------------------------------------------------- picking
 export async function alignmentPick(ed, rect) {
   const mode = ed.mode;
@@ -502,14 +553,15 @@ export function renderAlignmentPanel(ed) {
             "li",
             {},
             el("strong", {}, p.name || `P${i + 1}`),
-            `${Math.round(p.center[0])}, ${Math.round(p.center[1])} · ${p.size[0]}×${p.size[1]}`,
+            numberInputs(ed, i, p),
             shape,
             el("label", { class: "small", title: "Required: a sheet where this mark can't be found goes to review" }, required, " required"),
             el("button", { class: "small ghost", onclick: () => editTracks(ed, (o) => o.indexPoints.splice(i, 1)) }, "Remove")
           );
         })
       ),
-      modeBtn("align-index", "+ Add index point", "Click a printed mark on the page, or drag a box around it. Small dots work too. Suggestions are circled while this is on.")
+      modeBtn("align-index", "+ Add index point", "Click a printed mark on the page, or drag a box around it. Small dots work too. Suggestions are circled while this is on."),
+      typedIndexPoint(ed)
     );
   }
 

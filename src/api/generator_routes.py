@@ -34,6 +34,11 @@ class MarkBody(BaseModel):
     box: Optional[List[float]] = Field(None, description="[x, y, w, h] of a drawn box")
 
 
+class VerifyBody(BaseModel):
+    items: List[str] = Field(default_factory=list, description="Item keys to mark verified")
+    undo: bool = Field(False, description="Un-verify the given items (all when none given)")
+
+
 class AckBody(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="Warning texts confirmed")
     all: bool = Field(False, description="Confirm every current warning")
@@ -231,6 +236,26 @@ def register(app, ctx, secured, decode_image):
         meta["report"] = report
         ctx.templates.write_meta(template_id, meta)
         return {"warnings": current, "acknowledged_warnings": confirmed}
+
+    @app.post(
+        "/templates/{template_id}/generator/verify",
+        tags=["templates"],
+        dependencies=secured,
+    )
+    def verify(template_id: str, body: VerifyBody = Body(...)):
+        """Mark "Needs verification" items as checked; saved with the template."""
+        template_dir(template_id)
+        meta = ctx.templates.meta(template_id)
+        report = meta.get("report") or {}
+        verified = [k for k in report.get("verified_items") or [] if isinstance(k, str)]
+        if body.undo:
+            verified = [k for k in verified if body.items and k not in body.items]
+        else:
+            verified += [k for k in body.items if k not in verified]
+        report["verified_items"] = verified
+        meta["report"] = report
+        ctx.templates.write_meta(template_id, meta)
+        return {"verified_items": verified}
 
 
 def json_safe(value):

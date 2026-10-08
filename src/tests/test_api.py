@@ -544,3 +544,15 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
         assert client.get(f"/templates/{tid}").json()["report"]["acknowledged_warnings"] == ["other"]
         response = client.post(f"/templates/{tid}/generator/acknowledge", json={"undo": True})
         assert len(response.json()["warnings"]) == 2
+
+        verify = f"/templates/{tid}/generator/verify"
+        response = client.post(verify, json={"items": ["q1: values", "q2: order"]})
+        assert response.json()["verified_items"] == ["q1: values", "q2: order"]
+        assert client.get(f"/templates/{tid}").json()["report"]["verified_items"] == [
+            "q1: values",
+            "q2: order",
+        ]
+        response = client.post(verify, json={"items": ["q1: values"], "undo": True})
+        assert response.json()["verified_items"] == ["q2: order"]
+        response = client.post(verify, json={"undo": True})
+        assert response.json()["verified_items"] == []

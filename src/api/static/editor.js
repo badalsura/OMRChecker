@@ -52,7 +52,7 @@ export class TemplateEditor {
     this.testResult = null;
     this.errors = [];
     this.keyHandler = (e) => this.onKey(e);
-    this.resolved = new Set();
+    this.resolved = new Set(); // keys of verified "Needs verification" items
     this.multi = []; // Shift+click selection of several blocks
     this.openSections = new Set(); // <details> sections kept open across re-renders
     this.afterEditHooks = []; // open dialogs refreshing themselves after an edit
@@ -78,6 +78,7 @@ export class TemplateEditor {
     this.testResult = null;
     this.errors = detail.validation_errors || [];
     this.report = detail.report_confirmed ? null : this.parseReport(detail.report);
+    this.resolved = new Set(((detail.report || {}).verified_items || []).filter((k) => typeof k === "string"));
     this.build();
     this.bgMode = detail.has_reference ? "reference" : "blank";
     await this.loadBackground();
@@ -1391,7 +1392,8 @@ export class TemplateEditor {
       const name = x.name || x.block || x.zone || x.field || x.label || x.target || x.id;
       const names = [name, ...(Array.isArray(x.fields) ? x.fields : [])].filter((n) => typeof n === "string");
       const text = x.reason || x.message || x.issue || x.note || x.description || x.detail || "";
-      return { text: text || JSON.stringify(x), names, title: name };
+      const shown = text || JSON.stringify(x);
+      return { text: shown, names, title: name, key: `${name || ""}: ${shown}` };
     };
     for (const k of REPORT_KEYS) {
       if (Array.isArray(report[k])) items.push(...report[k].map(describe));
@@ -1413,8 +1415,8 @@ export class TemplateEditor {
   highlightNames() {
     const names = new Set();
     if (!this.report) return names;
-    this.report.items.forEach((item, i) => {
-      if (this.resolved.has(i)) return;
+    this.report.items.forEach((item) => {
+      if (this.resolved.has(item.key)) return;
       for (const n of item.names) {
         const target = this.resolveName(n);
         if (target) names.add(target.name);
@@ -1423,40 +1425,94 @@ export class TemplateEditor {
     return names;
   }
 
+  async verifyItems(keys, undo = false) {
+    try {
+      const data = await api(`/templates/${this.id}/generator/verify`, { method: "POST", json: { items: keys, undo } });
+      this.detail.report = { ...(this.detail.report || {}), verified_items: data.verified_items };
+      this.resolved = new Set(data.verified_items);
+      this.renderSide();
+      this.draw();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
   renderReport() {
     const r = this.report;
-    const box = el("div", { class: "ed-report" }, el("h3", {}, `Needs verification (${r.items.length - [...this.resolved].length})`));
+    const open = r.items.filter((item) => !this.resolved.has(item.key));
+    const done = r.items.filter((item) => this.resolved.has(item.key));
+    const select = (item) => {
+      const target = item.names.map((n) => this.resolveName(n)).find(Boolean);
+      if (target) {
+        this.selected = target;
+        this.renderSide();
+        this.centerOn(this.info(target));
+      }
+    };
+    const label = (item) => [displayName(item.title) ? el("strong", {}, displayName(item.title) + ": ") : null, item.text];
+    const box = el(
+      "div",
+      { class: "ed-report" },
+      el(
+        "div",
+        { class: "row gap" },
+        el("h3", {}, `Needs verification (${open.length})`),
+        el("span", { class: "spacer" }),
+        open.length ? el("button", { class: "small", title: "Mark every item as checked", onclick: () => this.verifyItems(open.map((i) => i.key)) }, "Verify all") : null
+      )
+    );
     if (r.summary.length) add(box, el("div", { class: "muted small" }, r.summary.map(([k, v]) => `${k}: ${v}`).join(" · ")));
-    add(box, 
+    add(
+      box,
       el(
         "ul",
         {},
-        r.items.map((item, i) =>
+        open.map((item) =>
           el(
             "li",
-            {
-              class: this.resolved.has(i) ? "resolved" : "",
-              title: "Click to select · double-click to mark verified",
-              onclick: () => {
-                const target = item.names.map((n) => this.resolveName(n)).find(Boolean);
-                if (target) {
-                  this.selected = target;
-                  this.renderSide();
-                  this.centerOn(this.info(target));
-                }
+            { title: "Click to select", onclick: () => select(item) },
+            ...label(item),
+            " ",
+            el(
+              "button",
+              {
+                class: "small ghost",
+                title: "I have checked this: remove it from the list",
+                onclick: (event) => {
+                  event.stopPropagation();
+                  this.verifyItems([item.key]);
+                },
               },
-              ondblclick: () => {
-                this.resolved.has(i) ? this.resolved.delete(i) : this.resolved.add(i);
-                this.renderSide();
-                this.draw();
-              },
-            },
-            displayName(item.title) ? el("strong", {}, displayName(item.title) + ": ") : null,
-            item.text
+              "Verified"
+            )
           )
         )
       )
     );
+    if (done.length) {
+      add(
+        box,
+        el(
+          "details",
+          { class: "muted small" },
+          el("summary", {}, `Show verified (${done.length})`),
+          el(
+            "ul",
+            {},
+            done.map((item) =>
+              el(
+                "li",
+                { class: "resolved", onclick: () => select(item) },
+                ...label(item),
+                " ",
+                el("button", { class: "small ghost", onclick: (event) => { event.stopPropagation(); this.verifyItems([item.key], true); } }, "Undo")
+              )
+            )
+          ),
+          el("button", { class: "small ghost", onclick: () => this.verifyItems(done.map((i) => i.key), true) }, "Undo all")
+        )
+      );
+    }
     box.append(renderWarnings(this, r.warnings)); // confirm-to-clear (generator_warnings.js)
     return box;
   }
