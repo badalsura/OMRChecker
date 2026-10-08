@@ -641,7 +641,11 @@ def test_failed_sheet_aligned_by_hand_or_typed(tmp_path, spec):
 
 
 def test_generator_failure_still_opens_a_draft(tmp_path, spec, monkeypatch):
-    import src.template_gen as template_gen
+    import importlib
+
+    # The module the endpoint imports (other tests swap sys.modules entries,
+    # which can leave the package attribute pointing at a different copy)
+    template_gen = importlib.import_module("src.template_gen")
 
     def boom(*args, **kwargs):
         raise ValueError("no luck")
