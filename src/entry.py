@@ -295,7 +295,9 @@ def _process_single_image(
 
     # TODO: move inner try catch here
     # concatenate roll nos, set unmarked responses, etc
-    omr_response = get_concatenated_response(response_dict, template)
+    omr_response = get_concatenated_response(
+        response_dict, template, detailed["field_details"]
+    )
     zones = {name: zone.to_dict() for name, zone in zone_results.items()}
     checks, rule_review = {}, []
     if template.rules:

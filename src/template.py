@@ -59,6 +59,12 @@ class Template:
         self.setup_field_blocks(field_blocks_object)
         self.setup_zones(zones_object)
         self.parse_custom_labels(custom_labels_object)
+        # Optional per-group placeholders (src/utils/parsing.py join_group)
+        self.group_options = {
+            name: dict(options or {})
+            for name, options in (json_object.get("groupOptions") or {}).items()
+            if name in self.custom_labels
+        }
         # Optional "validate" and "checks" (src/rules); rule outputs are columns
         self.rules = RuleSet(
             self, json_object.get("validate"), json_object.get("checks")

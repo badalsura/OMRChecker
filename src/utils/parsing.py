@@ -32,17 +32,133 @@ OVERRIDE_MERGER = Merger(
 )
 
 
-def get_concatenated_response(omr_response, template):
-    # Multi-column/multi-row questions which need to be concatenated
+# Per-group placeholders (template "groupOptions"); a group without an entry
+# keeps the plain join, so templates written before groupOptions read the same
+GROUP_OPTION_DEFAULTS = {"empty": " ", "multi": "*", "issue": "-"}
+GROUP_STATES = ("ok", "empty", "multi", "issue")
+
+
+def group_options_for(template, name):
+    """The resolved placeholders of a group, or None (plain join)."""
+    options = (getattr(template, "group_options", None) or {}).get(name)
+    if options is None:
+        return None
+    resolved = dict(GROUP_OPTION_DEFAULTS)
+    resolved.update(options)
+    return resolved
+
+
+def column_state(value, details=None, empty_value=""):
+    """
+    "ok" | "empty" | "multi" | "issue" for one bubble column of a group.
+
+    details: the column's field_details entry (flags, needs_review), when known.
+    A column a person reviewed counts as read: empty or ok by its value.
+    """
+    text = "" if value is None else str(value)
+    blank = not text.strip() or (empty_value != "" and text == empty_value)
+    if details is None:
+        return "empty" if blank else "ok"
+    flags = details.get("flags") or []
+    if blank:
+        # also a column a rule blanked
+        return "empty"
+    if details.get("reviewed"):
+        return "empty" if "empty" in flags else "ok"
+    if "multi_marked" in flags:
+        return "multi"
+    if "empty" in flags:
+        return "empty"
+    if details.get("needs_review"):
+        return "issue"
+    return "ok"
+
+
+def join_group(columns, omr_response, options, field_details=None, empty_value=""):
+    """(value, states) of one group: one placeholder or bubble value per column."""
+    pieces, states = [], []
+    for column in columns:
+        value = omr_response.get(column, "")
+        details = field_details.get(column) if field_details else None
+        state = column_state(value, details, empty_value)
+        states.append(state)
+        if options is None or state == "ok":
+            pieces.append("" if value is None else str(value))
+        elif state == "empty":
+            if options.get("empty") is not None:
+                pieces.append(str(options["empty"]))
+        else:
+            pieces.append(str(options.get(state) or ""))
+    return "".join(pieces), states
+
+
+def get_concatenated_response(
+    omr_response, template, field_details=None, groups_out=None
+):
+    """
+    Output row: groups (customLabels) joined, other fields as read.
+
+    field_details (optional): per-column flags; a group with a groupOptions
+    entry then yields exactly one placeholder or value per column. groups_out
+    (optional dict) receives {group: {"value", "columns": [{"name", "state"}],
+    "flagged"}} for groups that have a groupOptions entry.
+    """
     concatenated_response = {}
+    empty_value = getattr(template, "global_empty_val", "") or ""
     for field_label, concatenate_keys in template.custom_labels.items():
-        custom_label = "".join([omr_response[k] for k in concatenate_keys])
+        options = group_options_for(template, field_label)
+        if options is None:
+            custom_label = "".join([omr_response[k] for k in concatenate_keys])
+        else:
+            custom_label, states = join_group(
+                concatenate_keys, omr_response, options, field_details, empty_value
+            )
+            if groups_out is not None:
+                groups_out[field_label] = {
+                    "value": custom_label,
+                    "columns": [
+                        {"name": k, "state": st}
+                        for k, st in zip(concatenate_keys, states)
+                    ],
+                    "flagged": any(st in ("multi", "issue") for st in states),
+                }
         concatenated_response[field_label] = custom_label
 
     for field_label in template.non_custom_labels:
         concatenated_response[field_label] = omr_response[field_label]
 
     return concatenated_response
+
+
+def describe_groups(omr_response, template, field_details=None):
+    """{group: {"value", "columns", "flagged"}} for groups with groupOptions."""
+    groups = {}
+    if getattr(template, "group_options", None):
+        get_concatenated_response(omr_response, template, field_details, groups)
+    return groups
+
+
+def group_review_items(groups, review):
+    """Review items for flagged groups none of whose columns is already listed."""
+    listed = {item.get("name") for item in review or []}
+    items = []
+    for name, group in (groups or {}).items():
+        if not group.get("flagged") or name in listed:
+            continue
+        columns = [c["name"] for c in group["columns"]]
+        if any(c in listed for c in columns):
+            continue
+        flags = sorted(
+            {
+                "multi_marked" if c["state"] == "multi" else "group_issue"
+                for c in group["columns"]
+                if c["state"] in ("multi", "issue")
+            }
+        )
+        items.append(
+            {"kind": "custom_label", "name": name, "flags": flags, "fields": columns}
+        )
+    return items
 
 
 def open_config_with_defaults(config_path):

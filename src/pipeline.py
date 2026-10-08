@@ -41,7 +41,12 @@ from src.readers import read_zone, read_zones
 from src.rules import review_items
 from src.template import Template
 from src.utils.image import ImageUtils
-from src.utils.parsing import get_concatenated_response, open_config_with_defaults
+from src.utils.parsing import (
+    describe_groups,
+    get_concatenated_response,
+    group_review_items,
+    open_config_with_defaults,
+)
 
 STATUS_OK = "ok"
 STATUS_NEEDS_REVIEW = "needs_review"
@@ -63,6 +68,8 @@ class ScanResult:
     # Cross-field checks and value validation (template "checks"/"validate")
     checks: dict = field(default_factory=dict)
     validation: dict = field(default_factory=dict)
+    # Groups with groupOptions: per-column states (src/utils/parsing.py)
+    groups: dict = field(default_factory=dict)
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
@@ -81,6 +88,7 @@ class ScanResult:
             "timings_ms": self.timings_ms,
             "checks": self.checks,
             "validation": self.validation,
+            **({"groups": self.groups} if self.groups else {}),
         }
 
 
@@ -202,9 +210,9 @@ class OMREngine:
         omr_response = dict(detailed["omr_response"])
         for name, zone_result in zone_results.items():
             omr_response[name] = zone_result.value
-        responses = get_concatenated_response(omr_response, self.template)
-
         fields = detailed["field_details"]
+        responses = get_concatenated_response(omr_response, self.template, fields)
+
         zones = {name: zone.to_dict() for name, zone in zone_results.items()}
         checks, validation, rule_review = {}, {}, []
         if self.template.rules:
@@ -226,7 +234,9 @@ class OMREngine:
                 responses, self.evaluation_config, Path(file_id), None
             )
 
+        groups = describe_groups(omr_response, self.template, fields)
         review = review_items(fields, zones, rule_review)
+        review.extend(group_review_items(groups, review))
         review.extend(self._sheet_review(fields))
         timings["total"] = _elapsed_ms(started)
         return ScanResult(
@@ -238,6 +248,7 @@ class OMREngine:
             review=review,
             checks=checks,
             validation=validation,
+            groups=groups,
             score=score,
             thresholds=detailed["thresholds"],
             timings_ms=timings,
