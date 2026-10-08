@@ -362,3 +362,97 @@ def test_grade_flag_switches_scoring_off(tmp_path, spec):
         ).json()["scans"][0]
         assert result["score"] is None
         assert result["scoring"] == {}
+
+
+# ---------------------------------------------------------------- GUI helpers
+STATIC = __import__("pathlib").Path(__file__).resolve().parents[1] / "api" / "static"
+
+
+def test_gui_files_served(tmp_path):
+    with make_client(tmp_path) as client:
+        for name in (
+            "editor_json.js",
+            "json_code.js",
+            "scoring.js",
+            "score_view.js",
+            "template_ops.js",
+            "editor_tools.css",
+        ):
+            assert client.get(f"/static/{name}").status_code == 200, name
+        editor = client.get("/static/editor.js").text
+        assert "openJsonEditor" in editor and "openScoring" in editor
+        assert "editor_tools.css" in client.get("/").text
+
+
+def run_node(script):
+    import shutil
+    import subprocess
+
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+def test_scoring_panel_model_is_accepted_by_the_engine(tmp_path, spec):
+    script = (
+        "const s = await import(%s);"
+        "const j = await import(%s);"
+        "const m = s.modelFromEvaluation(null, ['roll1','q1','q2','q3','q4','q5']);"
+        "s.parseAnswerString('AB-D|C').forEach((a, i) => { if (a) m.answers[m.questions[i]] = a; });"
+        "m.answers.q5 = {kind: 'weighted', value: s.weightsFromText('A=2, AB=3/2').rows};"
+        "m.scheme = {correct: '1', incorrect: '-1/4', unmarked: '0'};"
+        "m.sections.push({name: 'Free', questions: 'q4..5', correct: '2', incorrect: '0', unmarked: '0', bonus: true});"
+        "m.drop.add('q2'); m.legend.push({min: 1, label: 'Pass'});"
+        "const out = s.evaluationFromModel(m);"
+        "const back = s.evaluationFromModel(s.modelFromEvaluation(out.evaluation, []));"
+        "const parsed = j.parseJson('{\\n  \"a\": [1,\\n 2,]\\n}');"
+        "console.log(JSON.stringify({out, same: JSON.stringify(back.evaluation) === JSON.stringify(out.evaluation),"
+        " compact: s.compactRanges(['q1','q2','q3','q5','roll']), error: parsed.error,"
+        " line: j.lineForPath(j.parseJson('{\\n\"a\": {\\n\"b\": 1}}').lines, 'a.b.c')}));"
+    ) % (
+        json.dumps((STATIC / "scoring.js").as_uri()),
+        json.dumps((STATIC / "json_code.js").as_uri()),
+    )
+    out = run_node(script)
+    evaluation_json = out["out"]["evaluation"]
+    assert out["out"]["problems"] == [] and out["same"]
+    assert out["out"]["skipped"] == ["q3"]
+    assert evaluation_json["options"]["questions_in_order"] == ["q1..2", "q4..5"]
+    assert evaluation_json["options"]["answers_in_order"] == [
+        "A",
+        "B",
+        ["D", "C"],
+        [["A", 2], ["AB", "3/2"]],
+    ]
+    assert evaluation_json["marking_schemes"]["BONUS_Free"]["marking"] == {
+        "correct": "2",
+        "incorrect": "2",
+        "unmarked": "2",
+    }
+    assert out["compact"] == ["q1..3", "q5", "roll"]
+    assert out["error"]["line"] == 3 and out["line"] == 3
+
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        result = preview(
+            client,
+            template_id,
+            evaluation_json,
+            {"q1": "A", "q2": "C", "q3": "", "q4": "", "q5": "B"},
+        )
+        verdicts = {q["question"]: q["verdict"] for q in result["questions"]}
+        assert verdicts["q2"] == "dropped"
+        # q1 right (1), q2 dropped (0), q4/q5 bonus section: 2 each
+        assert result["score"] == 1 + 0 + 2 + 2
+        assert result["band"] == "Pass"
+        checked = client.post(
+            f"/templates/{template_id}/validate", json={"evaluation": evaluation_json}
+        ).json()
+        assert checked["ok"], checked

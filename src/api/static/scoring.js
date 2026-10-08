@@ -412,7 +412,7 @@ class ScoringPanel {
             `Answers come from the file ${m.csvPath}. `,
             el("button", { class: "small", title: "Read that file into the grid below so the answers can be edited here", onclick: () => this.loadCsvKey() }, "Load into the grid")
           )
-        : null
+        : ""
     );
     const ranges = el("input", { type: "text", value: m.ranges, placeholder: "all", style: { width: "100%" } });
     ranges.addEventListener("change", () => ((m.ranges = ranges.value), this.render()));
@@ -829,7 +829,7 @@ class ScoringPanel {
     const p = this.preview;
     if (p && p.error) box.append(el("div", { class: "chip error" }, p.error));
     else if (p) {
-      box.append(scoreSummary(p));
+      box.append(scoreSummary(p) || "");
       box.append(
         el(
           "table",

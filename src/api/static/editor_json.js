@@ -127,12 +127,16 @@ class JsonDialog {
   }
 
   showTab(key) {
-    this.texts[this.tab] = this.code.value;
+    if (this.shown) this.texts[this.tab] = this.code.value;
+    this.shown = true;
     this.tab = key;
     this.code.value = this.texts[key];
     this.helpEl.textContent = FILES.find((f) => f.key === key).help;
     this.render();
     this.code.area.focus();
+    this.code.area.setSelectionRange(0, 0);
+    this.code.area.scrollTop = 0;
+    this.code.syncScroll();
   }
 
   onInput(text) {
