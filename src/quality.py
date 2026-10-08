@@ -26,8 +26,13 @@ def measure(image, geometry=None, bubble_size=None):
     inner = gray[h // 10 : h - h // 10, w // 10 : w - w // 10]
     if inner.size == 0:
         inner = gray
-    sharpness = float(cv2.Laplacian(inner, cv2.CV_64F).var())
-    low, high = np.percentile(inner, (1, 99))
+    _, std = cv2.meanStdDev(cv2.Laplacian(inner, cv2.CV_32F))
+    sharpness = float(std[0, 0]) ** 2
+    # 1st and 99th percentile grey levels from the histogram (no sort)
+    cumulative = np.cumsum(cv2.calcHist([inner], [0], None, [256], [0, 256]).ravel())
+    total = cumulative[-1]
+    low = int(np.searchsorted(cumulative, 0.01 * total))
+    high = int(np.searchsorted(cumulative, 0.99 * total))
     out = {"sharpness": round(sharpness, 1), "contrast": round(float(high - low), 1)}
     matrix = (geometry or {}).get("page_homography")
     if matrix is not None:

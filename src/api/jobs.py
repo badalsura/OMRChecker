@@ -36,6 +36,8 @@ COMPLETED, FAILED, CANCELLED, INTERRUPTED = (
     "cancelled",
     "interrupted",
 )
+# Stopped on request; sheets read so far are kept and Resume reads the rest
+PAUSED = "paused"
 ACTIVE_STATES = {QUEUED, RUNNING}
 
 
@@ -59,6 +61,7 @@ class JobManager:
         self.lock = threading.Lock()
         self.live = {}  # job_id -> job dict while queued/running
         self.cancelled = set()
+        self.paused = set()
         self.pool = None
         self.pool_workers = None
         self.thread = None
@@ -190,10 +193,38 @@ class JobManager:
                 jobs.append(job)
         return jobs
 
+    def pause(self, job_id):
+        """Stop handing out files; sheets being read finish, then the job pauses."""
+        job = self.live.get(job_id)
+        if job is None or job["state"] not in (QUEUED, RUNNING):
+            return None
+        self.paused.add(job_id)
+        if job["state"] == QUEUED:
+            job["state"] = PAUSED
+            self._save(job)
+            self.live.pop(job_id, None)
+            self.paused.discard(job_id)
+        return job
+
+    def resume(self, job_id):
+        """Queue a paused or interrupted job again; it skips sheets already read."""
+        if job_id in self.live:
+            return None
+        job = self.get(job_id)
+        if job is None or job.get("state") not in (PAUSED, INTERRUPTED):
+            return None
+        self.enqueue(job)
+        return job
+
     def cancel(self, job_id):
         job = self.live.get(job_id)
         if job is None:
-            return self.get(job_id)
+            job = self.get(job_id)
+            if job is not None and job.get("state") in (PAUSED, INTERRUPTED):
+                job["state"] = CANCELLED
+                job["finished_at"] = time.time()
+                self._save(job)
+            return job
         self.cancelled.add(job_id)
         if job["state"] in (QUEUED, UPLOADING):
             job["state"] = CANCELLED
@@ -240,6 +271,14 @@ class JobManager:
                 self._save(job)
                 self.live.pop(job_id, None)
                 self.cancelled.discard(job_id)
+                self.paused.discard(job_id)
+
+    def _halted(self, job):
+        return (
+            job["id"] in self.cancelled
+            or job["id"] in self.paused
+            or self.stopping.is_set()
+        )
 
     def _refresh_counts(self, job):
         job["counts"] = self.index.status_counts(job_id=job["id"])
@@ -312,7 +351,7 @@ class JobManager:
         if workers <= 1:
             engine = get_process_engine(base["template_dir"], version)
             for task in tasks:
-                if job["id"] in self.cancelled or self.stopping.is_set():
+                if self._halted(job):
                     break
                 try:
                     stored = scan_and_store(
@@ -335,7 +374,7 @@ class JobManager:
             tasks_iter = iter(tasks)
             exhausted = False
             while True:
-                stop = job["id"] in self.cancelled or self.stopping.is_set()
+                stop = self._halted(job)
                 while not stop and not exhausted and len(in_flight) < max_in_flight:
                     task = next(tasks_iter, None)
                     if task is None:
@@ -362,3 +401,5 @@ class JobManager:
         flush(force=True)
         if job["id"] in self.cancelled:
             job["state"] = CANCELLED
+        elif job["id"] in self.paused and job["processed_files"] < job["total_files"]:
+            job["state"] = PAUSED

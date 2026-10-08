@@ -113,6 +113,7 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .chip.ok, .chip.completed, .chip.ready { background: var(--ok-soft); color: var(--ok); }
 .chip.needs_review, .chip.draft, .chip.queued, .chip.uploading, .chip.flag { background: var(--warn-soft); color: var(--warn); }
 .chip.error, .chip.failed, .chip.cancelled, .chip.interrupted { background: var(--err-soft); color: var(--err); }
+.chip.paused { background: var(--warn-soft); color: var(--warn); }
 .chip.running, .chip.reading { background: var(--accent-soft); color: var(--accent); }
 
 .progress { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; min-width: 120px; }
@@ -332,3 +333,5 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .ed-dialog { border: 0; padding: 0; overflow: visible; background: none; }
 .ed-group-opts select { max-width: 100%; }
 .pdf-options { margin: 4px 0 8px; } .pdf-options .field { max-width: 320px; }
+
+.bulk-progress { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 8px; background: var(--panel, #fff); border: 1px solid var(--border, #ddd); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15); font-size: 13px; }

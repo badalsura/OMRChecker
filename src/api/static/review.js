@@ -573,7 +573,42 @@ function groupColumns(item) {
 
 // "Accept as read" for every pending item under the filters: recorded with
 // who and when, nothing is deleted
+let bulkRun = null;
+
+// Accept in chunks without blocking the page; progress shows in a corner box
+async function runBulkAccept(filters, counts) {
+  const run = { stop: false };
+  bulkRun = run;
+  const text = el("span", {}, `Accepting 0 of ${counts.total}…`);
+  const stop = el("button", { class: "small", onclick: () => { run.stop = true; stop.disabled = true; text.textContent += " stopping"; } }, "Stop");
+  const box = el("div", { class: "bulk-progress", role: "status" }, text, stop);
+  document.body.append(box);
+  let accepted = 0;
+  try {
+    while (!run.stop) {
+      const body = { ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v)), expected: counts.total, before: counts.now, limit: 500 };
+      const done = await api("/review/accept-bulk", { method: "POST", json: body });
+      accepted += done.accepted;
+      text.textContent = `Accepting ${accepted} of ${counts.total}…`;
+      refreshBadge();
+      if (done.errors && done.errors.length) toast(`${done.errors.length} sheet(s) could not be updated: ${done.errors[0].error}`, "error", 8000);
+      if (!done.remaining || !done.accepted) break;
+    }
+    toast(`Accepted ${accepted} item(s) as read${run.stop ? " (stopped)" : ""}`, "ok");
+  } catch (error) {
+    toast(`Accept all stopped after ${accepted} item(s): ${error.message}`, "error", 8000);
+  } finally {
+    box.remove();
+    bulkRun = null;
+    refreshBadge();
+    refreshNames();
+    emit("review-saved", {});
+    if (q.since !== null) load();
+  }
+}
+
 async function acceptBulk() {
+  if (bulkRun) return toast("Accept all is already running (see the box in the corner)", "", 3000);
   const filters = readFilters();
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(filters)) if (v) params.set(k, v);
@@ -589,34 +624,13 @@ async function acceptBulk() {
     .filter(([, v]) => v)
     .map(([k, v]) => `${k.replace("_id", "")} ${v}`)
     .join(", ");
-  const status = el("div", { class: "small muted" });
   const go = el(
     "button",
     {
       class: "primary",
-      onclick: async () => {
-        go.disabled = true;
-        let accepted = 0;
-        try {
-          for (;;) {
-            const done = await api("/review/accept-bulk", { method: "POST", json: { ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v)), expected: counts.total, before: counts.now } });
-            accepted += done.accepted;
-            status.textContent = `Accepted ${accepted} of ${counts.total}…`;
-            if (!done.remaining || !done.accepted) {
-              if (done.errors && done.errors.length) toast(`${done.errors.length} sheet(s) could not be updated: ${done.errors[0].error}`, "error", 8000);
-              break;
-            }
-          }
-          dialog.close();
-          toast(`Accepted ${accepted} item(s) as read`, "ok");
-          refreshBadge();
-          refreshNames();
-          emit("review-saved", {});
-          if (q.since !== null) load();
-        } catch (error) {
-          go.disabled = false;
-          toast(error.message, "error", 8000);
-        }
+      onclick: () => {
+        dialog.close();
+        runBulkAccept(filters, counts);
       },
     },
     `Accept ${counts.total} as read`
@@ -628,7 +642,7 @@ async function acceptBulk() {
       {},
       el("p", {}, `${counts.total} pending item(s)${described ? ` (${described})` : ""} will keep the values the engine read and leave the queue.`),
       el("p", { class: "small muted" }, "Nothing is deleted. Each item is recorded as accepted in bulk, with your name and the time, so it can be traced and changed later in Results. Items that arrive after you opened this dialog stay in the queue."),
-      status
+      el("p", { class: "small muted" }, "It runs in the background: you can keep working, and stop it from the progress box.")
     ),
     [go]
   );

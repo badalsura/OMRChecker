@@ -125,18 +125,14 @@ export async function refreshJobs() {
           el("button", { class: "small", onclick: () => emit("export-open", { job_id: job.id, template_id: job.template_id }) }, "Export…"),
           job.pages ? el("button", { class: "small", onclick: () => emit("results-job", job.id) }, "Results") : null,
           counts.needs_review ? el("button", { class: "small", onclick: () => emit("review-job", job.id) }, "Review") : null,
-          ["queued", "running", "uploading"].includes(job.state)
-            ? el(
-                "button",
-                {
-                  class: "small danger",
-                  onclick: async () => {
-                    await api(`/jobs/${job.id}/cancel`, { method: "POST" });
-                    refreshJobs();
-                  },
-                },
-                "Cancel"
-              )
+          ["queued", "running"].includes(job.state)
+            ? el("button", { class: "small", title: "Finish the sheets being read, then stop; Resume reads the rest", onclick: () => jobAction(job, "pause") }, "Pause")
+            : null,
+          ["paused", "interrupted"].includes(job.state)
+            ? el("button", { class: "small primary", title: "Read the remaining sheets", onclick: () => jobAction(job, "resume") }, "Resume")
+            : null,
+          ["queued", "running", "uploading", "paused", "interrupted"].includes(job.state)
+            ? el("button", { class: "small danger", onclick: () => cancelJob(job) }, "Cancel")
             : el("button", { class: "small danger ghost", title: "Delete this job and its results", onclick: () => deleteJob(job) }, "Delete")
         )
       )
@@ -150,6 +146,50 @@ export async function refreshJobs() {
 }
 
 // Delete a job and every result it produced, after a confirmation
+async function jobAction(job, action) {
+  try {
+    await api(`/jobs/${job.id}/${action}`, { method: "POST" });
+    toast(action === "pause" ? "Pausing: sheets being read finish first" : "Job resumed", "ok");
+  } catch (error) {
+    toast(error.message, "error", 6000);
+  }
+  refreshJobs();
+}
+
+function cancelJob(job) {
+  const label = job.name || job.id.slice(0, 8);
+  const done = job.processed_files || 0;
+  const go = el(
+    "button",
+    {
+      class: "danger",
+      onclick: async () => {
+        go.disabled = true;
+        try {
+          await api(`/jobs/${job.id}/cancel`, { method: "POST" });
+          dialog.close();
+          toast(`Job ${label} cancelled`, "ok");
+        } catch (error) {
+          go.disabled = false;
+          toast(error.message, "error", 6000);
+        }
+        refreshJobs();
+      },
+    },
+    "Cancel job"
+  );
+  const dialog = modal(
+    `Cancel job ${label}?`,
+    el(
+      "div",
+      {},
+      el("p", {}, `The remaining sheets will not be read. The ${done} sheet(s) already read keep their results.`),
+      el("p", { class: "small muted" }, "A cancelled job cannot be resumed. To stop for now and continue later, use Pause instead.")
+    ),
+    [go]
+  );
+}
+
 function deleteJob(job) {
   const pages = job.pages || 0;
   const label = job.name || job.id.slice(0, 8);

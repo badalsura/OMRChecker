@@ -33,6 +33,8 @@ DEFAULT_MAX_RESIDUAL = 3.0
 MIN_PAGE_AREA_FRACTION = 0.3
 # A fit matching this share of marks with none past the track ends is final
 GOOD_FIT_FRACTION = 0.95
+# Starting guesses tried for another orientation once one fits cleanly
+CHECK_GUESSES = 3
 # Smaller measured tilts are left to the shifted guesses and the fit itself
 MIN_TILT_DEGREES = 0.3
 # Thin-plate-spline displacement field is evaluated on this grid step (px)
@@ -103,7 +105,7 @@ class TimingMarkAlignment(ImagePreprocessor):
         self.detect_orientation = options.get("detectOrientation", True)
         # Stop trying orientations once one fits cleanly (the 180 degree
         # look-alike is always tried first, unless index points decided)
-        self.early_stop = options.get("earlyStop", False)
+        self.early_stop = options.get("earlyStop", True)
         # Start the track search from the index points' own fit as well
         self.index_seed = options.get("indexSeed", False)
         self.last_registration = {}
@@ -136,7 +138,16 @@ class TimingMarkAlignment(ImagePreprocessor):
                 return None
             orientation_fits = []
             for rotation in rotations:
-                fit = self.fit_orientation(page_corners, candidates, rotation, image)
+                # Once a clean fit exists, another orientation only needs the
+                # unshifted guesses: a look-alike layout fits from those too
+                limit = (
+                    CHECK_GUESSES
+                    if self.early_stop and best is not None and self._is_clean(best)
+                    else None
+                )
+                fit = self.fit_orientation(
+                    page_corners, candidates, rotation, image, max_guesses=limit
+                )
                 if fit is None:
                     continue
                 if self.index_points:
@@ -291,20 +302,20 @@ class TimingMarkAlignment(ImagePreprocessor):
 
     def _clean_stop(self, best, tried):
         """True when the remaining orientations need not be tried."""
-        if not self.early_stop or best is None:
-            return False
-        clean = (
-            best["beyond_ends"] == 0
-            and best["matched"] >= GOOD_FIT_FRACTION * len(self.expected)
-            and best["residual"] <= 0.5 * self.max_residual
-        )
-        if not clean:
+        if not self.early_stop or best is None or not self._is_clean(best):
             return False
         required = sum(1 for p in self.index_points if p["required"])
         if required and best.get("index_found", 0) >= required:
             return True
         # Tracks alone can look the same upside down: 0 and 180 both tried
         return tried >= 2 and best["rotation"] in (0, 2)
+
+    def _is_clean(self, fit):
+        return (
+            fit["beyond_ends"] == 0
+            and fit["matched"] >= GOOD_FIT_FRACTION * len(self.expected)
+            and fit["residual"] <= 0.5 * self.max_residual
+        )
 
     def _orientation_key(self, fit):
         # Index points are asymmetric: they decide between look-alike orientations
@@ -426,7 +437,9 @@ class TimingMarkAlignment(ImagePreprocessor):
 
     # --- fitting ---------------------------------------------------------
 
-    def fit_orientation(self, page_corners, candidates, rotation, image=None):
+    def fit_orientation(
+        self, page_corners, candidates, rotation, image=None, max_guesses=None
+    ):
         """Best fit for one orientation over a few shifted starting guesses.
 
         Tracks are periodic, so a coarse guess that is off by about one mark
@@ -446,6 +459,8 @@ class TimingMarkAlignment(ImagePreprocessor):
             seed = self.fit_index_points_only(image, page_corners, rotation)
             if seed is not None and _well_conditioned(seed["homography"]):
                 guesses = [np.asarray(seed["homography"], np.float64)] + list(guesses)
+        if max_guesses is not None:
+            guesses = list(guesses)[:max_guesses]
         for start in guesses:
             fit = self._refine(start, candidates, radius)
             if fit is None:

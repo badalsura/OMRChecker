@@ -663,3 +663,31 @@ def test_generator_failure_still_opens_a_draft(tmp_path, spec, monkeypatch):
         detail = response.json()
         assert "no luck" in detail["report"]["warnings"][0]
         assert client.get(f"/templates/{detail['id']}/reference.png").status_code == 200
+
+
+def test_job_pause_resume_and_cancel(tmp_path, spec):
+    sheets = [make_sheet(spec, seed) for seed in range(4)]
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        files = [("files", (f"s{i}.png", png_bytes(img), "image/png")) for i, (img, _) in enumerate(sheets)]
+        job_id = client.post("/jobs", data={"template_id": template_id, "start": "false"}, files=files).json()["id"]
+        # Not started yet: nothing to pause or resume
+        assert client.post(f"/jobs/{job_id}/pause").status_code == 409
+        assert client.post(f"/jobs/{job_id}/resume").status_code == 409
+        client.post(f"/jobs/{job_id}/start")
+        client.post(f"/jobs/{job_id}/pause")
+        job = wait_for_job(client, job_id)
+        if job["state"] == "paused":
+            assert job["processed_files"] < 4
+            assert client.post(f"/jobs/{job_id}/resume").status_code == 200
+            job = wait_for_job(client, job_id)
+        assert job["state"] == "completed" and job["processed_files"] == 4
+        assert client.post(f"/jobs/{job_id}/resume").status_code == 409
+
+        # A paused job can be cancelled; it keeps the sheets already read
+        job_id = client.post("/jobs", data={"template_id": template_id, "start": "false"}, files=files[:1]).json()["id"]
+        client.post(f"/jobs/{job_id}/start")
+        client.post(f"/jobs/{job_id}/pause")
+        job = wait_for_job(client, job_id)
+        if job["state"] == "paused":
+            assert client.post(f"/jobs/{job_id}/cancel").json()["state"] == "cancelled"

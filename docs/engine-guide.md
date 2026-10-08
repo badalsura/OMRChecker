@@ -115,8 +115,8 @@ phone lens distortion; `nonRigid: "tracks"` instead corrects each row and
 column from the timing marks themselves (a vertical track measures row
 offsets, a horizontal one column offsets, interpolated between opposite tracks
 and never extrapolated past their ends). `indexSeed: true` adds the index
-points' own fit as a starting guess for the track search. `earlyStop: true` (off by default) stops trying
-orientations once one fits cleanly; 0 and 180 degrees are still both tried
+points' own fit as a starting guess for the track search. `earlyStop` (on by default; `false` turns it off) stops trying
+orientations once one fits cleanly; 0 and 180 degrees are still both tried (the second with only its 3 unshifted guesses)
 unless the index points already decided.
 
 **EccAlignment.** Dense refinement against an image of the blank form. Use it

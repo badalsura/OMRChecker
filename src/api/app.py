@@ -958,6 +958,24 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         ctx.jobs.enqueue(job)
         return ctx.jobs.get(job_id)
 
+    @app.post("/jobs/{job_id}/pause", tags=["jobs"], dependencies=secured)
+    def pause_job(job_id: str):
+        if ctx.jobs.pause(job_id) is None:
+            job = ctx.jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404, f"Job '{job_id}' not found")
+            raise HTTPException(409, f"Job is {job['state']}; only a queued or running job can be paused")
+        return ctx.jobs.get(job_id)
+
+    @app.post("/jobs/{job_id}/resume", tags=["jobs"], dependencies=secured)
+    def resume_job(job_id: str):
+        if ctx.jobs.resume(job_id) is None:
+            job = ctx.jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404, f"Job '{job_id}' not found")
+            raise HTTPException(409, f"Job is {job['state']}; only a paused or interrupted job can be resumed")
+        return ctx.jobs.get(job_id)
+
     @app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=secured)
     def cancel_job(job_id: str):
         job = ctx.jobs.cancel(job_id)
