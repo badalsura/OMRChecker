@@ -412,3 +412,62 @@ def test_image_zone_filename_is_safe():
 
 def test_new_review_flags_are_registered():
     assert {"engine_disagree", "low_char_confidence"} <= base.ZONE_REVIEW_FLAGS
+
+
+def test_image_zone_through_engine_and_worker(tmp_path):
+    import random
+
+    from src.api.worker import SAVE_NONE, scan_and_store
+    from src.pipeline import OMREngine
+    from src.synth import default_spec, random_answers, render_sheet
+
+    spec = default_spec(questions=10)
+    template = spec.to_template()
+    template["zones"] = {
+        "photo": {
+            "type": "image",
+            "origin": [20, 20],
+            "dimensions": [120, 80],
+            "options": {"embedBase64": True},
+        }
+    }
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps(template))
+    engine = OMREngine(path)
+    rng = random.Random(3)
+    image, _ = render_sheet(spec, random_answers(spec, rng), rng=rng)
+    sheet = tmp_path / "s07.png"
+    cv2.imwrite(str(sheet), image)
+
+    stored = scan_and_store(engine, sheet, {}, tmp_path / "scans", SAVE_NONE, False)
+    zone = stored[0]["zones"]["photo"]
+    assert zone["value"] == "s07_photo.png" and not zone["needs_review"]
+    assert zone["details"]["image_base64"].startswith("data:image/png;base64,")
+    saved = list((tmp_path / "scans").rglob("zones/s07_photo.png"))
+    assert len(saved) == 1
+    assert cv2.imread(str(saved[0])).shape[:2] == (80, 120)
+
+
+def test_ocr_api_routes(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from src.api.app import create_app
+    from src.api.storage import scan_dir_for, write_json_atomic
+
+    app = create_app(tmp_path / "data", workers=1)
+    client = TestClient(app)
+    caps = client.get("/ocr/capabilities").json()
+    assert set(caps["engines"]) == {"tesseract", "paddle"}
+    assert "auto" in caps["directions"]
+    assert caps["defaults"]["default_engine"] in ("tesseract", "paddle")
+    assert "image" in client.get("/capabilities").json()["zone_types"]
+
+    scan_id = "ab12cd"
+    scan_dir = scan_dir_for(tmp_path / "data" / "scans", scan_id)
+    (scan_dir / "zones").mkdir(parents=True)
+    cv2.imwrite(str(scan_dir / "zones" / "s_photo.png"), np.zeros((5, 5), np.uint8))
+    zone = {"type": "image", "value": "s_photo.png", "details": {"file": "s_photo.png"}}
+    write_json_atomic(scan_dir / "result.json", {"zones": {"photo": zone}})
+    response = client.get(f"/results/{scan_id}/zone-image/photo")
+    assert response.status_code == 200 and response.content[:4] == b"\x89PNG"
+    assert client.get(f"/results/{scan_id}/zone-image/other").status_code == 404
