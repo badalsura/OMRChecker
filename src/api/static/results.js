@@ -892,6 +892,14 @@ function renderSide() {
   side.append(
     el("div", { class: "res-head" }, el("strong", { class: "res-file", title: d.source_path || "" }, d.file_id || d.scan_id), el("div", { class: "row gap wrap" }, chip(d.status, d.status), d.corrected ? el("span", { class: "chip corrected" }, "corrected") : null, verified ? el("span", { class: "chip ok" }, `verified by ${verified.by}`) : el("span", { class: "chip" }, "not verified"), d.score !== null && d.score !== undefined ? el("span", { class: "chip" }, `score ${d.score}`) : null)),
     el("div", { class: "muted small res-path" }, d.resolved_path || d.source_path || ""),
+    (d.duplicates || []).length
+      ? el(
+          "div",
+          { class: "chip error", title: "Another sheet of this job has the same primary key" },
+          "Duplicate key: also on ",
+          ...d.duplicates.map((dup) => el("button", { class: "small ghost", onclick: () => open(dup.scan_id) }, dup.file_name || dup.scan_id))
+        )
+      : "",
     scoreSummary(d.scoring) || ""
   );
   for (const warning of r.data.warnings || []) side.append(el("div", { class: "res-warning" }, warning));

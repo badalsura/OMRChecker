@@ -100,6 +100,7 @@ export function cascadeRename(doc, map) {
   if (doc.groupOptions) doc.groupOptions = renameKeys(doc.groupOptions);
   if (doc.validate) doc.validate = renameKeys(doc.validate);
   if (doc.outputColumns) doc.outputColumns = renameInList(doc.outputColumns, map);
+  if (doc.primaryKey) doc.primaryKey = doc.primaryKey.map((c) => map[c] ?? c);
   for (const check of doc.checks || []) {
     check.sources = (check.sources || []).map((s) => map[s] ?? s);
     if (check.priority) check.priority = check.priority.map((s) => map[s] ?? s);
@@ -141,8 +142,29 @@ export function deleteGroup(doc, name) {
   if (doc.groupOptions) delete doc.groupOptions[name];
   if (doc.validate) delete doc.validate[name];
   if (doc.outputColumns) doc.outputColumns = doc.outputColumns.filter((c) => c !== name);
+  setPrimaryKey(doc, name, false);
   removeFromChecks(doc, new Set([name]));
   pruneEmpty(doc);
+}
+
+// Primary key: output columns that identify a sheet; sheets of a job with
+// the same key are listed as duplicates on the Results screen
+export function setPrimaryKey(doc, name, on) {
+  const keys = (doc.primaryKey || []).filter((c) => c !== name);
+  if (on) keys.push(name);
+  if (keys.length) doc.primaryKey = keys;
+  else delete doc.primaryKey;
+}
+
+export function primaryKeyTick(ed, name) {
+  const tick = el("input", { type: "checkbox", checked: (ed.doc.primaryKey || []).includes(name) });
+  tick.addEventListener("change", () => ed.edit(() => setPrimaryKey(ed.doc, name, tick.checked)));
+  return el(
+    "label",
+    { class: "field inline-check", title: "Sheets of a job with the same value here (and in any other key column) are flagged as duplicates" },
+    tick,
+    " Primary key"
+  );
 }
 
 // Ask what to do with groups that use columns about to disappear.
@@ -376,6 +398,8 @@ export function renderBlockGrouping(ed, o) {
     help(el("label", { class: "field inline-check" }, check, " Output as one field"), "outputAsOne"),
     help(el("label", { class: "field" }, "Name of the joined field", nameInput), "groupName")
   );
+  if (group) add(box, primaryKeyTick(ed, group));
+  else if (o.labels.length === 1 && !partOf.length) add(box, primaryKeyTick(ed, o.labels[0]));
   if (partOf.length) add(box, el("div", { class: "muted small" }, `Columns are already in group ${partOf.map((g) => g.name).join(", ")}: edit it on the Page panel.`));
   if (group) {
     add(box, el("h4", {}, `What each column of ${group} becomes`), renderGroupOptions(ed, group));
@@ -426,6 +450,7 @@ export function renderGroupList(ed) {
         { class: `ed-group${missing ? " broken" : ""}` },
         el("div", { class: "row gap" }, el("strong", { class: "mono" }, name), el("span", { class: "muted small" }, `${cols.length} col · ${compress(cols).join(", ")}`)),
         missing ? el("div", { class: "small err" }, `Missing column(s): ${missing.join(", ")}`) : null,
+        primaryKeyTick(ed, name),
         el("div", { class: "muted small" }, opts ? `empty ${show(opts.empty === undefined ? " " : opts.empty)} · multi ${show(opts.multi ?? "*")} · issue ${show(opts.issue ?? "-")}` : "plain join"),
         el(
           "div",

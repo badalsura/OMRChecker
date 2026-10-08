@@ -17,7 +17,7 @@ from pathlib import Path
 
 import cv2
 
-from src.api.storage import new_id, scan_dir_for, write_json_atomic
+from src.api.storage import new_id, primary_key_of, scan_dir_for, write_json_atomic
 from src.readers.image_zone import save_zone_images
 
 # Image persistence policies
@@ -227,6 +227,10 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
                 "created_at": started,
             }
         )
+        key_fields = primary_key_fields(engine)
+        if key_fields:
+            data["key_fields"] = key_fields
+            data["primary_key"] = primary_key_of(data)
         if len(results) > 1:
             data["file_id"] = f"{data['file_name']}#page{page + 1}"
         else:
@@ -234,6 +238,19 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
         write_json_atomic(scan_dir / "result.json", data)
         stored.append(data)
     return stored
+
+
+def primary_key_fields(engine):
+    """Template primaryKey columns and the field labels they are built from."""
+    template = getattr(engine, "template", None)
+    columns = list(getattr(template, "primary_key", None) or [])
+    if not columns:
+        return None
+    labels = []
+    for column in columns:
+        labels.append(column)
+        labels.extend(template.custom_labels.get(column) or [])
+    return {"columns": columns, "labels": labels}
 
 
 def file_sha256(path):
@@ -284,8 +301,11 @@ def summarize(record):
         "error",
         "created_at",
         "template_version",
+        "primary_key",
     )
     summary = {key: record.get(key) for key in keys}
+    if record.get("key_fields"):
+        summary["primary_key"] = primary_key_of(record)
     # Only the names and flags of failed checks travel to the index
     check_flags = {
         name: check.get("flags")

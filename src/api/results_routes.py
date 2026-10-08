@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from src.api.results import DEFAULT_USER, ResultsError, clean_rules
 
 VIEW_PATTERN = (
-    "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors)$"
+    "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors"
+    "|duplicates|duplicates_template)$"
 )
 
 
@@ -84,6 +85,12 @@ def register(app, ctx, secured):
     def overlay_response(result, info=None, **extra):
         payload = service.overlay(result, info)
         payload.update(extra)
+        if result.get("key_fields"):
+            # Other sheets of the job with the same primary key
+            payload["duplicates"] = [
+                {"scan_id": d["id"], "file_name": d["file_name"], "status": d["status"]}
+                for d in ctx.index.duplicates_of(result["scan_id"])
+            ]
         return payload
 
     @app.get("/results", tags=["results"], dependencies=secured)

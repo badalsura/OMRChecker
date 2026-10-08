@@ -325,6 +325,11 @@ TEMPLATE_SCHEMA = {
                 }
             },
         },
+        "primaryKey": {
+            "description": "Output columns that identify a sheet; sheets sharing them are duplicates",
+            "type": "array",
+            "items": {"type": "string"},
+        },
         "outputColumns": {
             "type": "array",
             "items": FIELD_STRING_TYPE,

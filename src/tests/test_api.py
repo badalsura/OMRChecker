@@ -556,3 +556,32 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
         assert response.json()["verified_items"] == ["q2: order"]
         response = client.post(verify, json={"undo": True})
         assert response.json()["verified_items"] == []
+
+
+def test_primary_key_duplicates(tmp_path, spec):
+    template = spec.to_template(pre_processors=[])
+    template["primaryKey"] = ["roll1", "roll2"]
+    image, _ = make_sheet(spec, 3)
+    other, _ = make_sheet(spec, 4)
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates",
+            files=[("files", ("template.json", json.dumps(template), "application/json"))],
+            data={"name": "Keyed"},
+        )
+        tid = response.json()["id"]
+        first = scan_one(client, tid, image, "a.png")
+        assert first["primary_key"]
+        second = scan_one(client, tid, image, "b.png")
+        scan_one(client, tid, other, "c.png")
+        listing = client.get(f"/results?template_id={tid}&view=duplicates").json()
+        assert {item["id"] for item in listing["items"]} == {
+            first["scan_id"],
+            second["scan_id"],
+        }
+        overlay = client.get(f"/scans/{first['scan_id']}/overlay").json()
+        assert [d["scan_id"] for d in overlay["duplicates"]] == [second["scan_id"]]
+        # Deleting one clears the flag on the other
+        assert client.delete(f"/results/{second['scan_id']}").status_code < 300
+        listing = client.get(f"/results?template_id={tid}&view=duplicates").json()
+        assert listing["items"] == []

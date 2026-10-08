@@ -189,8 +189,11 @@ _MIGRATIONS = {
     "verified": "INTEGER DEFAULT 0",
     "corrected": "INTEGER DEFAULT 0",
     "template_version": "TEXT",
+    "primary_key": "TEXT",
 }
 _LATE_INDEXES = """
+CREATE INDEX IF NOT EXISTS ix_scans_key ON scans(job_id, primary_key);
+CREATE INDEX IF NOT EXISTS ix_scans_template_key ON scans(template_id, primary_key);
 CREATE INDEX IF NOT EXISTS ix_scans_flagged ON scans(template_id, job_id, flag_count);
 CREATE INDEX IF NOT EXISTS ix_scans_verified ON scans(template_id, job_id, verified);
 """
@@ -212,6 +215,7 @@ SCAN_COLUMNS = [
     "verified",
     "corrected",
     "template_version",
+    "primary_key",
 ]
 
 
@@ -232,6 +236,29 @@ def flag_rows(record):
             for flag in check.get("flags") or []:
                 pairs.add((name, flag))
     return sorted(pairs)
+
+
+def primary_key_of(record):
+    """The sheet's joined primary key, or None when it is unset, blank or
+    still flagged (an unreadable key is already in review; counting it would
+    make every blank roll number a duplicate)."""
+    spec = record.get("key_fields") or {}
+    columns = spec.get("columns") or []
+    if not columns or record.get("status") == "error":
+        return None
+    responses = record.get("responses") or {}
+    values = [str(responses.get(column) or "").strip() for column in columns]
+    if not all(values):
+        return None
+    flagged = {item.get("name") for item in record.get("review") or []}
+    flagged |= {
+        name
+        for name, check in (record.get("checks") or {}).items()
+        if isinstance(check, dict) and check.get("flags")
+    }
+    if flagged & set(spec.get("labels") or columns):
+        return None
+    return "\x1f".join(values)
 
 
 def is_corrected(record):
@@ -301,6 +328,7 @@ class ScanIndex:
                     1 if record.get("verified") else 0,
                     1 if record.get("corrected") or is_corrected(record) else 0,
                     record.get("template_version"),
+                    record.get("primary_key"),
                 )
             )
             for item in record.get("review") or []:
@@ -485,6 +513,14 @@ class ScanIndex:
         "verified": "verified = 1",
         "corrected": "corrected = 1",
         "errors": "status = 'error'",
+        # Another sheet of the same job shares this sheet's primary key
+        "duplicates": "primary_key IS NOT NULL AND EXISTS (SELECT 1 FROM scans d "
+        "WHERE d.primary_key = scans.primary_key AND d.job_id IS scans.job_id "
+        "AND d.id != scans.id)",
+        # ... or of any job of the same template
+        "duplicates_template": "primary_key IS NOT NULL AND EXISTS (SELECT 1 FROM "
+        "scans d WHERE d.primary_key = scans.primary_key AND d.template_id = "
+        "scans.template_id AND d.id != scans.id)",
     }
 
     def _result_where(
@@ -620,15 +656,38 @@ class ScanIndex:
         )
         views = {
             view: self.count_results(template_id=template_id, job_id=job_id, view=view)
-            for view in ("all", "flagged", "reviewed", "not_reviewed", "corrected")
+            for view in (
+                "all",
+                "flagged",
+                "reviewed",
+                "not_reviewed",
+                "corrected",
+                "duplicates",
+            )
         }
         return {"names": names, "flags": flags, "views": views}
+
+    def duplicates_of(self, scan_id, across_jobs=False):
+        """Other scans with this scan's primary key (same job, or same template)."""
+        row = self.get(scan_id)
+        if not row or not row.get("primary_key"):
+            return []
+        scope = "template_id = ?" if across_jobs else "job_id IS ?"
+        return self._query(
+            f"SELECT id, job_id, file_name, status FROM scans WHERE primary_key = ? "
+            f"AND {scope} AND id != ? ORDER BY rowid LIMIT 50",
+            (
+                row["primary_key"],
+                row["template_id"] if across_jobs else row["job_id"],
+                scan_id,
+            ),
+        )
 
     def set_scan_state(self, result):
         with self.lock:
             self.conn.execute(
                 "UPDATE scans SET status=?, score=?, review_count=?, verified=?, "
-                "corrected=?, reviewed=? WHERE id=?",
+                "corrected=?, reviewed=?, primary_key=? WHERE id=?",
                 (
                     result.get("status"),
                     result.get("score"),
@@ -636,6 +695,7 @@ class ScanIndex:
                     1 if result.get("verified") else 0,
                     1 if is_corrected(result) else 0,
                     1 if result.get("reviewed") else 0,
+                    primary_key_of(result),
                     result["scan_id"],
                 ),
             )
