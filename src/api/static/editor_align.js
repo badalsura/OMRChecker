@@ -322,6 +322,7 @@ export class AlignPanel {
     const residual = data.residual;
     const trim = data.margin_trim;
     this.side.replaceChildren(
+      ...[
       el("h4", {}, `${data.sample}: ${data.status}`),
       data.error ? el("div", { class: "error" }, data.error) : null,
       rows.length
@@ -330,7 +331,8 @@ export class AlignPanel {
       residual ? el("p", { class: "muted small" }, `Page alignment residual: ${residual.page} px`) : null,
       trim ? el("p", { class: "muted small" }, `Trimmed margin (template px): top ${trim.top}, bottom ${trim.bottom}, left ${trim.left}, right ${trim.right}`) : null,
       ...(data.sheet_review || []).map((item) => el("div", { class: "error small" }, `${item.name}: ${(item.flags || []).join(", ")}${item.missing ? ` (${item.missing.join(", ")})` : ""}`)),
-      (this.testBox = this.testBox || el("div", {}))
+      (this.testBox = this.testBox || el("div", {})),
+      ].filter(Boolean)
     );
   }
 
