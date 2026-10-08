@@ -48,7 +48,7 @@ from pydantic import BaseModel, Field
 
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
-from src.api import results_routes
+from src.api import ocr_routes, results_routes
 from src.api.results import DEFAULT_USER, ResultsService
 from src.api.review import (
     ReviewError,
@@ -984,6 +984,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     register_tool_routes(app, secured, read_upload, ctx)
     # results screen: render, correct, verify, regrade, accuracy, audit
     results_routes.register(app, ctx, secured)
+    ocr_routes.register(app, ctx, secured)
     # exports: CSV, XLSX, PDF, SQLite / SQL with export profiles
     exports_module.register(app, ctx, secured)
 

@@ -38,6 +38,7 @@ from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import logger
 from src.ml.classifiers import load_crop_classifier
 from src.readers import read_zone, read_zones
+from src.readers.image_zone import attach_zone_images
 from src.rules import review_items
 from src.template import Template
 from src.utils.image import ImageUtils
@@ -66,6 +67,8 @@ class ScanResult:
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
+    # Image zone crops {file name: image}; save with src.readers.image_zone.save_zone_images
+    zone_images: dict = field(default_factory=dict)
 
     def to_dict(self):
         return {
@@ -144,6 +147,11 @@ class OMREngine:
                 resolve_path(template_dir, icr_model_path or ml_params.icr_model_path)
             ),
             "barcode_params": self.tuning_config.barcode_params.toDict(),
+            "ocr_params": (
+                self.tuning_config.ocr_params.toDict()
+                if "ocr_params" in self.tuning_config
+                else {}
+            ),
         }
 
     @property
@@ -197,6 +205,7 @@ class OMREngine:
             zone_results = read_zones(
                 self.template.zones, aligned_image, self.zone_engines
             )
+        zone_images = attach_zone_images(zone_results, self.template.zones, file_id)
         timings["zones"] = _elapsed_ms(step)
 
         omr_response = dict(detailed["omr_response"])
@@ -243,6 +252,7 @@ class OMREngine:
             timings_ms=timings,
             aligned_image=aligned_image if keep_images else None,
             marked_image=detailed["final_marked"] if keep_images else None,
+            zone_images=zone_images,
         )
 
     def _read_lazy_zone(self, name, aligned_image, variants=None):

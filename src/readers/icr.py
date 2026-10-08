@@ -50,10 +50,65 @@ def clean_box(box):
     return 255 - ink, ink_ratio
 
 
-def read_icr_zone(zone, image, classifier=None):
+def read_icr_zone(zone, image, classifier=None, ocr_params=None):
+    """
+    Read a handwriting zone. options.direction turns the crop first (see
+    src/readers/text_reader.py); "auto" keeps the best valid read of the four.
+    """
+    from src.readers import text_reader
+
     crop = zone.crop(image)
     if crop.ndim == 3:
         crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    settings = text_reader.ocr_settings(ocr_params)
+    directions = text_reader.zone_directions(zone)
+    best, best_key = None, None
+    for direction in directions:
+        result = read_icr_crop(
+            zone, text_reader.rotate_crop(crop, direction), classifier, settings
+        )
+        if "direction" in zone.options:
+            result.details["direction"] = direction
+        valid = text_reader.is_valid(result.value, zone)
+        key = (valid, bool(result.value), result.confidence)
+        if best is None or key > best_key:
+            best, best_key = result, key
+    return best
+
+
+def paddle_second_reader(settings, zone):
+    """PaddleOCR recognition as a second reader for boxed handwriting, or None."""
+    from src.readers import text_reader
+
+    choice = settings.get("icr_second_reader", "auto")
+    if choice not in ("auto", "paddle"):
+        return None
+    try:
+        engine = text_reader.paddle_engine(settings, zone.options.get("lang"))
+        return engine if engine.available else None
+    except Exception:  # pragma: no cover - optional engine
+        return None
+
+
+def compare_with_second_reader(engine, boxes, characters, whitelist):
+    """Per-box PaddleOCR reads and the box indices where the two readers differ."""
+    allowed = set(whitelist) if whitelist else None
+    second, differ = [], []
+    for index, (box, first) in enumerate(zip(boxes, characters)):
+        if box is None:
+            second.append("")
+            continue
+        padded = cv2.copyMakeBorder(box, 6, 6, 6, 6, cv2.BORDER_CONSTANT, value=255)
+        text, _ = engine.recognize_line(padded, allowed)
+        text = text.strip()[:1]
+        second.append(text)
+        if text != first:
+            differ.append(index)
+    return second, differ
+
+
+def read_icr_crop(zone, crop, classifier=None, settings=None):
+    settings = settings or {}
     count = zone.options.get("characterBoxes")
     whitelist = zone.options.get("whitelist")
 
@@ -64,12 +119,15 @@ def read_icr_zone(zone, image, classifier=None):
         return read_boxes_without_model(zone, crop, count, whitelist)
 
     characters, confidences, flags = [], [], []
+    inked_boxes = []
     for box in split_character_boxes(crop, count):
         cleaned, ink_ratio = clean_box(box)
         if ink_ratio < MIN_INK_RATIO:
             characters.append("")
             confidences.append(1.0)
+            inked_boxes.append(None)
             continue
+        inked_boxes.append(cleaned)
         if classifier is not None:
             probs = classifier.predict_proba([cleaned])[0]
             if whitelist:
@@ -89,17 +147,24 @@ def read_icr_zone(zone, image, classifier=None):
 
     value = "".join(characters).strip()
     confidence = float(min(confidences)) if confidences else 0.0
-    return ZoneReadResult(
-        zone.name,
-        zone.type,
-        value,
-        confidence,
-        flags,
-        details={
-            "characters": characters,
-            "confidences": [round(c, 3) for c in confidences],
-        },
-    )
+    details = {
+        "characters": characters,
+        "confidences": [round(c, 3) for c in confidences],
+    }
+    second = paddle_second_reader(settings, zone)
+    if second is not None:
+        try:
+            read, differ = compare_with_second_reader(
+                second, inked_boxes, characters, whitelist
+            )
+            details["second_reader"] = {"engine": "paddle", "characters": read}
+            if differ:
+                details["second_reader"]["differ"] = differ
+                if settings.get("disagree_to_review", True):
+                    flags.append("engine_disagree")
+        except Exception as error:  # the second reader must not lose the zone
+            details["second_reader"] = {"engine": "paddle", "error": str(error)}
+    return ZoneReadResult(zone.name, zone.type, value, confidence, flags, details=details)
 
 
 def read_boxes_without_model(zone, crop, count, whitelist):
