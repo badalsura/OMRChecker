@@ -98,6 +98,7 @@ class JobManager:
         self.live = {}  # job_id -> job dict while queued/running
         self.cancelled = set()
         self.paused = set()
+        self.resume_after = set()
         self.pool = None
         self.pool_workers = None
         self.thread = None
@@ -248,8 +249,13 @@ class JobManager:
 
     def resume(self, job_id):
         """Queue a paused or interrupted job again; it skips sheets already read."""
-        if job_id in self.live:
-            return None
+        live = self.live.get(job_id)
+        if live is not None:
+            if live["state"] != PAUSED:
+                return None
+            # Still winding down: queue it again once the runner lets go
+            self.resume_after.add(job_id)
+            return live
         job = self.get(job_id)
         if job is None or job.get("state") not in (PAUSED, INTERRUPTED):
             return None
@@ -258,6 +264,13 @@ class JobManager:
 
     def cancel(self, job_id):
         job = self.live.get(job_id)
+        if job is not None and job["state"] == PAUSED:
+            # Paused but the runner has not let go yet
+            self.resume_after.discard(job_id)
+            job["state"] = CANCELLED
+            job["finished_at"] = time.time()
+            self._save(job)
+            return job
         if job is None:
             job = self.get(job_id)
             if job is not None and job.get("state") in (PAUSED, INTERRUPTED):
@@ -312,6 +325,10 @@ class JobManager:
                 self.live.pop(job_id, None)
                 self.cancelled.discard(job_id)
                 self.paused.discard(job_id)
+                if job_id in self.resume_after:
+                    self.resume_after.discard(job_id)
+                    if job["state"] == PAUSED:
+                        self.enqueue(job)
 
     def _halted(self, job):
         return (
