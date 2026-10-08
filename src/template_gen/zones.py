@@ -222,8 +222,11 @@ def detect_variable_text(
         return []  # too few sheets to tell variable from static content
     page_w, page_h = page_size
     votes = np.zeros(reference.shape[:2], np.uint16)
+    # New ink only: darker than the darkest blank-form pixel nearby, so printed
+    # headings that sit a pixel or two off on some sheets don't count
+    nearby_ink = cv2.erode(reference, np.ones((5, 5), np.uint8))
     for image in images:
-        diff = cv2.absdiff(image, reference)
+        diff = cv2.subtract(nearby_ink, image)
         votes += (diff > 60).astype(np.uint16)
     changing = (votes >= max(2, min_rate * len(images))).astype(np.uint8) * 255
     changing = cv2.morphologyEx(changing, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))

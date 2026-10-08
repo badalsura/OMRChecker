@@ -386,6 +386,55 @@ def _red_pen_zones(zones_, aligned, dropout_aligned, blank, blank_dropout, good)
     return out
 
 
+def _alignment_method(pre_processors):
+    names = [p.get("name") for p in pre_processors or []]
+    if "TimingMarkAlignment" in names:
+        return "tracks"
+    if "CropOnMarkers" in names:
+        return "markers"
+    if "CropPage" in names:
+        return "page"
+    if names:
+        return "image"
+    return "none"
+
+
+def _track_summary(name, track):
+    side = name.replace("_", " ").capitalize()
+    return (
+        f"{side} track: {len(track['marks'])} marks, pitch {track['pitch']:.0f} px, "
+        f"mark {track['mark_dimensions'][0]:.0f} x {track['mark_dimensions'][1]:.0f} px"
+    )
+
+
+def _alignment_report(tracks, corners, blank, page_size, exclude_boxes):
+    """What the generator found for page alignment, for the editor to draw."""
+    candidates = marks.detect_index_candidates(blank, page_size, tracks, exclude_boxes)
+    symmetric = marks.tracks_symmetric(tracks, page_size) if tracks else False
+    index_points = []
+    if symmetric:
+        chosen = marks.asymmetric_points(candidates, page_size, gray=blank)
+        index_points = [
+            marks.index_point(c, f"P{i + 1}") for i, c in enumerate(chosen)
+        ]
+    return {
+        "tracks": {
+            name: {
+                "marks": track["marks"],
+                "pitch": track["pitch"],
+                "mark_dimensions": track["mark_dimensions"],
+                "count": len(track["marks"]),
+            }
+            for name, track in tracks.items()
+        },
+        "summary": [_track_summary(n, t) for n, t in tracks.items()],
+        "corner_markers": corners,
+        "symmetric": symmetric,
+        "index_points": index_points,
+        "index_candidates": candidates[:40],
+    }
+
+
 def suggest_colour(colour_images, opts=None):
     """
     Look at the print colour of a few sheets: pink or red print gets red
@@ -582,10 +631,12 @@ def generate_template(images, labels=None, options=None):
         opts["min_page_width"],
     )
     missing_page = [i for i, info in enumerate(page_infos) if not info["page_found"]]
+    info_notes = []
     if missing_page:
-        warnings.append(
-            f"page edges not found on {len(missing_page)} sheet(s) {missing_page[:10]}; "
-            "the whole image was used as the page"
+        # Not a problem: scans are usually cropped to the paper already
+        info_notes.append(
+            f"scans are cropped to the paper on {len(missing_page)} sheet(s) "
+            f"{missing_page[:10]}; whole image used"
         )
     ref_index = opts["reference_index"]
     if ref_index is None:
@@ -999,6 +1050,43 @@ def generate_template(images, labels=None, options=None):
     if pre_processors is None:
         candidates = candidate_pre_processors(tracks, page_infos)
         pre_processors = candidates[0]
+    alignment = _alignment_report(
+        tracks,
+        corners,
+        blank,
+        page_size,
+        [g.bbox() for g in grids]
+        + [z["box"] for z in symbol_zones]
+        + [[*z["origin"], *z["dimensions"]] for z in template_zones.values()],
+    )
+    timing = next(
+        (p for p in pre_processors or [] if p.get("name") == "TimingMarkAlignment"),
+        None,
+    )
+    if alignment["symmetric"]:
+        if alignment["index_points"] and timing is not None and opts["pre_processors"] is None:
+            timing["options"]["indexPoints"] = alignment["index_points"]
+            warnings.append(
+                "timing tracks look the same upside down; added "
+                f"{len(alignment['index_points'])} index point(s) "
+                f"({', '.join(p['name'] for p in alignment['index_points'])}) "
+                "so a sheet can't be read upside down: check them in the Alignment panel"
+            )
+        else:
+            warnings.append(
+                "timing tracks look the same upside down and no asymmetric printed "
+                "mark was found: add an index point in the Alignment panel, or a "
+                "sheet fed upside down may be read upside down"
+            )
+    alignment["method"] = _alignment_method(pre_processors)
+    alignment["sheets"] = [
+        {"sheet": i, **marks.match_counts(aligned[i], tracks, alignment["index_points"])}
+        for i in good
+    ]
+    for entry in alignment["sheets"]:
+        found = sum(v[0] for v in entry["tracks"].values())
+        expected = sum(v[1] for v in entry["tracks"].values())
+        entry["found"], entry["expected"] = found, expected
     template = {
         "pageDimensions": [int(page_size[0]), int(page_size[1])],
         "bubbleDimensions": bubble_dims,
@@ -1164,6 +1252,8 @@ def generate_template(images, labels=None, options=None):
         "self_check": checks,
         "schema_errors": schema_errors,
         "warnings": warnings,
+        "info": info_notes,
+        "alignment": alignment,
         "needs_verification": verify,
         "timings_ms": timings,
     }

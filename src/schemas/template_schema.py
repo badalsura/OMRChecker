@@ -63,6 +63,23 @@ TIMING_MARK_OPTIONS_SCHEMA = {
         "nonRigid": {"type": "boolean"},
         # Try 90/180/270 degree rotations when the sheet is fed in wrongly
         "detectOrientation": {"type": "boolean"},
+        # Extra printed marks (dots, squares, corner markers), each with its own
+        # size and shape (contracts.md; the engine side belongs to item 13)
+        "indexPoints": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["center", "size"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "center": two_positive_numbers,
+                    "size": two_positive_numbers,
+                    "shape": {"type": "string", "enum": ["square", "circle", "any"]},
+                    "required": {"type": "boolean"},
+                },
+            },
+        },
     },
 }
 
