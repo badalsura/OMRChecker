@@ -125,21 +125,39 @@ class Context:
                 self.scan_locks.clear()
             return self.scan_locks.setdefault(scan_id, threading.Lock())
 
-    def aligned_image(self, scan_id):
+    def aligned_image(self, scan_id, result=None):
+        """
+        The aligned page: the stored aligned.png, or, when the job kept no
+        images, the page rebuilt from the original file with the geometry
+        recorded at scan time (nothing is detected again).
+        """
         path = self.data.scan_dir(scan_id) / "aligned.png"
         key = str(path)
         with self.image_cache_guard:
             if key in self.image_cache:
                 self.image_cache.move_to_end(key)
                 return self.image_cache[key]
-        if not path.exists():
+        if path.exists():
+            image = cv2.imread(key, cv2.IMREAD_UNCHANGED)
+        elif result is not None and result.get("geometry"):
+            from src.api.results import ResultsError
+
+            try:
+                image = self.results.replay(result)[0]
+            except ResultsError:
+                return None
+        else:
             return None
-        image = cv2.imread(key, cv2.IMREAD_UNCHANGED)
         with self.image_cache_guard:
             self.image_cache[key] = image
             while len(self.image_cache) > 32:
                 self.image_cache.popitem(last=False)
         return image
+
+
+def has_crops(result):
+    """Crops come from the stored aligned image or from the original + geometry."""
+    return bool(result.get("has_images") or result.get("geometry"))
 
 
 def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
@@ -243,7 +261,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "self": f"/scans/{scan_id}",
             "aligned": f"/scans/{scan_id}/image?kind=aligned" if has_images else None,
             "marked": f"/scans/{scan_id}/image?kind=marked" if has_images else None,
-            "crop": f"/scans/{scan_id}/crop" if has_images else None,
+            "crop": f"/scans/{scan_id}/crop" if has_crops(result) else None,
         }
 
     def with_links(result):
@@ -661,9 +679,13 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         kind, box = item_box(result, target)
         if kind is None or box is None:
             raise HTTPException(404, f"'{target}' is not a field or zone of this scan")
-        image = ctx.aligned_image(scan_id)
+        image = ctx.aligned_image(scan_id, result)
         if image is None:
-            raise HTTPException(404, "No aligned image stored for this scan")
+            raise HTTPException(
+                404,
+                "No aligned image stored for this scan, and the original file "
+                "could not be read again (moved or changed)",
+            )
         crop = crop_box(image, box, pad)
         if crop is None:
             raise HTTPException(404, "Crop is outside the image")
@@ -709,7 +731,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             ctx.index.sync_review_items(result)
             ctx.index.add_corrections(audit)
         records = write_training_records(
-            ctx.data.training, result, events, ctx.aligned_image(scan_id)
+            ctx.data.training, result, events, ctx.aligned_image(scan_id, result)
         )
         response = with_links(result)
         response["training_records"] = len(records)
@@ -783,7 +805,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "confidence": target.get("confidence"),
             "flags": target.get("flags", []),
             "crop_url": (
-                f"/scans/{scan_id}/crop?name={quote(name)}" if has_images else None
+                f"/scans/{scan_id}/crop?name={quote(name)}" if has_crops(result) else None
             ),
             "options": None,
         }
@@ -858,7 +880,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "candidates": candidates,
             "crop_url": (
                 f"/scans/{scan_id}/crop?name={quote(name)}"
-                if result.get("has_images") and box
+                if has_crops(result) and box
                 else None
             ),
             "options": None,

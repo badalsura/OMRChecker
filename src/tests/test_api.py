@@ -691,3 +691,21 @@ def test_job_pause_resume_and_cancel(tmp_path, spec):
         job = wait_for_job(client, job_id)
         if job["state"] == "paused":
             assert client.post(f"/jobs/{job_id}/cancel").json()["state"] == "cancelled"
+
+
+def test_jobs_without_images_draw_crops_from_the_original(tmp_path, spec):
+    image, _ = make_sheet(spec, 3)
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        job_id = client.post(
+            "/jobs",
+            data={"template_id": template_id, "save_images": "none"},
+            files=[("files", ("a.png", png_bytes(image), "image/png"))],
+        ).json()["id"]
+        assert wait_for_job(client, job_id)["state"] == "completed"
+        rows = client.get(f"/scans?job_id={job_id}").json()["items"]
+        scan = client.get(f"/scans/{rows[0]['id']}").json()
+        assert not scan["has_images"] and scan["links"]["crop"]
+        name = next(iter(scan["fields"]))
+        crop = client.get(f"/scans/{rows[0]['id']}/crop?name={name}")
+        assert crop.status_code == 200 and crop.headers["content-type"] == "image/png"
