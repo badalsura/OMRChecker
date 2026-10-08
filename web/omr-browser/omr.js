@@ -1858,6 +1858,10 @@
       this.expected = this.expected.map(function (p) {
         return [Math.fround(p[0]), Math.fround(p[1])];
       });
+      // Index points are only drawn (live camera guide); reading does not use them
+      this.indexPoints = (options.indexPoints || []).map(function (p) {
+        return { center: [Number(p.center[0]), Number(p.center[1])], size: p.size ? [Number(p.size[0]), Number(p.size[1])] : [20, 20] };
+      });
       this.markW = options.markDimensions[0];
       this.markH = options.markDimensions[1];
       this.sizeTolerance = options.sizeTolerance !== undefined ? options.sizeTolerance : TM_DEFAULT_SIZE_TOLERANCE;
@@ -5148,7 +5152,7 @@
         ctx.registration = { error: String((error && error.message) || error) };
       }
       var reg = ctx.registration || {}, page = this.template.pageDimensions, quad = null, marks = null;
-      var blocks = null, bubbles = null, bubbleRadius = null;
+      var blocks = null, bubbles = null, bubbleRadius = null, overlay = null;
       function toFrame(p) {
         return [p[0] / sx, p[1] / sy];
       }
@@ -5158,14 +5162,13 @@
           return p.name === "TimingMarkAlignment";
         })[0];
         if (tm) marks = projectPoints(reg.homography, tm.expected).map(toFrame);
-        var layout = this.previewLayout();
-        blocks = layout.blocks.map(function (corners) {
-          return projectPoints(reg.homography, corners).map(toFrame);
-        });
-        bubbles = projectPoints(reg.homography, layout.bubbles).map(toFrame);
-        // bubble radius in frame pixels, from the page width as seen in the frame
-        var top = Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]);
-        bubbleRadius = (layout.radius * top) / page[0];
+        var H = reg.homography;
+        overlay = this.overlayLayout(function (p) {
+          return toFrame(projectPoint(H, p[0], p[1]));
+        }, Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) / page[0]);
+        blocks = overlay.blocks;
+        bubbles = overlay.bubbles;
+        bubbleRadius = overlay.bubbleRadius;
       } else if (reg.corners && reg.corners.length === 4) {
         quad = reg.corners.map(toFrame);
       }
@@ -5180,13 +5183,51 @@
         blocks: blocks,
         bubbles: bubbles,
         bubbleRadius: bubbleRadius,
+        // the template where the sheet is (aligned) or, until then, a fixed
+        // guide centred in the frame to line the sheet up with
+        overlay: overlay || this.guideOverlay(gray.width, gray.height),
         sharpness: roundTo(laplacianVariance(gray), 1),
       };
     };
-    // Field block outlines and bubble centres in template units, for drawing
-    // the template over a camera frame (computed once per engine)
+    // The template's page outline, timing tracks, index points, field blocks
+    // and bubbles mapped into frame pixels by map(point); scale = frame pixels
+    // per template unit (for radii)
+    Engine.prototype.overlayLayout = function (map, scale) {
+      var layout = this.previewLayout(), page = this.template.pageDimensions;
+      function mapAll(points) {
+        return points.map(map);
+      }
+      return {
+        aligned: true,
+        page: mapAll([[0, 0], [page[0], 0], [page[0], page[1]], [0, page[1]]]),
+        tracks: layout.tracks.map(mapAll),
+        indexPoints: layout.indexPoints.map(function (p) {
+          return { center: map(p.center), radius: (Math.max(p.size[0], p.size[1]) / 2) * scale };
+        }),
+        blocks: layout.blocks.map(mapAll),
+        bubbles: mapAll(layout.bubbles),
+        bubbleRadius: layout.radius * scale,
+      };
+    };
+    // The template fitted inside a width x height frame, centred with a margin
+    Engine.prototype.guideOverlay = function (width, height) {
+      var page = this.template.pageDimensions, margin = 0.06;
+      var scale = Math.min((width * (1 - 2 * margin)) / page[0], (height * (1 - 2 * margin)) / page[1]);
+      var ox = (width - page[0] * scale) / 2, oy = (height - page[1] * scale) / 2;
+      var guide = this.overlayLayout(function (p) {
+        return [ox + p[0] * scale, oy + p[1] * scale];
+      }, scale);
+      guide.aligned = false;
+      return guide;
+    };
+    // Timing tracks, index points, field block outlines and bubble centres in
+    // template units, for drawing the template over a camera frame (computed
+    // once per engine)
     Engine.prototype.previewLayout = function () {
       if (this._previewLayout) return this._previewLayout;
+      var tm = this.preProcessors.filter(function (p) {
+        return p.name === "TimingMarkAlignment";
+      })[0];
       var blocks = [], bubbles = [], sizes = [];
       this.template.fieldBlocks.forEach(function (block) {
         var bw = block.bubbleDimensions[0], bh = block.bubbleDimensions[1];
@@ -5202,7 +5243,13 @@
       });
       sizes.sort(function (a, b) { return a - b; });
       var radius = sizes.length ? sizes[sizes.length >> 1] * 0.35 : 0;
-      this._previewLayout = { blocks: blocks, bubbles: bubbles, radius: radius };
+      this._previewLayout = {
+        tracks: tm ? tm.tracks : [],
+        indexPoints: tm ? tm.indexPoints : [],
+        blocks: blocks,
+        bubbles: bubbles,
+        radius: radius,
+      };
       return this._previewLayout;
     };
     // Variance of the 4-neighbour Laplacian: low on blurred or shaken frames

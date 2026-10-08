@@ -475,7 +475,7 @@
     var ready = p.ok && allMarks && sharp && steady(state.previewFrames);
     drawPreview(p, frame, ready);
     var hint;
-    if (!p.ok) hint = p.quad ? "Sheet found, but " + (p.error || "it could not be aligned") + "." : "Point the camera at a sheet.";
+    if (!p.ok) hint = p.quad ? "Sheet found, but " + (p.error || "it could not be aligned") + ". Line it up with the white guide." : "Line the sheet up with the white guide.";
     else if (!allMarks) hint = "Matched " + p.matched + " of " + p.expected + " timing marks; fit the whole sheet in view.";
     else if (!sharp) hint = "Too blurry (sharpness " + p.sharpness + "); hold still or move closer.";
     else if (!ready) hint = "Hold steady…";
@@ -492,35 +492,76 @@
     c.width = frame.width; c.height = frame.height;
     var g = c.getContext("2d");
     g.clearRect(0, 0, c.width, c.height);
-    if (!p.quad) return;
-    var colour = ready ? "#16a34a" : p.ok ? "#f59e0b" : "#dc2626";
-    g.lineWidth = 3;
-    g.strokeStyle = colour;
+    var o = p.overlay;
+    if (o && $("showTemplate").checked) {
+      drawOverlay(g, o, o.aligned ? (ready ? "#16a34a" : p.ok ? "#f59e0b" : "#dc2626") : "#ffffff");
+    } else if (p.quad) {
+      // template overlay off: page outline and found marks only
+      var colour = ready ? "#16a34a" : p.ok ? "#f59e0b" : "#dc2626";
+      g.lineWidth = 3;
+      g.strokeStyle = colour;
+      polygon(g, p.quad);
+      g.stroke();
+      g.fillStyle = colour;
+      (p.marks || []).forEach(function (m) { g.fillRect(m[0] - 3, m[1] - 3, 6, 6); });
+    }
+  }
+  function polygon(g, points, closed) {
     g.beginPath();
-    p.quad.forEach(function (q, i) { if (i) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
-    g.closePath();
+    points.forEach(function (q, i) { if (i) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
+    if (closed !== false) g.closePath();
+  }
+  // The template over the video: before a sheet is found, a fixed white guide
+  // to line the sheet up with; once found, the template where the sheet is
+  function drawOverlay(g, o, colour) {
+    var guide = !o.aligned;
+    g.save();
+    if (guide) {
+      g.setLineDash([8, 6]);
+      g.shadowColor = "rgba(0, 0, 0, 0.8)";
+      g.shadowBlur = 3;
+    }
+    g.strokeStyle = colour;
+    g.lineWidth = 3;
+    polygon(g, o.page);
     g.stroke();
+    g.setLineDash([]);
+    // timing tracks: the line of marks, each mark a small square
+    g.lineWidth = 2;
     g.fillStyle = colour;
-    (p.marks || []).forEach(function (m) { g.fillRect(m[0] - 3, m[1] - 3, 6, 6); });
-    if (!$("showTemplate").checked) return;
-    // template overlay: field blocks and their bubbles where the sheet should have them
-    g.lineWidth = 1.5;
-    g.strokeStyle = "rgba(37, 99, 235, 0.9)";
-    (p.blocks || []).forEach(function (quad) {
+    o.tracks.forEach(function (track) {
+      polygon(g, track, false);
+      g.stroke();
+      track.forEach(function (m) { g.fillRect(m[0] - 2.5, m[1] - 2.5, 5, 5); });
+    });
+    // index points: ringed so they stand out from the bubbles
+    o.indexPoints.forEach(function (ip) {
+      var r = Math.max(4, ip.radius);
       g.beginPath();
-      quad.forEach(function (q, i) { if (i) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
-      g.closePath();
+      g.arc(ip.center[0], ip.center[1], r, 0, 2 * Math.PI);
+      g.stroke();
+      g.beginPath();
+      g.arc(ip.center[0], ip.center[1], r + 4, 0, 2 * Math.PI);
       g.stroke();
     });
-    var r = Math.max(1.5, p.bubbleRadius || 2);
-    g.strokeStyle = "rgba(37, 99, 235, 0.75)";
+    var blockColour = guide ? "rgba(255, 255, 255, 0.85)" : "rgba(37, 99, 235, 0.9)";
+    g.strokeStyle = blockColour;
+    g.lineWidth = 1.5;
+    o.blocks.forEach(function (quad) {
+      polygon(g, quad);
+      g.stroke();
+    });
+    var r = Math.max(1.5, o.bubbleRadius || 2);
+    g.strokeStyle = guide ? "rgba(255, 255, 255, 0.6)" : "rgba(37, 99, 235, 0.75)";
     g.lineWidth = 1;
-    (p.bubbles || []).forEach(function (b) {
+    o.bubbles.forEach(function (b) {
       g.beginPath();
       g.arc(b[0], b[1], r, 0, 2 * Math.PI);
       g.stroke();
     });
+    g.restore();
   }
+
 
   // ---- result ------------------------------------------------------------
   function showResult(result) {

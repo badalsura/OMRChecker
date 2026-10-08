@@ -210,4 +210,9 @@ test("live preview reports alignment and sharpness without reading", async () =>
   const bubbles = blocks.reduce((n, b) => n + b.fields.reduce((m, f) => m + f.bubbles.length, 0), 0);
   assert.equal(layout.bubbles.length, bubbles);
   assert.ok(layout.radius > 0);
+  // no sheet in view: a fixed guide fitted inside the frame
+  const guide = p.overlay;
+  assert.equal(guide.aligned, false);
+  assert.equal(guide.blocks.length, blocks.length);
+  guide.page.forEach(([x, y]) => assert.ok(x >= 0 && x <= flat.width && y >= 0 && y <= flat.height));
 });

@@ -693,6 +693,30 @@ def test_job_pause_resume_and_cancel(tmp_path, spec):
             assert client.post(f"/jobs/{job_id}/cancel").json()["state"] == "cancelled"
 
 
+def test_job_with_worker_processes_and_prefetch_completes(tmp_path, spec):
+    sheets = [make_sheet(spec, seed) for seed in range(3)]
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        files = [("files", (f"s{i}.png", png_bytes(img), "image/png")) for i, (img, _) in enumerate(sheets)]
+        job_id = client.post(
+            "/jobs", data={"template_id": template_id, "workers": "2", "prefetch": "2"}, files=files
+        ).json()["id"]
+        job = wait_for_job(client, job_id)
+        assert job["state"] == "completed" and job["processed_files"] == 3, job["errors"]
+
+
+def test_job_with_worker_processes_and_prefetch_completes(tmp_path, spec):
+    sheets = [make_sheet(spec, seed) for seed in range(3)]
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        files = [("files", (f"s{i}.png", png_bytes(img), "image/png")) for i, (img, _) in enumerate(sheets)]
+        job_id = client.post(
+            "/jobs", data={"template_id": template_id, "workers": "2", "prefetch": "2"}, files=files
+        ).json()["id"]
+        job = wait_for_job(client, job_id)
+        assert job["state"] == "completed" and job["processed_files"] == 3, job["errors"]
+
+
 def test_jobs_without_images_draw_crops_from_the_original(tmp_path, spec):
     image, _ = make_sheet(spec, 3)
     with make_client(tmp_path) as client:

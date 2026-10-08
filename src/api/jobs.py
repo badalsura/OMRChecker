@@ -64,17 +64,33 @@ def read_ahead(tasks, reader, depth):
     """
     pending = deque()
     tasks = iter(tasks)
-    while True:
-        while len(pending) < depth:
-            task = next(tasks, None)
-            if task is None:
-                break
-            pending.append((task, reader.submit(_read_bytes, task["file_path"])))
-        if not pending:
-            return
-        task, future = pending.popleft()
-        data = future.result()
-        yield {**task, "file_bytes": data} if data is not None else task
+    try:
+        while True:
+            while len(pending) < depth:
+                task = next(tasks, None)
+                if task is None:
+                    break
+                pending.append((task, reader.submit(_read_bytes, task["file_path"])))
+            if not pending:
+                return
+            task, future = pending.popleft()
+            data = future.result()
+            yield {**task, "file_bytes": data} if data is not None else task
+    finally:
+        # Closed early (job paused or cancelled): drop the reads not started
+        for _, future in pending:
+            future.cancel()
+
+
+def shutdown_now(executor):
+    """shutdown(wait=False) that also drops queued work. cancel_futures needs
+    Python 3.9; on 3.8 (the Windows 7 build) the few sheets already handed to
+    the workers finish first, since a 3.8 process pool left running without
+    waiting can hang the interpreter at exit."""
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        executor.shutdown(wait=True)
 
 
 def collect_folder(folder, recursive=True):
@@ -127,7 +143,7 @@ class JobManager:
         self.stopping.set()
         self.queue.put(None)
         if self.pool is not None:
-            self.pool.shutdown(wait=False, cancel_futures=True)
+            shutdown_now(self.pool)
             self.pool = None
         if self.thread is not None:
             self.thread.join(timeout=10)
@@ -463,7 +479,8 @@ class JobManager:
                         if future.cancel():
                             in_flight.pop(future)
             if reader is not None:
-                reader.shutdown(wait=False, cancel_futures=True)
+                tasks.close()
+                reader.shutdown(wait=False)
         flush(force=True)
         if job["id"] in self.cancelled:
             job["state"] = CANCELLED
