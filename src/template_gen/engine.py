@@ -34,10 +34,14 @@ import numpy as np
 from src.template_gen import boxes as boxes_mod
 from src.template_gen import bubbles
 from src.template_gen import labels as label_ops
-from src.template_gen import marks, naming, rectify, zones
+from src.template_gen import marks, naming, printed_labels, rectify, zones
 from src.template_gen.assignment import boxes_overlap, otsu_1d, point_in_box
 
 DEFAULT_OPTIONS = {
+    # Without labels, read each block's bubble values from the print (OCR)
+    "read_printed_values": True,
+    # Unlabelled blocks with a grid confidence below this are only suggested
+    "hold_back_below": 0.5,
     # Force the canonical page size [w, h]; default: median measured page size
     "page_size": None,
     # Larger pages are scaled down (keeps reading fast; ~200 DPI for A4)
@@ -971,9 +975,11 @@ def generate_template(images, labels=None, options=None):
         ]
         or [0]
     )
-    block_assignments.update(
-        _default_naming(grids, set(unlabelled), taken, q_start if labelled else 1)
-    )
+    guessed = _default_naming(grids, set(unlabelled), taken, q_start if labelled else 1)
+    if opts["read_printed_values"] and guessed:
+        # Item 10: the values printed inside the bubbles, where they read cleanly
+        printed_labels.apply(blank, grids, guessed)
+    block_assignments.update(guessed)
     lap("labels")
 
     # 6. Build the template
@@ -986,9 +992,23 @@ def generate_template(images, labels=None, options=None):
     order = [k for k in _reading_order(grids) if k in block_assignments]
     printed_boxes = boxes_mod.detect_printed_boxes(blank, page_size)
     grid_names, bordered = {}, []
+    suggested_blocks = []
     for k in order:
         grid, assignment = grids[k], block_assignments[k]
         name = _block_name(assignment, block_names)
+        if assignment.get("default_named") and grid.confidence < opts["hold_back_below"]:
+            # Item 10 / 3.4: weak evidence (irregular, half-empty grid) and no
+            # labels: offered in the editor instead of put in the template
+            suggested_blocks.append(
+                {
+                    "name": name,
+                    "block": _block_template(grid, assignment, bubble_dims),
+                    "confidence": grid.confidence,
+                    "bbox": [round(v, 1) for v in grid.bbox()],
+                    "reason": f"irregular grid (confidence {grid.confidence}) and no labels",
+                }
+            )
+            continue
         grid_names[k] = name
         field_blocks[name] = _block_template(grid, assignment, bubble_dims)
         fit = boxes_mod.border_for_grid(grid, printed_boxes, grids)
@@ -999,8 +1019,12 @@ def generate_template(images, labels=None, options=None):
                 field_blocks[name]["rectifyOnBorder"] = True
             bordered.append(name)
         reasons = []
-        if assignment.get("default_named"):
-            reasons.append("labels and values guessed (no matching labels)")
+        if assignment.get("values_from_print"):
+            reasons.append(
+                f"field names guessed; values {''.join(assignment['values'])} read from the print"
+            )
+        elif assignment.get("default_named"):
+            reasons.append("labels and values guessed (no matching labels); values unverified")
         if assignment.get("value_completed") and not assignment.get("default_named"):
             reasons.append("some bubble values inferred, not observed in labels")
         if grid.confidence < 0.9:
@@ -1469,6 +1493,7 @@ def generate_template(images, labels=None, options=None):
         "naming": naming_report,
         "alignment": alignment,
         "needs_verification": verify,
+        "suggested_blocks": suggested_blocks,
         "timings_ms": timings,
     }
     return GenerationResult(

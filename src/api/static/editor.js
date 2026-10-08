@@ -1562,6 +1562,42 @@ export class TemplateEditor {
       );
     }
     box.append(renderWarnings(this, r.warnings)); // confirm-to-clear (generator_warnings.js)
+    // Weak detections the generator held back (irregular grid, no labels)
+    const held = ((this.detail && this.detail.report && this.detail.report.suggested_blocks) || []).filter((b) => !this.doc.fieldBlocks[b.name]);
+    if (held.length) {
+      add(
+        box,
+        el("h3", {}, `Suggested blocks (${held.length})`),
+        el("p", { class: "muted small" }, "Found with weak evidence, so left out of the template. Add the real ones."),
+        el(
+          "ul",
+          {},
+          held.map((b) =>
+            el(
+              "li",
+              { onclick: () => this.centerOn({ x: b.bbox[0], y: b.bbox[1], w: b.bbox[2], h: b.bbox[3] }) },
+              el("strong", {}, b.name + ": "),
+              b.reason,
+              " ",
+              el(
+                "button",
+                {
+                  class: "small",
+                  onclick: (event) => {
+                    event.stopPropagation();
+                    this.edit(() => (this.doc.fieldBlocks[b.name] = JSON.parse(JSON.stringify(b.block))));
+                    this.selected = { kind: "block", name: b.name };
+                    this.renderSide();
+                    this.draw();
+                  },
+                },
+                "Add as block"
+              )
+            )
+          )
+        )
+      );
+    }
     return box;
   }
 
