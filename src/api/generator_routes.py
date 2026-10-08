@@ -6,6 +6,7 @@ form at pageDimensions). The routes only look at the template's own reference
 image and the sample sheets saved when the draft was generated.
 
 - POST /templates/{id}/generator/find-track      {box}          -> track marks
+- GET  /templates/{id}/generator/printed-boxes  -> printed rectangles
 - POST /templates/{id}/generator/find-mark       {point | box}  -> index point
 - POST /templates/{id}/generator/adopt-box       {box}          -> field block
 - POST /templates/{id}/generator/test-alignment  {}             -> per-sample result
@@ -97,6 +98,19 @@ def register(app, ctx, secured, decode_image):
             raise HTTPException(422, "No row of solid marks found inside the box")
         track.pop("boxes", None)
         return track
+
+    @app.get(
+        "/templates/{template_id}/generator/printed-boxes",
+        tags=["templates"],
+        dependencies=secured,
+    )
+    def printed_boxes(template_id: str):
+        """Rectangles printed on the reference sheet (block border candidates)."""
+        from src.template_gen import boxes
+
+        gray, size = reference(template_id)
+        found = boxes.detect_printed_boxes(gray, size, min_area=0.0005)
+        return {"boxes": [[int(v) for v in box] for box in found], "page_size": list(size)}
 
     @app.post(
         "/templates/{template_id}/generator/find-mark",

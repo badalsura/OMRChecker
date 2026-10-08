@@ -89,6 +89,7 @@ CONFIG_SCHEMA = {
                             "possible_missed_mark",
                             "model_disagrees",
                             "rectify_failed",
+                            "border_slide",
                         ],
                     },
                 },

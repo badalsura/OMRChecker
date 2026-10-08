@@ -80,6 +80,8 @@ CONFIG_DEFAULTS = DotMap(
                 "weak_mark",
                 "possible_missed_mark",
                 "model_disagrees",
+                # A printed border would have moved the block by 0.4+ pitch
+                "border_slide",
             ],
         },
         "ml_params": {

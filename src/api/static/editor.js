@@ -9,6 +9,7 @@ import { openScoring } from "./scoring.js";
 import { renameTemplate } from "./template_ops.js";
 import { alignmentPick, drawAlignment, renderAlignmentPanel } from "./editor_tracks.js";
 import { renderWarnings } from "./generator_warnings.js";
+import { drawBorders, pickBorder, startBorderPick } from "./editor_borders.js";
 import { patternControl, renderChecks, renderValidation } from "./editor_checks.js";
 import * as groups from "./editor_groups.js";
 import { help } from "./editor_help.js";
@@ -407,6 +408,7 @@ export class TemplateEditor {
       if (isSel) this.drawHandles(o);
     }
     drawAlignment(this); // timing tracks and index points (editor_tracks.js)
+    drawBorders(this); // printed boxes while picking a block border
     // alignment guides
     ctx.strokeStyle = "#ff2d95";
     ctx.lineWidth = 1;
@@ -608,6 +610,10 @@ export class TemplateEditor {
       const b = this.rubber;
       this.rubber = null;
       const rect = { x: Math.round(Math.min(b.x0, b.x1)), y: Math.round(Math.min(b.y0, b.y1)), w: Math.round(Math.abs(b.x1 - b.x0)), h: Math.round(Math.abs(b.y1 - b.y0)) };
+      if (this.mode === "pick-border") {
+        pickBorder(this, [rect.x + rect.w / 2, rect.y + rect.h / 2]);
+        return;
+      }
       if (this.mode && this.mode.startsWith("align")) {
         alignmentPick(this, rect); // Alignment panel tools (editor_tracks.js)
         this.draw();
@@ -1178,6 +1184,11 @@ export class TemplateEditor {
         raw.rectifyOnBorder === undefined ? "" : String(raw.rectifyOnBorder),
         [["", "config default (alignment_params.rectify_on_border)"], ["true", "on: snap bubbles onto the box printed around the block"], ["false", "off"]],
         (v) => set(() => (v === "" ? delete raw.rectifyOnBorder : (raw.rectifyOnBorder = v === "true")))
+      ),
+      el(
+        "button",
+        { class: "small", title: "Show the rectangles printed on the reference sheet and click the one around this block: the gap is measured for you", onclick: () => startBorderPick(this) },
+        "Pick printed border…"
       ),
       raw.rectifyOnBorder
         ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })

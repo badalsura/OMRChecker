@@ -577,7 +577,7 @@ class ImageInstanceOps:
                     len(detected_bubbles),
                     strip_low_confidence,
                     review_params,
-                    ["rectify_failed"] if field_block.name in rectify_failed else None,
+                    rectify_flags(field_block, rectify_failed),
                 )
 
                 if config.outputs.show_image_level >= 5:
@@ -1248,3 +1248,14 @@ class ImageInstanceOps:
     def reset_all_save_img(self):
         for i in range(self.save_image_level):
             self.save_img_list[i + 1] = []
+
+
+def rectify_flags(field_block, rectify_failed):
+    """Flags of a block whose border fit failed (border_slide: it would have
+    moved the bubbles by 0.4 of a pitch or more)."""
+    if field_block.name not in rectify_failed:
+        return None
+    flags = ["rectify_failed"]
+    if (getattr(field_block, "last_rectification", None) or {}).get("slide"):
+        flags.append("border_slide")
+    return flags

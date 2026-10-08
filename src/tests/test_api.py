@@ -556,6 +556,8 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
         assert response.json()["verified_items"] == ["q2: order"]
         response = client.post(verify, json={"undo": True})
         assert response.json()["verified_items"] == []
+        boxes = client.get(f"/templates/{tid}/generator/printed-boxes")
+        assert boxes.status_code == 200 and isinstance(boxes.json()["boxes"], list)
 
 
 def test_primary_key_duplicates(tmp_path, spec):
