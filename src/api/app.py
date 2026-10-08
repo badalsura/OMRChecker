@@ -731,6 +731,11 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         created_after: Optional[float] = Query(
             None, description="Only items queued after this server time ('now')"
         ),
+        order: str = Query(
+            "oldest",
+            pattern="^(oldest|risk)$",
+            description="risk: whole-sheet and check items before single fields",
+        ),
     ):
         # A little before the query, so an item committed meanwhile is not missed
         now = time.time() - 2
@@ -743,6 +748,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             limit=limit,
             offset=offset,
             created_after=created_after,
+            order=order,
         )
         results, items = {}, []
         for row in rows:

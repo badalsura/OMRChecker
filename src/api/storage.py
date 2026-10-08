@@ -269,6 +269,14 @@ def is_corrected(record):
     return bool(record.get("manual_values"))
 
 
+# Review order by risk: whole-sheet items (registration, orientation) first,
+# then failed checks and joined values, then zones, then single bubble fields
+RISK_ORDER = (
+    "CASE kind WHEN 'sheet' THEN 0 WHEN 'check' THEN 1 WHEN 'custom_label' THEN 2 "
+    "WHEN 'zone' THEN 3 ELSE 4 END, "
+)
+
+
 class ScanIndex:
     """Thread-safe SQLite index over scan results."""
 
@@ -467,6 +475,7 @@ class ScanIndex:
         offset=0,
         created_after=None,
         created_before=None,
+        order="oldest",
     ):
         where, params = self._filters(
             state="pending",
@@ -484,7 +493,9 @@ class ScanIndex:
             where += " AND created_at <= ?"
             params.append(created_before)
         items = self._query(
-            f"SELECT * FROM review_items {where} ORDER BY created_at, scan_id, name "
+            f"SELECT * FROM review_items {where} ORDER BY "
+            + (RISK_ORDER if order == "risk" else "")
+            + "created_at, scan_id, name "
             "LIMIT ? OFFSET ?",
             (*params, limit, offset),
         )

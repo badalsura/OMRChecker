@@ -669,6 +669,7 @@ function drawPane(pane, dpr) {
     return;
   }
   if (r.align && pane.kind === "original") drawAlignClicks(px);
+  if (pane.kind === "original" && r.borders) drawPageOutline(px);
   if (!r.data) return;
   const geo = geometryFor(pane.kind);
   if (!geo) return;
@@ -900,6 +901,7 @@ function renderSide() {
   side.append(
     el("div", { class: "res-head" }, el("strong", { class: "res-file", title: d.source_path || "" }, d.file_id || d.scan_id), el("div", { class: "row gap wrap" }, chip(d.status, d.status), d.corrected ? el("span", { class: "chip corrected" }, "corrected") : null, verified ? el("span", { class: "chip ok" }, `verified by ${verified.by}`) : el("span", { class: "chip" }, "not verified"), d.score !== null && d.score !== undefined ? el("span", { class: "chip" }, `score ${d.score}`) : null)),
     el("div", { class: "muted small res-path" }, d.resolved_path || d.source_path || ""),
+    registrationSummary(d),
     (d.duplicates || []).length
       ? el(
           "div",
@@ -1164,6 +1166,40 @@ async function alignClick(p) {
     renderSide();
     draw();
   }
+}
+
+// Registration view: the aligned page's outline on the original scan
+function drawPageOutline(px) {
+  const entry = viewEntry("original");
+  const q = entry && entry.meta && entry.meta.map && entry.meta.map.page;
+  if (!q) return;
+  ctx2d.strokeStyle = "#1478dc";
+  ctx2d.lineWidth = 2 * px;
+  ctx2d.setLineDash([10 * px, 6 * px]);
+  path(q);
+  ctx2d.stroke();
+  ctx2d.setLineDash([]);
+  // The page's top-left corner, so a sheet read upside down is obvious
+  ctx2d.fillStyle = "#1478dc";
+  ctx2d.beginPath();
+  ctx2d.arc(q[0][0], q[0][1], 7 * px, 0, Math.PI * 2);
+  ctx2d.fill();
+  label("top-left", q[0][0] + 10 * px, q[0][1] + 16 * px, px, "#1478dc");
+}
+
+function registrationSummary(d) {
+  const g = d.geometry;
+  if (!g && !d.manual_alignment) return "";
+  const parts = [];
+  const method = (g && g.alignment_method) || "";
+  if (d.manual_alignment) parts.push(`aligned by hand (${d.manual_alignment.kind === "index" ? "index points" : "page corners"})`);
+  else if (method) parts.push(String(method).replace(/_/g, " "));
+  if (g && g.rotation) parts.push(`turned ${g.rotation}°`);
+  if (g && g.residual !== null && g.residual !== undefined) parts.push(`residual ${Number(g.residual).toFixed(2)} px`);
+  const points = (g && g.index_points) || [];
+  if (points.length) parts.push(`index points ${points.filter((p) => p.found).length}/${points.length} found`);
+  if (!parts.length) return "";
+  return el("div", { class: "muted small", title: "How the page was registered. Turn on block borders and the Original view to see the page outline on the scan." }, `Registration: ${parts.join(" · ")}`);
 }
 
 function drawAlignClicks(px) {

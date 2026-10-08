@@ -146,6 +146,11 @@ def map_overlay(result, geometry):
         blocks[name]["corners"] = [
             [round(x, 1), round(y, 1)] for x, y in mapped[start : start + 4]
         ]
+    # Registration view: where the aligned page sits on the original
+    size = geometry.get("aligned_size")
+    if size and result.get("geometry"):
+        page = map_points(geometry, _quad([0, 0, size[0] - 1, size[1] - 1]), "aligned_to_source")
+        out["page"] = [[round(x, 1), round(y, 1)] for x, y in page]
     return out
 
 
