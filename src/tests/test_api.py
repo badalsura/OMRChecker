@@ -770,5 +770,14 @@ def test_single_uploads_grouped_by_exam(tmp_path, spec):
         assert job["state"] == "completed" and job["processed_files"] == 2
         listed = client.get(f"/scans?job_id={first['job_id']}").json()
         assert listed["total"] == 2
+        assert job.get("label") is None
+        response = client.post(
+            "/scans",
+            data={"template_id": template_id, "batch": "Science Olympiad", "batch_label": "Teacher  uploads"},
+            files=[("files", ("Roll 17.png", png_bytes(sheets[0][0]), "image/png"))],
+        ).json()
+        assert response["job_id"] == first["job_id"] and response["scans"][0]["file_name"] == "Roll_17.png"
+        assert client.get(f"/jobs/{first['job_id']}").json()["label"] == "Teacher uploads"
+        assert client.patch(f"/jobs/{first['job_id']}", json={"label": "Phones"}).json()["label"] == "Phones"
         assert client.delete(f"/jobs/{first['job_id']}").status_code == 200
         assert client.get("/scans").json()["total"] == 1

@@ -596,6 +596,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "and template are collected in one job (review, results and export "
             "per exam)",
         ),
+        batch_label: Optional[str] = Form(
+            None,
+            max_length=60,
+            description="How the exam's source is shown in the Jobs tab "
+            "(default 'camera / single uploads')",
+        ),
     ):
         """Read sheets synchronously. Use /jobs for large batches."""
         require_template(template_id)
@@ -611,7 +617,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         stored = []
         job_id, first_seq = None, 0
         if batch and batch.strip():
-            job_id = ctx.jobs.batch_job(template_id, batch)["id"]
+            job_id = ctx.jobs.batch_job(template_id, batch, batch_label)["id"]
             first_seq = ctx.jobs.reserve_batch(job_id, len(files))
         version = archive_template_version(
             ctx.templates.path(template_id), ctx.data.template_versions, template_id

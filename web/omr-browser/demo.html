@@ -171,6 +171,8 @@
       <input type="text" id="templateId" placeholder="exam-2024">
       <label for="batchName">Exam / olympiad</label>
       <input type="text" id="batchName" placeholder="e.g. Science Olympiad 2026 (optional)" maxlength="120">
+      <label for="batchLabel">Source label for the exam</label>
+      <input type="text" id="batchLabel" placeholder="camera / single uploads" maxlength="60">
       <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue. Sheets sent with the same exam name are grouped together there, as one job.</p>
     </section>
   </div>
@@ -189,6 +191,7 @@
       <ul class="review" id="reviewList"></ul>
       <div class="stage" id="stage" title="Tap to zoom"><canvas id="canvas"></canvas></div>
       <div class="toolbar">
+        <input type="text" id="sheetName" placeholder="Sheet name" maxlength="120" title="Name of this sheet on the server (e.g. the student's roll number); empty keeps the file name">
         <button class="primary" id="sendBtn" disabled>Send to server for review</button>
         <button id="jsonBtn">Download JSON</button>
       </div>
@@ -213,7 +216,7 @@
 
   function store(key, value) { try { localStorage.setItem("omr-demo:" + key, value); } catch (e) { /* storage blocked */ } }
   function recall(key) { try { return localStorage.getItem("omr-demo:" + key); } catch (e) { return null; } }
-  ["apiBase", "apiKey", "templateId", "templateUrl", "assetsUrl", "batchName"].forEach(function (id) {
+  ["apiBase", "apiKey", "templateId", "templateUrl", "assetsUrl", "batchName", "batchLabel"].forEach(function (id) {
     var saved = params.get(id) || recall(id);
     if (saved) $(id).value = saved;
     $(id).addEventListener("change", function () { store(id, $(id).value.trim()); });
@@ -613,6 +616,9 @@
   // ---- result ------------------------------------------------------------
   function showResult(result) {
     state.lastResult = result;
+    // A new sheet: its name starts empty (the photo's name is the default)
+    $("sheetName").value = "";
+    $("sheetName").placeholder = "Sheet name (default " + (state.lastName || "sheet.jpg") + ")";
     var badge = $("statusBadge");
     badge.className = "badge " + result.status;
     badge.textContent = result.status === "ok" ? "OK" : result.status === "needs_review" ? "Needs review" : "Error";
@@ -677,14 +683,25 @@
   });
 
   // POST /scans (multipart: template_id + files) on the Python API
+  // The name typed for this sheet (an extension is added from the photo's), or
+  // the photo's own file name
+  function sheetFileName() {
+    var typed = $("sheetName").value.trim().replace(/[\\/:*?"<>|]+/g, "-");
+    var own = state.lastName || "sheet.jpg";
+    if (!typed) return own;
+    var ext = (own.match(/\.[a-z0-9]{2,4}$/i) || [".jpg"])[0];
+    return /\.[a-z0-9]{2,4}$/i.test(typed) ? typed : typed + ext;
+  }
   $("sendBtn").addEventListener("click", function () {
     var base = apiBase(), id = $("templateId").value.trim();
     if (!base || !id || !state.lastBlob) return;
     var form = new FormData();
     form.append("template_id", id);
-    form.append("files", state.lastBlob, state.lastName || "sheet.jpg");
+    form.append("files", state.lastBlob, sheetFileName());
     var batch = $("batchName").value.trim();
     if (batch) form.append("batch", batch);
+    var label = $("batchLabel").value.trim();
+    if (batch && label) form.append("batch_label", label);
     message($("sendMsg"), "Uploading…");
     $("sendBtn").disabled = true;
     fetch(base + "/scans", { method: "POST", body: form, headers: apiHeaders() }).then(function (r) {

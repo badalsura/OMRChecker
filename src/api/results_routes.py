@@ -390,16 +390,19 @@ def register(app, ctx, secured):
 
     @app.patch("/jobs/{job_id}", tags=["jobs"], dependencies=secured)
     def patch_job(job_id: str, body: Dict[str, Any] = Body(...)):
-        """Edit a job's name or path_remap ([{"from": ..., "to": ...}])."""
+        """Edit a job's name, label (how its source is shown) or path_remap
+        ([{"from": ..., "to": ...}])."""
         changes = {}
         if "name" in body:
             changes["name"] = str(body["name"] or "")
+        if "label" in body:
+            changes["label"] = " ".join(str(body["label"] or "").split())[:60] or None
         if "path_remap" in body:
             try:
                 changes["path_remap"] = clean_rules(body["path_remap"])
             except ResultsError as error:
                 fail(error)
-        unknown = set(body) - {"name", "path_remap"}
+        unknown = set(body) - {"name", "label", "path_remap"}
         if unknown:
             raise HTTPException(422, f"Cannot change: {', '.join(sorted(unknown))}")
         job = ctx.jobs.update(job_id, changes) if job_id.isalnum() else None

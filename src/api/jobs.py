@@ -211,10 +211,13 @@ class JobManager:
         return job
 
     # ---- batches: single uploads (phone photos) grouped by exam ----------
-    def batch_job(self, template_id, name):
+    def batch_job(self, template_id, name, label=None):
         """The job collecting single uploads called name for this template (an
         exam or olympiad), created on first use. It is never run: sheets are
-        read as they arrive and recorded with reserve_batch / finish_batch."""
+        read as they arrive and recorded with reserve_batch / finish_batch.
+        label: how the job's source is shown (default "camera / single uploads");
+        a new label given later replaces the old one."""
+        label = " ".join((label or "").split()) or None
         name = " ".join(name.split())
         key = (template_id, name.lower())
         with self.lock:
@@ -250,7 +253,11 @@ class JobManager:
                     "started_at": now,
                     "finished_at": now,
                     "throughput_per_s": None,
+                    "label": label,
                 }
+                self._save(job)
+            elif label and job.get("label") != label:
+                job["label"] = label
                 self._save(job)
             self.batch_ids[key] = job["id"]
             return job
