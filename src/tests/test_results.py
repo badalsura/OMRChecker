@@ -341,6 +341,29 @@ def test_regrade_preview_and_apply(tmp_path, spec):
         assert bad.status_code == 422
 
 
+def test_regrade_turns_an_upside_down_sheet(tmp_path, spec):
+    """alignment.rotate turns the sheet before reading; the replay follows it."""
+    image, truth = sheet(spec, 31)
+    upside_down = cv2.rotate(image, cv2.ROTATE_180)
+    questions = [f"q{i}" for i in range(1, 21)]
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, upside_down)["scan_id"]
+        overrides = {"alignment": {"rotate": 180}}
+        client.post(
+            f"/scans/{scan_id}/regrade",
+            json={"template_overrides": overrides, "apply": True},
+        )
+        stored = client.get(f"/scans/{scan_id}").json()
+        read = [stored["responses"][q] for q in questions]
+        assert read == [truth["answers"][q] for q in questions]
+        steps = stored["geometry"]["steps"]
+        assert steps[0]["op"] == "warp" and steps[0]["affine"] is True
+        # The stored geometry replays the turn
+        client.app.state.ctx.results.renders.items.clear()
+        assert client.get(f"/scans/{scan_id}/render").status_code == 200
+
+
 def test_queue_review_is_audited(tmp_path, spec):
     image, _ = sheet(spec, 40, q3="AC")
     with make_client(tmp_path) as client:

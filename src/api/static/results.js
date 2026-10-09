@@ -1219,7 +1219,8 @@ function registrationSummary(d) {
   if (d.manual_alignment) parts.push(`aligned by hand (${d.manual_alignment.kind === "index" ? "index points" : "page corners"})`);
   else if (method) parts.push(String(method).replace(/_/g, " "));
   if (g && g.rotation) parts.push(`turned ${g.rotation}°`);
-  if (g && g.residual !== null && g.residual !== undefined) parts.push(`residual ${Number(g.residual).toFixed(2)} px`);
+  const residual = g && g.residual && typeof g.residual === "object" ? g.residual.page : g && g.residual;
+  if (residual !== null && residual !== undefined && Number.isFinite(Number(residual))) parts.push(`residual ${Number(residual).toFixed(2)} px`);
   const points = (g && g.index_points) || [];
   if (points.length) parts.push(`index points ${points.filter((p) => p.found).length}/${points.length} found`);
   if (!parts.length) return "";
@@ -1325,11 +1326,88 @@ function deleteScan() {
 
 const REGRADE_EXAMPLE = '{"colorDropout": {"enabled": false}}';
 
+// The main settings a sheet is usually re-read with; anything else goes in
+// the JSON boxes under Advanced. "t": template override, "c": config override
+const ON_OFF = [[true, "On"], [false, "Off"]];
+const REGRADE_OPTIONS = [
+  { label: "Turn the sheet", where: "t", path: ["alignment", "rotate"], choices: [[90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]], unset: "As scanned" },
+  { label: "Colour removal", where: "t", path: ["colorDropout"], choices: [["grey", "Plain grey"], ["red", "Red channel (removes red print)"], ["green", "Green channel"], ["blue", "Blue channel"], ["max", "Brightest channel (removes any colour)"]] },
+  { label: "Bubble threshold", where: "c", path: ["threshold_params", "mode"], choices: [["adaptive", "Adaptive (per sheet)"], ["fixed", "Fixed level"]] },
+  { label: "Fixed level (0–255)", where: "c", path: ["threshold_params", "fixed_threshold"], number: { min: 1, max: 254, placeholder: "120" } },
+  { label: "Mark sensitivity (lower counts fainter marks)", where: "c", path: ["threshold_params", "MIN_JUMP"], number: { min: 1, max: 255, placeholder: "25" } },
+  { label: "Even out shadows", where: "c", path: ["threshold_params", "flatten_background"], choices: ON_OFF },
+  { label: "Find the page outline (phone photos)", where: "t", path: ["alignment", "page_outline"], choices: ON_OFF },
+  { label: "Fit blocks to their printed borders", where: "t", path: ["alignment", "rectify_on_border"], choices: ON_OFF },
+  { label: "Per-block perspective", where: "t", path: ["alignment", "block_perspective"], choices: ON_OFF },
+];
+
+function pathGet(obj, path) {
+  return path.reduce((o, k) => (o && typeof o === "object" ? o[k] : undefined), obj);
+}
+
+function pathSet(obj, path, value) {
+  let o = obj;
+  path.slice(0, -1).forEach((k) => {
+    if (!o[k] || typeof o[k] !== "object") o[k] = {};
+    o = o[k];
+  });
+  o[path[path.length - 1]] = value;
+}
+
+function pathDelete(obj, path) {
+  const parents = [obj];
+  for (const k of path.slice(0, -1)) {
+    const next = parents[parents.length - 1][k];
+    if (!next || typeof next !== "object") return;
+    parents.push(next);
+  }
+  delete parents[parents.length - 1][path[path.length - 1]];
+  // Drop the objects the removal left empty
+  for (let i = parents.length - 1; i > 0; i--) {
+    if (Object.keys(parents[i]).length) break;
+    delete parents[i - 1][path[i - 1]];
+  }
+}
+
+function deepMerge(base, extra) {
+  const out = { ...base };
+  Object.entries(extra || {}).forEach(([k, v]) => {
+    out[k] = v && typeof v === "object" && !Array.isArray(v) && out[k] && typeof out[k] === "object" ? deepMerge(out[k], v) : v;
+  });
+  return out;
+}
+
 function showRegrade() {
   if (!r.data) return;
   const last = r.data.regrade || {};
-  const templateBox = el("textarea", { rows: 5, placeholder: REGRADE_EXAMPLE }, Object.keys(last.template_overrides || {}).length ? JSON.stringify(last.template_overrides, null, 1) : "");
-  const configBox = el("textarea", { rows: 3, placeholder: '{"threshold_params": {"MIN_JUMP": 30}}' }, Object.keys(last.config_overrides || {}).length ? JSON.stringify(last.config_overrides, null, 1) : "");
+  // Settings the controls show come out of the JSON boxes
+  const rest = { t: JSON.parse(JSON.stringify(last.template_overrides || {})), c: JSON.parse(JSON.stringify(last.config_overrides || {})) };
+  const controls = REGRADE_OPTIONS.map((option) => {
+    const value = pathGet(rest[option.where], option.path);
+    const known = option.number ? typeof value === "number" : option.choices.some(([v]) => v === value);
+    if (value !== undefined && known) pathDelete(rest[option.where], option.path);
+    const current = known ? value : undefined;
+    let input;
+    if (option.number) {
+      input = el("input", { type: "number", min: option.number.min, max: option.number.max, placeholder: `template setting (${option.number.placeholder})`, value: current === undefined ? "" : String(current) });
+    } else {
+      input = el("select", {}, el("option", { value: "" }, option.unset || "Template setting"), option.choices.map(([v, text]) => el("option", { value: JSON.stringify(v) }, text)));
+      input.value = current === undefined ? "" : JSON.stringify(current);
+    }
+    return { option, input };
+  });
+  const read = () => {
+    const out = { t: {}, c: {} };
+    controls.forEach(({ option, input }) => {
+      const text = input.value.trim();
+      if (text === "") return;
+      pathSet(out[option.where], option.path, option.number ? Number(text) : JSON.parse(text));
+    });
+    return out;
+  };
+  const jsonText = (obj) => (Object.keys(obj).length ? JSON.stringify(obj, null, 1) : "");
+  const templateBox = el("textarea", { rows: 5, placeholder: REGRADE_EXAMPLE }, jsonText(rest.t));
+  const configBox = el("textarea", { rows: 3, placeholder: '{"review_params": {"min_confidence": 0.3}}' }, jsonText(rest.c));
   const keep = el("input", { type: "checkbox", checked: true });
   const current = el("input", { type: "checkbox" });
   const result = el("div", { class: "small" });
@@ -1341,7 +1419,9 @@ function showRegrade() {
   const run = async (apply) => {
     let body;
     try {
-      body = { template_overrides: parse(templateBox), config_overrides: parse(configBox), apply, keep_corrections: keep.checked, use_current_template: current.checked };
+      const chosen = read();
+      // Advanced JSON wins over the controls where both set a value
+      body = { template_overrides: deepMerge(chosen.t, parse(templateBox)), config_overrides: deepMerge(chosen.c, parse(configBox)), apply, keep_corrections: keep.checked, use_current_template: current.checked };
     } catch (e) {
       toast(`Invalid JSON: ${e.message}`, "error");
       return;
@@ -1368,14 +1448,23 @@ function showRegrade() {
       toast(error.message, "error", 6000);
     }
   };
+  const advanced = el(
+    "details",
+    { class: "regrade-advanced" },
+    el("summary", {}, "Advanced (JSON overrides)"),
+    el("p", { class: "muted small" }, "Deep-merged into the template or the config; a value here wins over the controls above."),
+    el("label", { class: "field" }, "Template overrides (JSON)", templateBox),
+    el("label", { class: "field" }, "Config overrides (JSON)", configBox)
+  );
+  if (Object.keys(rest.t).length || Object.keys(rest.c).length) advanced.open = true;
   const dialog = modal(
     "Regrade this sheet",
     el(
       "div",
       {},
-      el("p", { class: "muted small" }, "Re-reads the original file with overrides deep-merged into the template (e.g. colour removal) or the config. Preview first; Apply replaces the stored read (the old one is kept in the history) and re-applies your corrections."),
-      el("label", { class: "field" }, "Template overrides (JSON)", templateBox),
-      el("label", { class: "field" }, "Config overrides (JSON)", configBox),
+      el("p", { class: "muted small" }, "Re-reads the original file with these settings. Preview first; Apply replaces the stored read (the old one is kept in the history) and re-applies your corrections."),
+      el("div", { class: "regrade-grid" }, controls.map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
+      advanced,
       el("label", { class: "small" }, keep, " keep my corrections"),
       " ",
       el("label", { class: "small" }, current, " use the current template version"),

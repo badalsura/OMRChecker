@@ -67,6 +67,8 @@ ALIGNMENT_SCHEMA = {
         "block_perspective": {"type": "boolean"},
         "page_outline": {"type": "boolean"},
         "verify_bubble_fit": {"type": "boolean"},
+        # Turn every sheet clockwise by this many degrees before reading
+        "rotate": {"enum": [0, 90, 180, 270]},
     },
 }
 

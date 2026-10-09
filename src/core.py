@@ -81,13 +81,41 @@ class ImageInstanceOps:
         flat, matrix, size = flatten_page(image, outline)
         recorder = self.geometry_recorder
         if recorder is not None:
+            # The outline is stored in source pixels: undo earlier steps (a turn)
+            back = np.linalg.inv(recorder.page_homography())
+            source = cv2.perspectiveTransform(
+                np.asarray(outline, np.float64).reshape(-1, 1, 2), back
+            ).reshape(-1, 2)
             recorder.warp(matrix, size)
             recorder.info["page_outline"] = [
-                [round(float(x), 2), round(float(y), 2)] for x, y in outline
+                [round(float(x), 2), round(float(y), 2)] for x, y in source
             ]
         for key in list(companions or {}):
             companions[key] = ImageUtils.four_point_transform(companions[key], outline)
         return flat
+
+    TURNS = {
+        90: cv2.ROTATE_90_CLOCKWISE,
+        180: cv2.ROTATE_180,
+        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    }
+
+    def turn_sheet(self, image, degrees, companions=None):
+        """Turn a sheet fed in sideways or upside down (alignment "rotate")."""
+        h, w = image.shape[:2]
+        # source px -> turned px, so stored geometry replays the turn
+        matrix = {
+            90: [[0, -1, h - 1], [1, 0, 0]],
+            180: [[-1, 0, w - 1], [0, -1, h - 1]],
+            270: [[0, 1, 0], [-1, 0, w - 1]],
+        }[degrees]
+        turned = cv2.rotate(image, self.TURNS[degrees])
+        recorder = self.geometry_recorder
+        if recorder is not None:
+            recorder.warp(matrix, (turned.shape[1], turned.shape[0]), affine=True)
+        for key in list(companions or {}):
+            companions[key] = cv2.rotate(companions[key], self.TURNS[degrees])
+        return turned
 
     def apply_preprocessors(self, file_path, in_omr, template, companions=None):
         """
@@ -98,6 +126,9 @@ class ImageInstanceOps:
         tuning_config = self.tuning_config
         pre_processors = template.pre_processors
         recorder = self.geometry_recorder
+        turn = int(self.alignment_option(template, "rotate", 0) or 0) % 360
+        if turn:
+            in_omr = self.turn_sheet(in_omr, turn, companions)
         if self.alignment_option(template, "page_outline", False):
             in_omr = self.flatten_page_outline(in_omr, companions, file_path)
         # resize to conform to template, unless registration works on the original
