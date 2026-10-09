@@ -249,13 +249,20 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
   if (!quiet) statusLine.textContent = "Rendering…";
   r.preview = null;
   if (!keepView) r.views = {};
+  r.opening = scanId;
   try {
     const data = await api(`/scans/${scanId}/render`);
     const image = await loadImage(fresh(data.image_url));
+    // Stepped on before this sheet arrived: the newer sheet wins
+    if (r.opening !== scanId) return;
     const sameSize = r.image && r.image.naturalWidth === image.naturalWidth && r.image.naturalHeight === image.naturalHeight;
+    const sheetChanged = !r.data || r.data.scan_id !== data.scan_id;
     r.data = data;
     r.image = image;
-    if (!r.selected || !findItem(r.selected)) r.selected = null;
+    // On another sheet the selection carries over only to a field that needs a
+    // look there too; otherwise the last sheet's highlight would follow along
+    const kept = r.selected && findItem(r.selected);
+    if (!kept || (sheetChanged && !kept.flagged && !kept.pending)) r.selected = null;
     if (!keepView && !sameSize) fit();
     renderList();
     renderSide();
@@ -263,6 +270,7 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
     loadViews();
     prefetch();
   } catch (error) {
+    if (r.opening !== scanId) return;
     // Show the values even when no image can be produced
     try {
       r.data = await api(`/scans/${scanId}/overlay`);
@@ -281,8 +289,10 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
       toast(error.message, "error", 6000);
     }
   } finally {
-    r.busy = false;
-    updateStatus();
+    if (r.opening === scanId) {
+      r.busy = false;
+      updateStatus();
+    }
   }
 }
 
@@ -301,14 +311,23 @@ function findItem(name) {
 }
 
 function applyPayload(data) {
-  const keep = { image_url: r.data.image_url, width: r.data.width, height: r.data.height, image_source: r.data.image_source, warnings: r.data.warnings, drift: r.data.drift, resolved_path: r.data.resolved_path };
-  r.data = Object.assign(data, keep);
   const item = r.items.find((i) => i.id === data.scan_id);
   if (item) {
     item.verified = data.verified ? 1 : 0;
     item.corrected = data.corrected ? 1 : 0;
     item.status = data.status;
   }
+  // The answer to a correction made on a sheet the user has since left: only
+  // its list row is updated, never the sheet now on screen
+  if (!r.data || r.data.scan_id !== data.scan_id) {
+    renderList();
+    return;
+  }
+  const keep = { image_url: r.data.image_url, width: r.data.width, height: r.data.height, image_source: r.data.image_source, warnings: r.data.warnings, drift: r.data.drift, resolved_path: r.data.resolved_path };
+  r.data = Object.assign(data, keep);
+  // An accepted item is done: drop its highlight
+  const selected = r.selected && findItem(r.selected);
+  if (selected && !selected.flagged && !selected.pending) r.selected = null;
   renderList();
   renderSide();
   draw();
@@ -317,7 +336,8 @@ function applyPayload(data) {
 async function correct(body) {
   if (!r.data || r.preview) return;
   try {
-    const data = await api(`/scans/${r.data.scan_id}/corrections`, { method: "POST", json: body });
+    const scanId = r.data.scan_id;
+    const data = await api(`/scans/${scanId}/corrections`, { method: "POST", json: body });
     applyPayload(data);
     emit("review-changed");
     return true;
@@ -854,7 +874,7 @@ function valueInput(item) {
 }
 
 function acceptButton(item) {
-  if (!item.pending || r.preview) return null;
+  if (!(item.pending || (item.acceptAlso || []).length) || r.preview) return null;
   return el(
     "button",
     {
@@ -863,7 +883,8 @@ function acceptButton(item) {
       onclick: (e) => {
         e.preventDefault();
         e.stopPropagation();
-        correct({ accept: [item.check || item.name] });
+        // A grouped value settles its columns too
+        correct({ accept: [item.check || item.name, ...(item.acceptAlso || [])] });
       },
     },
     "Accept"
@@ -938,7 +959,7 @@ function renderSide() {
       joined.addEventListener("keyup", (e) => {
         if (e.key === " ") e.preventDefault();
       });
-      const head = el("summary", { class: `res-row group${output.flagged ? " flagged" : ""}${output.corrected ? " corrected" : ""}`, "data-names": [output.name, ...output.parts].join("\n") }, el("span", { class: "res-name" }, output.name), joined, el("span", { class: "conf", style: { background: confidenceColor(output.confidence) } }, confText(output.confidence)), el("div", { class: "res-flags" }, acceptButton(output), (output.flags || []).map((f) => chip(f, "flag")), (output.reasons || []).length ? el("span", { class: "muted small res-reasons" }, output.reasons.join("; ")) : null));
+      const head = el("summary", { class: `res-row group${output.flagged ? " flagged" : ""}${output.corrected ? " corrected" : ""}`, "data-names": [output.name, ...output.parts].join("\n") }, el("span", { class: "res-name" }, output.name), joined, el("span", { class: "conf", style: { background: confidenceColor(output.confidence) } }, confText(output.confidence)), el("div", { class: "res-flags" }, acceptButton({ ...output, acceptAlso: parts.filter((p) => p.pending || p.flagged).map((p) => p.name) }), (output.flags || []).map((f) => chip(f, "flag")), (output.reasons || []).length ? el("span", { class: "muted small res-reasons" }, output.reasons.join("; ")) : null));
       const details = el("details", { class: "res-group" }, head, parts.map((p) => itemRow(p, true)));
       if (parts.some((p) => (p.group_flags || []).length)) head.classList.add("group-flagged");
       if (output.flagged || output.corrected || head.classList.contains("group-flagged")) details.open = true;

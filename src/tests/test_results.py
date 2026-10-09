@@ -521,6 +521,15 @@ def test_corrections_rerun_template_rules(tmp_path, spec):
         assert reviewed["review"] == [] and reviewed["status"] == "ok"
         assert client.get("/review", params={"scan_id": scan_id}).json()["total"] == 0
 
+        # Accepting a group from Results settles its columns with it
+        body = client.post(
+            f"/scans/{scan_id}/corrections",
+            json={"accept": ["RollNo", "roll1", "roll2", "roll3", "roll4"]},
+        ).json()
+        assert body["pending"] == [] and body["status"] == "ok"
+        stored = client.get(f"/scans/{scan_id}").json()["fields"]
+        assert all(stored[f"roll{i}"]["reviewed"] for i in range(1, 5))
+
         # Exports carry the rule outputs as corrected
         record = client.post(
             "/exports",
