@@ -7,10 +7,8 @@ const sheets = []; // {id, file, name, state, result, error}
 let selected = null;
 let running = 0;
 let counter = 0;
-// Sheets dropped here go into one new job per visit, "Uploads <date time>"
-const two = (n) => String(n).padStart(2, "0");
-const now = new Date();
-const SESSION_JOB = `Uploads ${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}:${two(now.getMinutes())}:${two(now.getSeconds())}`;
+// Sheets dropped here are collected in one job per template
+const DEFAULT_JOB = "Single uploads";
 
 export function initScan() {
   mountPdfOptions("scan-pdf", "scan");
@@ -100,7 +98,7 @@ async function readSheet(sheet) {
   const form = new FormData();
   form.append("template_id", sheet.templateId);
   form.append("files", sheet.file, sheet.name);
-  form.append("batch", SESSION_JOB);
+  form.append("batch", DEFAULT_JOB);
   form.append("batch_label", "uploads");
   appendPdfParams(form, "scan");
   const started = performance.now();

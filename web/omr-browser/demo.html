@@ -170,10 +170,10 @@
       <label for="templateId">Template id on the server</label>
       <input type="text" id="templateId" placeholder="exam-2024">
       <label for="batchName">Exam / olympiad</label>
-      <input type="text" id="batchName" placeholder="empty: a new job for this session" maxlength="120">
+      <input type="text" id="batchName" placeholder="empty: Camera / phone uploads" maxlength="120">
       <label for="batchLabel">Source label for the exam</label>
       <input type="text" id="batchLabel" placeholder="camera / single uploads" maxlength="60">
-      <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue. Sheets sent with the same exam name are grouped together there, as one job; with no name, each visit to this page gets its own new job ("Camera" plus the date and time).</p>
+      <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue. Sheets sent with the same exam name are grouped together there, as one job; with no name they go into the job "Camera / phone uploads".</p>
     </section>
   </div>
 
@@ -692,23 +692,14 @@
     var ext = (own.match(/\.[a-z0-9]{2,4}$/i) || [".jpg"])[0];
     return /\.[a-z0-9]{2,4}$/i.test(typed) ? typed : typed + ext;
   }
-  var sessionJob = null;
-  function sessionBatch() {
-    if (!sessionJob) {
-      var d = new Date(), two = function (n) { return (n < 10 ? "0" : "") + n; };
-      sessionJob = "Camera " + d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) +
-        " " + two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
-    }
-    return sessionJob;
-  }
   $("sendBtn").addEventListener("click", function () {
     var base = apiBase(), id = $("templateId").value.trim();
     if (!base || !id || !state.lastBlob) return;
     var form = new FormData();
     form.append("template_id", id);
     form.append("files", state.lastBlob, sheetFileName());
-    // No exam name: this page session's own new job ("Camera <date time>")
-    var batch = $("batchName").value.trim() || sessionBatch();
+    // No exam name: the template's default job for phone sheets
+    var batch = $("batchName").value.trim() || "Camera / phone uploads";
     form.append("batch", batch);
     var label = $("batchLabel").value.trim();
     if (batch && label) form.append("batch_label", label);
