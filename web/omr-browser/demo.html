@@ -122,7 +122,9 @@
         <label class="btn" style="margin-top:8px">Choose template.json<input type="file" id="templateFile" accept=".json,application/json"></label>
       </div>
       <div id="srcServer" class="hidden">
-        <p class="muted" style="margin:8px 0 0">Uses the server settings below and <code>GET /templates/{id}</code>.</p>
+        <label for="templatePick">Template on the server</label>
+        <div class="row"><select id="templatePick" style="flex:1"><option value="">(set the server below)</option></select> <button id="templateRefresh" title="Fetch the template list again">↻</button></div>
+        <p class="muted" style="margin:8px 0 0">Uses the server settings below.</p>
       </div>
       <div class="row" style="margin-top:10px"><button class="primary" id="loadTemplate">Load template</button></div>
       <dl class="kv" id="templateInfo"></dl>
@@ -253,6 +255,34 @@
   if (!$("apiKey").value) {
     try { $("apiKey").value = localStorage.getItem("omr_api_key") || ""; } catch (e) { /* storage blocked */ }
   }
+
+  // Template list from the server, for the "On the OMR server" source
+  function loadTemplateList() {
+    var pick = $("templatePick"), base = apiBase(), current = $("templateId").value.trim();
+    if (!base) return;
+    pick.innerHTML = "<option value=''>Loading…</option>";
+    fetchJson(base + "/templates", apiHeaders()).then(function (data) {
+      pick.innerHTML = "";
+      var list = data.templates || [];
+      pick.appendChild(new Option(list.length ? "Choose a template" : "No templates on the server", ""));
+      list.forEach(function (t) { pick.appendChild(new Option(t.name && t.name !== t.id ? t.name + " (" + t.id + ")" : t.id, t.id)); });
+      if (current && !list.some(function (t) { return t.id === current; })) pick.appendChild(new Option(current, current));
+      pick.value = current;
+    }).catch(function (e) {
+      pick.innerHTML = "";
+      pick.appendChild(new Option(/HTTP 401|HTTP 403/.test(e.message) ? "Enter the API key below" : "Could not reach the server", ""));
+    });
+  }
+  $("templatePick").addEventListener("change", function () {
+    var id = $("templatePick").value;
+    if (!id) return;
+    $("templateId").value = id;
+    store("templateId", id);
+    $("loadTemplate").click();
+  });
+  $("templateRefresh").addEventListener("click", loadTemplateList);
+  ["apiBase", "apiKey"].forEach(function (id) { $(id).addEventListener("change", loadTemplateList); });
+  $("templateId").addEventListener("change", function () { $("templatePick").value = $("templateId").value.trim(); });
 
   function fetchJson(url, headers) {
     return fetch(url, { headers: headers || {} }).then(function (r) {
@@ -651,6 +681,7 @@
     }).then(function () { $("sendBtn").disabled = false; });
   });
 
+  loadTemplateList();
   if (params.get("autoload") !== "0") $("loadTemplate").click();
 })();
 </script>
