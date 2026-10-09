@@ -17,6 +17,7 @@ const r = {
   view: { scale: 1, x: 0, y: 0 },
   overlay: true,
   selected: null, // field/zone name
+  scan: null, // {name, box} while a barcode/QR box is being drawn
   hover: null,
   busy: false,
   autoAdvance: safeStorage("get", "omr_res_advance") !== "0",
@@ -263,6 +264,7 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
     // look there too; otherwise the last sheet's highlight would follow along
     const kept = r.selected && findItem(r.selected);
     if (!kept || (sheetChanged && !kept.flagged && !kept.pending)) r.selected = null;
+    if (sheetChanged) r.scan = null;
     if (!keepView && !sameSize) fit();
     renderList();
     renderSide();
@@ -570,9 +572,23 @@ function hitTest(p) {
 function bindCanvas() {
   let drag = null;
   canvas.addEventListener("mousedown", (e) => {
+    if (r.scan) {
+      // Scanning a code: the drag draws the box instead of panning
+      const p = toImage(e.clientX, e.clientY);
+      drag = { scan: true, pane: p.pane };
+      r.scan.box = { kind: p.pane.kind, x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+      return;
+    }
     drag = { x: e.clientX, y: e.clientY, vx: r.view.x, vy: r.view.y, moved: false };
   });
   window.addEventListener("mousemove", (e) => {
+    if (drag && drag.scan) {
+      const p = toImage(e.clientX, e.clientY, drag.pane);
+      r.scan.box.x1 = p.x;
+      r.scan.box.y1 = p.y;
+      draw();
+      return;
+    }
     if (drag) {
       const dx = e.clientX - drag.x;
       const dy = e.clientY - drag.y;
@@ -587,7 +603,7 @@ function bindCanvas() {
     if (e.target !== canvas) return;
     const hit = hitTest(toImage(e.clientX, e.clientY));
     const key = hit ? (hit.bubble ? `${hit.field.name}/${hit.bubble.value}` : (hit.field || hit.zone).name) : null;
-    canvas.style.cursor = hit ? "pointer" : "grab";
+    canvas.style.cursor = r.scan ? "crosshair" : hit ? "pointer" : "grab";
     // The same key highlights the spot on every pane
     if (key !== r.hover) {
       r.hover = key;
@@ -599,6 +615,7 @@ function bindCanvas() {
   window.addEventListener("mouseup", (e) => {
     const was = drag;
     drag = null;
+    if (was && was.scan) return decodeBox();
     if (!was || was.moved || e.target !== canvas) return;
     if (r.align) return alignClick(toImage(e.clientX, e.clientY));
     const hit = hitTest(toImage(e.clientX, e.clientY));
@@ -691,6 +708,7 @@ function drawPane(pane, dpr) {
   }
   if (r.align && pane.kind === "original") drawAlignClicks(px);
   if (pane.kind === "original" && r.borders) drawPageOutline(px);
+  if (r.scan && r.scan.box && r.scan.box.kind === pane.kind) drawScanBox(r.scan.box, px);
   if (!r.data) return;
   const geo = geometryFor(pane.kind);
   if (!geo) return;
@@ -798,6 +816,7 @@ function updateStatus() {
     if (flags && flags.length) parts.push(flags.join("; "));
   }
   if (r.preview) parts.push("REGRADE PREVIEW (not saved)");
+  if (r.scan) parts.push(`SCAN ${r.scan.name}: drag a box around the code (Esc cancels)`);
   statusLine.textContent = parts.join("  ·  ");
 }
 
@@ -891,6 +910,84 @@ function acceptButton(item) {
   );
 }
 
+// Drag to scan: barcodes and QR codes can't be read by eye, so the reviewer
+// draws a box around the code and the server decodes the original there
+function scanButton(item) {
+  if (!["barcode", "qrcode"].includes(item.type) || r.preview) return null;
+  const active = r.scan && r.scan.name === item.name;
+  return el(
+    "button",
+    {
+      class: `small${active ? " primary" : ""}`,
+      title: "Drag a box around the code on the sheet to decode it",
+      onclick: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (active) return stopScan();
+        r.scan = { name: item.name, box: null };
+        canvas.style.cursor = "crosshair";
+        renderSide();
+        updateStatus();
+      },
+    },
+    active ? "Cancel scan" : "Scan"
+  );
+}
+
+function stopScan() {
+  r.scan = null;
+  canvas.style.cursor = "grab";
+  renderSide();
+  draw();
+  updateStatus();
+}
+
+function drawScanBox(box, px) {
+  ctx2d.save();
+  ctx2d.strokeStyle = "#e0218a";
+  ctx2d.lineWidth = 2 * px;
+  ctx2d.setLineDash([6 * px, 4 * px]);
+  ctx2d.strokeRect(Math.min(box.x0, box.x1), Math.min(box.y0, box.y1), Math.abs(box.x1 - box.x0), Math.abs(box.y1 - box.y0));
+  ctx2d.restore();
+}
+
+async function decodeBox() {
+  const scan = r.scan;
+  const box = scan && scan.box;
+  if (!box || !r.data) return;
+  const x = Math.min(box.x0, box.x1);
+  const y = Math.min(box.y0, box.y1);
+  const w = Math.abs(box.x1 - box.x0);
+  const h = Math.abs(box.y1 - box.y0);
+  if (w < 4 || h < 4) {
+    scan.box = null;
+    return draw();
+  }
+  const scanId = r.data.scan_id;
+  statusLine.textContent = "Decoding…";
+  try {
+    const found = await api(`/scans/${scanId}/decode`, { method: "POST", json: { box: [x, y, w, h], view: box.kind === "original" ? "original" : "aligned", zone: scan.name } });
+    if (!r.data || r.data.scan_id !== scanId || r.scan !== scan) return;
+    if (!found.value) {
+      scan.box = null;
+      draw();
+      updateStatus();
+      return toast("No code found in that box. Try a box with a little white around the code.", "error", 5000);
+    }
+    const others = (found.symbols || []).length - 1;
+    stopScan();
+    r.selected = scan.name;
+    if (await correct({ changes: { [scan.name]: found.value } })) {
+      toast(`${scan.name}: ${found.value}${found.format ? ` (${found.format})` : ""}${others > 0 ? ` · ${others} more code(s) in the box` : ""}`, "ok", 5000);
+    }
+  } catch (error) {
+    scan.box = null;
+    draw();
+    updateStatus();
+    toast(error.message, "error", 6000);
+  }
+}
+
 function itemRow(item, indent) {
   const label = item.kind === "check" ? "check" : item.kind === "custom_label" ? "label" : null;
   return el(
@@ -903,6 +1000,7 @@ function itemRow(item, indent) {
       "div",
       { class: "res-flags" },
       acceptButton(item),
+      scanButton(item),
       item.corrected ? el("span", { class: "chip corrected" }, `was ${item.original_value === "" || item.original_value === undefined ? "∅" : item.original_value}`) : null,
       (item.flags || []).map((f) => chip(f, "flag")),
       (item.group_flags || []).map((f) => el("span", { class: "chip group-flag", title: "Column of a grouped value that needs a look" }, f)),
@@ -1035,6 +1133,7 @@ function onKey(e) {
     return;
   }
   const k = e.key;
+  if (k === "Escape" && r.scan) return stopScan();
   if (k === "j" || k === "ArrowDown" || k === "ArrowRight") step(1);
   else if (k === "k" || k === "ArrowUp" || k === "ArrowLeft") step(-1);
   else if (k === "v" || (k === "Enter" && !e.target.matches("button"))) verify();

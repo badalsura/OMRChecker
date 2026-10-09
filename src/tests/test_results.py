@@ -364,6 +364,44 @@ def test_regrade_turns_an_upside_down_sheet(tmp_path, spec):
         assert client.get(f"/scans/{scan_id}/render").status_code == 200
 
 
+def test_decode_a_box_drawn_around_a_code(tmp_path, spec):
+    """Drag to scan: a box on the aligned page decodes the original there."""
+    image, _ = sheet(spec, 32)
+    if image.ndim == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    code = cv2.QRCodeEncoder.create().encode("ROLL-4521")
+    code = cv2.resize(code, None, fx=8, fy=8, interpolation=cv2.INTER_NEAREST)
+    code = cv2.copyMakeBorder(code, 32, 32, 32, 32, cv2.BORDER_CONSTANT, value=255)
+    h, w = image.shape[:2]
+    page = np.full((h, w + code.shape[1] + 40), 255, np.uint8)
+    page[:, :w] = image
+    page[40 : 40 + code.shape[0], w + 20 : w + 20 + code.shape[1]] = code
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, page)["scan_id"]
+        geometry = client.get(f"/scans/{scan_id}").json()["geometry"]
+        sx = geometry["aligned_size"][0] / page.shape[1]
+        sy = geometry["aligned_size"][1] / page.shape[0]
+        box = [(w + 10) * sx, 30 * sy, (code.shape[1] + 20) * sx, (code.shape[0] + 20) * sy]
+        found = client.post(f"/scans/{scan_id}/decode", json={"box": box}).json()
+        assert found["value"] == "ROLL-4521", found
+        # The same code in the original's pixels
+        box = [w + 10, 30, code.shape[1] + 20, code.shape[0] + 20]
+        found = client.post(
+            f"/scans/{scan_id}/decode", json={"box": box, "view": "original"}
+        ).json()
+        assert found["value"] == "ROLL-4521"
+        # Nothing there: no value, and nothing stored
+        empty = client.post(
+            f"/scans/{scan_id}/decode", json={"box": [5, 5, 40, 40], "view": "original"}
+        ).json()
+        assert empty["value"] == "" and "not_found" in empty["flags"]
+        response = client.post(
+            f"/scans/{scan_id}/decode", json={"box": box, "zone": "nope"}
+        )
+        assert response.status_code == 404
+
+
 def test_queue_review_is_audited(tmp_path, spec):
     image, _ = sheet(spec, 40, q3="AC")
     with make_client(tmp_path) as client:

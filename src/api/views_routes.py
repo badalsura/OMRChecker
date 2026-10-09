@@ -16,8 +16,13 @@ import hashlib
 import json
 
 import cv2
+from types import SimpleNamespace
+from typing import List, Optional
+
+import numpy as np
 from fastapi import HTTPException, Query
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from src.api.results import RenderCache, ResultsError
 from src.geometry import map_points, warp_to_aligned
@@ -155,6 +160,54 @@ def map_overlay(result, geometry):
     return out
 
 
+class DecodeBody(BaseModel):
+    box: List[float] = Field(
+        ..., min_length=4, max_length=4, description="[x, y, w, h] in the view's pixels"
+    )
+    view: str = Field(
+        "aligned", description="Pixels of: aligned (and color) or original"
+    )
+    zone: Optional[str] = Field(
+        None, description="The barcode/QR zone the box is for (picks QR or 1-D)"
+    )
+
+
+def decode_area(source, geometry, box, view, zone_type):
+    """Barcode/QR symbols in a box drawn on the aligned page or the original."""
+    from src.readers.barcode import read_barcode_zone
+
+    quad = _quad(box)
+    if view != "original":
+        quad = map_points(geometry, quad, "aligned_to_source")
+    quad = np.asarray(quad, dtype=np.float64)
+    h, w = source.shape[:2]
+    x0, y0 = quad.min(axis=0)
+    x1, y1 = quad.max(axis=0)
+    pad = 0.08 * max(x1 - x0, y1 - y0)
+    x0, y0 = int(max(0, x0 - pad)), int(max(0, y0 - pad))
+    x1, y1 = int(min(w, x1 + pad)), int(min(h, y1 + pad))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        raise ResultsError("Draw a bigger box around the code", 422)
+    crop = source[y0:y1, x0:x1]
+    # The full source is used: the original pixels decode best
+    zone = SimpleNamespace(
+        name="area",
+        type=zone_type,
+        options={},
+        crop=lambda image, padding=0: image,
+    )
+    read = read_barcode_zone(zone, crop)
+    symbols = (read.details or {}).get("symbols") or []
+    return {
+        "value": read.value,
+        "format": read.format,
+        "engine": read.engine,
+        "symbols": symbols,
+        "flags": read.flags,
+        "source_box": [x0, y0, x1 - x0, y1 - y0],
+    }
+
+
 def register(app, ctx, secured):
     service = ctx.results
     cache = RenderCache(size=12)
@@ -205,6 +258,29 @@ def register(app, ctx, secured):
                 raise HTTPException(500, "Could not encode image")
             item["encoded"][fmt] = buffer.tobytes()
         return item["encoded"][fmt]
+
+    @app.post("/scans/{scan_id}/decode", tags=["results"], dependencies=secured)
+    def scan_decode(scan_id: str, body: DecodeBody):
+        """
+        Decode a barcode or QR code inside a box the reviewer drew (box in the
+        aligned page's pixels, or the original's with view=original). Reads the
+        original scan at full resolution; nothing is stored.
+        """
+        try:
+            result = service.load(scan_id)
+            zone_type = "barcode"
+            if body.zone:
+                zone = (result.get("zones") or {}).get(body.zone)
+                if not isinstance(zone, dict):
+                    raise ResultsError(f"Unknown zone '{body.zone}'", 404)
+                zone_type = zone.get("type") or zone_type
+            item = build(scan_id, "original")
+            source = item["image"]
+            geometry, _ = effective_geometry(service, scan_id, result, source)
+            view = "original" if body.view == "original" else "aligned"
+            return decode_area(source, geometry, body.box, view, zone_type)
+        except ResultsError as error:
+            fail(error)
 
     @app.get("/scans/{scan_id}/views/{view}", tags=["results"], dependencies=secured)
     def scan_view(
