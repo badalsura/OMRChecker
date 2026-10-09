@@ -252,16 +252,17 @@ class JobManager:
 
     def pause(self, job_id):
         """Stop handing out files; sheets being read finish, then the job pauses."""
-        job = self.live.get(job_id)
-        if job is None or job["state"] not in (QUEUED, RUNNING):
-            return None
-        self.paused.add(job_id)
-        if job["state"] == QUEUED:
-            job["state"] = PAUSED
-            self._save(job)
-            self.live.pop(job_id, None)
-            self.paused.discard(job_id)
-        return job
+        with self.lock:
+            job = self.live.get(job_id)
+            if job is None or job["state"] not in (QUEUED, RUNNING):
+                return None
+            self.paused.add(job_id)
+            if job["state"] == QUEUED:
+                job["state"] = PAUSED
+                self._save(job)
+                self.live.pop(job_id, None)
+                self.paused.discard(job_id)
+            return job
 
     def resume(self, job_id):
         """Queue a paused or interrupted job again; it skips sheets already read."""
@@ -323,9 +324,13 @@ class JobManager:
             job_id = self.queue.get()
             if job_id is None:
                 return
-            job = self.live.get(job_id)
-            if job is None or job["state"] != QUEUED:
-                continue
+            with self.lock:
+                # Claimed under the lock, so a pause of the queued job cannot
+                # interleave with the start of its run
+                job = self.live.get(job_id)
+                if job is None or job["state"] != QUEUED:
+                    continue
+                job["state"] = RUNNING
             try:
                 self._run(job)
             except Exception as error:  # keep the runner alive
