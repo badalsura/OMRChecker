@@ -32,6 +32,25 @@ OMRChecker.exe --version
   review screen).
 * The in-browser reader (`web/omr-browser`) is bundled and served at `/browser/`.
 
+### The launcher window
+
+| Control | What it does |
+| --- | --- |
+| Port, "Other devices on this network can connect" | Where the server listens (unticked: this PC only). Applied by Start / Restart server. |
+| Start (Restart) server, Stop server, Open GUI | The local server; the address has a Copy button. Stopping it also stops remote access. |
+| Start remote, Stop remote | Remote access through a Cloudflare Tunnel with the bundled `cloudflared`; the address has a Copy button. |
+| Cloudflare settings… | Empty: a **quick tunnel** (a new random `https://….trycloudflare.com` address each start, no account). For a fixed address on your domain enter either a **tunnel token** (Zero Trust › Networks › Tunnels; point its public hostname at `http://localhost:<port>`) or a **Cloudflare API token + hostname** (the station creates the tunnel `omrchecker-<hostname>`, routes it to the current port and adds the DNS record through the Cloudflare API; token permissions: Account › Cloudflare Tunnel: Edit, Zone › DNS: Edit). Saved in `omr_data\remote_access.json`. |
+| Quit | Stops remote access and the server, and closes the app. |
+
+`OMRChecker.exe --remote` starts remote access at launch as well (handy with
+`--no-window`; the address is printed). Turn on sign-in (create the admin
+account) before sharing a remote address.
+
+Current `cloudflared` builds need **Windows 10 or newer** (Go dropped Windows
+7). On Windows 7, Start remote reports that cloudflared failed; run the tunnel
+from a newer PC on the same network, or replace `cloudflared\cloudflared.exe`
+with an older release (Cloudflare may refuse releases older than a year).
+
 ### Browser requirements
 
 The GUI uses ES modules plus optional chaining (`?.`), nullish coalescing (`??`)
@@ -39,6 +58,20 @@ and `Object.fromEntries`, so it needs **Chrome 80+, Edge 80+ (Chromium),
 Firefox 74+ or Opera 67+**. Internet Explorer and old (EdgeHTML) Edge are not
 supported. On Windows 7 use **Chrome 109** (the last Chrome for Win7) or
 **Firefox ESR 115** (the last Firefox for Win7); both work.
+
+### What every build bundles
+
+`packaging\prepare_bundle.py` (run by `build_windows.bat`) and the GitHub build
+always include, or stop the build:
+
+* Tesseract (`tesseract.exe` + DLLs) with the "best" English, Hindi and Punjabi models
+* PaddleOCR PP-OCRv5 mobile (English + Devanagari), used for OCR fallback and
+  to read handwriting (ICR zones) when no ICR model is loaded
+* `cloudflared.exe` for remote access
+
+A local build copies Tesseract from an installed UB Mannheim build (installing
+it with winget if missing) and converts the PaddleOCR models with a Python 3.9+
+next to 3.8 (`py -3.11`; paddle2onnx has no 3.8 wheels).
 
 ### OCR (Tesseract)
 

@@ -280,6 +280,21 @@ this station.
 | `GET /results?view=` | Adds `unflagged`; `flagged` leaves out verified sheets |
 | `POST /templates/{id}/generator/printed-boxes`, `/calibrate-index`, `/verify` | Template generator helpers |
 
+## Windows exe: bundled OCR, handwriting and remote access
+
+- Every build bundles Tesseract ("best" English, Hindi, Punjabi), PaddleOCR
+  PP-OCRv5 mobile (English, Devanagari) and `cloudflared`; the build stops if
+  one is missing (`packaging/prepare_bundle.py`).
+- ICR zones without a trained ICR model are read by PaddleOCR (PP-OCRv5 is
+  trained on handwriting too). Boxed zones are read as one line, or box by box
+  when the line gives the wrong count; the usual `minConfidence` decides
+  review. `ocr_params.icr_engine: "tesseract"` restores the old behaviour
+  (Tesseract, always reviewed).
+- Launcher window: port, Start / Stop server, Start / Stop remote, Cloudflare
+  settings (quick tunnel, tunnel token, or API token + hostname) with Copy
+  buttons for both addresses, and Quit. See
+  [packaging/README.md](../packaging/README.md#the-launcher-window).
+
 ## Fixes
 
 - Jobs: a pause could race a job's start (409 on resume); a queued job is now
@@ -311,7 +326,7 @@ this station.
 
 **Using the camera from a phone (Windows).**
 1. Run the station with an API key (`OMR_API_KEY`).
-2. Expose it over HTTPS with a tunnel, for example `cloudflared tunnel --url http://localhost:<port>`.
+2. Expose it over HTTPS: the launcher's **Start remote** (or `cloudflared tunnel --url http://localhost:<port>`).
 3. Open `<tunnel URL>/browser/demo.html?source=server` on the phone. The API
    base URL fills in by itself.
 

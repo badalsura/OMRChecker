@@ -7,9 +7,12 @@ systems use. Each box is cleaned of its printed border, checked for ink, and
 classified by a learned crop classifier (src/ml/classifiers.py) whose labels are
 the allowed characters.
 
-No trained ICR weights ship with the repository. Without a model the reader falls
-back to Tesseract per character and flags every result for review, because
-Tesseract is not built for handwriting.
+No trained ICR weights ship with the repository. Without a model the reader
+uses PaddleOCR's PP-OCRv5 recognition model (trained on printed and handwritten
+text) when its ONNX files are installed; zones it is unsure of go to review
+through the usual minConfidence check. Without PaddleOCR it falls back to
+Tesseract and flags every result for review, because Tesseract is not built
+for handwriting.
 """
 
 import cv2
@@ -112,6 +115,10 @@ def read_icr_crop(zone, crop, classifier=None, settings=None):
     count = zone.options.get("characterBoxes")
     whitelist = zone.options.get("whitelist")
 
+    if classifier is None or not count:
+        paddle = paddle_icr_engine(settings, zone)
+        if paddle is not None:
+            return read_with_paddle(zone, crop, count, whitelist, paddle)
     if not count:
         return read_free_text(zone, crop, whitelist)
 
@@ -165,6 +172,99 @@ def read_icr_crop(zone, crop, classifier=None, settings=None):
         except Exception as error:  # the second reader must not lose the zone
             details["second_reader"] = {"engine": "paddle", "error": str(error)}
     return ZoneReadResult(zone.name, zone.type, value, confidence, flags, details=details)
+
+
+def paddle_icr_engine(settings, zone):
+    """PaddleOCR as the handwriting reader when no ICR model is loaded, or None."""
+    from src.readers import text_reader
+
+    if settings.get("icr_engine", "auto") not in ("auto", "paddle"):
+        return None
+    try:
+        engine = text_reader.paddle_engine(settings, zone.options.get("lang"))
+        return engine if engine.available else None
+    except Exception:  # pragma: no cover - optional engine
+        return None
+
+
+def boxes_strip(boxes):
+    """Cleaned character boxes side by side on one white line."""
+    height = max(b.shape[0] for b in boxes)
+    gap = np.full((height, max(height // 3, 4)), 255, np.uint8)
+    strip = []
+    for b in boxes:
+        strip += [
+            cv2.copyMakeBorder(
+                b, 0, height - b.shape[0], 0, 0, cv2.BORDER_CONSTANT, value=255
+            ),
+            gap,
+        ]
+    return np.hstack(strip[:-1])
+
+
+def pad_white(image, size=6):
+    return cv2.copyMakeBorder(image, size, size, size, size, cv2.BORDER_CONSTANT, value=255)
+
+
+def read_with_paddle(zone, crop, count, whitelist, engine):
+    """
+    Handwriting through PaddleOCR. Boxed zones are read as one line of the
+    inked boxes (context helps the recogniser); if that line does not give one
+    character per inked box, each box is read on its own.
+    """
+    allowed = set(whitelist) if whitelist else None
+    if not count:
+        text, chars = engine.recognize_line(pad_white(crop), allowed)
+        confidence = float(min(chars)) if chars else 0.0
+        return ZoneReadResult(
+            zone.name, zone.type, text, confidence, [],
+            details={"engine": "paddle", "confidences": [round(c, 3) for c in chars]},
+            engine="paddle",
+        )
+    boxes = []
+    for box in split_character_boxes(crop, count):
+        cleaned, ink_ratio = clean_box(box)
+        boxes.append(cleaned if cleaned.size and ink_ratio >= MIN_INK_RATIO else None)
+    inked = [b for b in boxes if b is not None]
+    if not inked:
+        return ZoneReadResult(
+            zone.name, zone.type, "", 1.0, ["empty"],
+            details={"engine": "paddle"}, engine="paddle",
+        )
+    text, chars = engine.recognize_line(pad_white(boxes_strip(inked)), allowed)
+    pairs = [(c, p) for c, p in zip(text, chars) if c != " "]
+    mode = "line"
+    if len(pairs) != len(inked):
+        mode, pairs = "boxes", []
+        for box in inked:
+            text, chars = engine.recognize_line(pad_white(box), allowed)
+            text = text.replace(" ", "")
+            pairs.append((text[:1], float(np.mean(chars)) if text and chars else 0.0))
+    found = iter(pairs)
+    characters, confidences = [], []
+    for box in boxes:
+        if box is None:
+            characters.append("")
+            confidences.append(1.0)
+        else:
+            char, prob = next(found)
+            characters.append(char)
+            confidences.append(prob)
+    value = "".join(characters).strip()
+    return ZoneReadResult(
+        zone.name,
+        zone.type,
+        value,
+        float(min(confidences)),
+        [],
+        details={
+            "engine": "paddle",
+            "mode": mode,
+            "characters": characters,
+            "confidences": [round(c, 3) for c in confidences],
+        },
+        engine="paddle",
+    )
 
 
 def read_boxes_without_model(zone, crop, count, whitelist):

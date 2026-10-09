@@ -20,11 +20,17 @@ call build\venv38\Scripts\activate.bat
 python -m pip install --upgrade "pip<25" wheel || exit /b 1
 python -m pip install -r packaging\requirements-win7.txt || exit /b 1
 
+rem Tesseract, the OCR models (English, Hindi, Punjabi; PaddleOCR for printed
+rem text and handwriting) and cloudflared are always bundled
+python packaging\prepare_bundle.py || exit /b 1
+
 set OMR_BUILD_MODE=%MODE%
 pyinstaller --noconfirm --clean --distpath dist --workpath build\pyinstaller packaging\omr.spec || exit /b 1
 
 rem Smoke tests
 if exist dist\OMRChecker\OMRChecker.exe (
+  if not exist dist\OMRChecker\tesseract\tesseract.exe ( echo Tesseract missing from the build & exit /b 1 )
+  if not exist dist\OMRChecker\cloudflared\cloudflared.exe ( echo cloudflared missing from the build & exit /b 1 )
   dist\OMRChecker\OMRChecker.exe --version || exit /b 1
   dist\OMRChecker\OMRChecker.exe --selftest || exit /b 1
   powershell -NoProfile -Command "Compress-Archive -Force -Path dist\OMRChecker -DestinationPath dist\OMRChecker-portable-win64.zip" || exit /b 1

@@ -26,7 +26,9 @@ the models and have no Python 3.8 Windows wheels), then the Python 3.8 build
 bundles the `.onnx` files, tessdata and `ocr_build.json` into the exe.
 
 By default (a `v*` tag, or "Run workflow" without changes) the exe gets
-Tesseract "best" English first and PaddleOCR mobile English as the fallback.
+Tesseract "best" English, Hindi and Punjabi first and PaddleOCR mobile
+(English + Devanagari) as the fallback; PaddleOCR also reads ICR zones that
+have no trained ICR model. Every build bundles both engines.
 "Run workflow" lets you pick: `default_engine`, `fallback_engine`,
 `paddle_models` (mobile / server / none), `paddle_langs`, `tessdata` and
 `tess_langs`. The exe smoke test fails the build if bundled PaddleOCR models do

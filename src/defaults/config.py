@@ -133,6 +133,9 @@ CONFIG_DEFAULTS = DotMap(
             "min_char_confidence": 0,
             # PaddleOCR reads boxed handwriting as well when its models are installed
             "icr_second_reader": "auto",
+            # Handwriting reader when no ICR model is loaded: PaddleOCR when its
+            # models are installed ("auto"), or always Tesseract ("tesseract")
+            "icr_engine": "auto",
         },
         "outputs": {
             "show_image_level": 0,

@@ -27,3 +27,4 @@ packaging/tessdata/
 packaging/ocr_build.json
 packaging/models/
 packaging/tesseract/
+packaging/cloudflared/

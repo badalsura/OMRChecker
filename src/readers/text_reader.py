@@ -50,6 +50,7 @@ OCR_DEFAULTS = {
     "user_patterns": True,
     "min_char_confidence": 0,
     "icr_second_reader": "auto",
+    "icr_engine": "auto",
 }
 
 def ocr_settings(params=None):

@@ -471,3 +471,31 @@ def test_ocr_api_routes(tmp_path):
     response = client.get(f"/results/{scan_id}/zone-image/photo")
     assert response.status_code == 200 and response.content[:4] == b"\x89PNG"
     assert client.get(f"/results/{scan_id}/zone-image/other").status_code == 404
+
+
+def test_icr_without_a_model_reads_handwriting_with_paddle(paddle_models):
+    from src.readers import icr
+    from src.readers.base import finalize
+
+    def boxed(text, boxes):
+        width = boxes * 40
+        crop = np.full((40, width, 3), 255, np.uint8)
+        for i, ch in enumerate(text):
+            if ch != " ":
+                cv2.putText(crop, ch, (i * 40 + 8, 32), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 0, 3)
+        return page_with(crop), make_zone({"characterBoxes": boxes}, "icr", dims=(width, 40))
+
+    settings = {"paddle_model_dir": str(paddle_models)}
+    # One character per inked box from the line read; the blank box stays empty
+    page, zone = boxed("12 3", 4)
+    result = finalize(icr.read_icr_zone(zone, page, None, settings), zone)
+    assert result.engine == "paddle" and result.details["mode"] == "line"
+    assert result.details["characters"] == ["1", "2", "", "3"]
+    assert result.value == "123" and not result.needs_review
+    # The line gives the wrong count: each box is read on its own
+    page, zone = boxed("1234", 4)
+    result = icr.read_icr_zone(zone, page, None, settings)
+    assert result.details["mode"] == "boxes"
+    # Tesseract only when asked
+    off = icr.read_icr_zone(zone, page, None, dict(settings, icr_engine="tesseract"))
+    assert "no_icr_model" in off.flags
