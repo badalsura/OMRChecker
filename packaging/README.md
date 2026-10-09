@@ -72,10 +72,11 @@ always include, or stop the build:
 * `cloudflared.exe` for remote access
 
 A local build copies Tesseract from an installed UB Mannheim build (installing
-it with winget if missing) and converts the PaddleOCR models with Python 3.11
-(paddle2onnx has no 3.8 wheels): a python.org Python 3.9-3.12 if one is
-installed, otherwise a private copy downloaded into `build\python311`. Nothing
-is installed on the system and no Python setting changes.
+it with winget if missing). The OCR models can't be converted on Windows
+(paddle2onnx's Windows wheels need functions that no paddlepaddle Windows wheel
+exports), so run the GitHub workflow **Build Windows portable exe** once,
+download its **ocr-models** artifact and save it as `packaging\ocr-models.zip`
+(or leave it in Downloads); the build unpacks it.
 
 Everything fetched stays in `packaging\tesseract`, `packaging\tessdata`,
 `packaging\models`, `packaging\cloudflared` (git-ignored) and is reused by

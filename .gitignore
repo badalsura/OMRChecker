@@ -28,3 +28,4 @@ packaging/ocr_build.json
 packaging/models/
 packaging/tesseract/
 packaging/cloudflared/
+packaging/ocr-models.zip

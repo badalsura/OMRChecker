@@ -13,13 +13,15 @@ What a build always ships:
                                English and Devanagari
     packaging/cloudflared/     cloudflared.exe for "Start remote" in the launcher
 
+OCR models: on Windows they come from the GitHub build's "ocr-models"
+artifact, saved as packaging\\ocr-models.zip (or in Downloads) and unpacked
+here: paddle2onnx can't convert the PaddleOCR models on Windows (its Windows
+wheels need functions no paddlepaddle Windows wheel exports). Elsewhere
+packaging/fetch_ocr_models.py downloads and converts them with a Python 3.9-3.12
+in build/venv_models.
+
 Tesseract is copied from an installed UB Mannheim build (installed with winget
-if missing). The OCR models come from packaging/fetch_ocr_models.py; converting
-the PaddleOCR models needs paddle2onnx, which has no Python 3.8 wheels, so this
-runs it with a newer python.org Python (py -3.11 / 3.12 / 3.10 / 3.9) in
-build\\venv_models, or, when there is none, with a private Python 3.11 downloaded
-into build\\python311 (python.org's NuGet package; nothing is installed and no
-system setting changes).
+if missing).
 
 Standard library only; runs on Python 3.8.
 """
@@ -143,31 +145,6 @@ def newer_python():
     return None
 
 
-# python.org's own build of CPython, published as a NuGet package: a zip with
-# a complete Python under tools\ that runs from any folder, no installer
-PORTABLE_PYTHON_URL = "https://www.nuget.org/api/v2/package/python/3.11.9"
-
-
-def portable_python():
-    """A private Python 3.11 under build\\python311 (Windows; nothing installed)."""
-    import io
-    import zipfile
-
-    folder = ROOT / "build" / "python311"
-    exe = folder / "tools" / "python.exe"
-    if not exe.is_file():
-        print(f"  downloading a private Python 3.11 into {folder}")
-        request = urllib.request.Request(PORTABLE_PYTHON_URL, headers={"User-Agent": "omr-build"})
-        with urllib.request.urlopen(request, timeout=600) as response:
-            data = response.read()
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            for member in archive.namelist():
-                parts = Path(member).parts
-                if parts and parts[0] == "tools" and ".." not in parts:
-                    archive.extract(member, str(folder))
-    return [str(exe)] if exe.is_file() else None
-
-
 def venv_base_is_conda(venv):
     """True if an existing venv was made from an Anaconda Python."""
     try:
@@ -182,14 +159,57 @@ def venv_base_is_conda(venv):
     return False
 
 
+# The GitHub build's "ocr-models" download (tessdata/, models/, ocr_build.json)
+MODELS_ZIPS = [HERE / "ocr-models.zip", Path.home() / "Downloads" / "ocr-models.zip"]
+
+
+def unpack_models_zip():
+    """Unpack the GitHub build's ocr-models.zip into packaging/ if one is there."""
+    import zipfile
+
+    for path in MODELS_ZIPS:
+        if not path.is_file():
+            continue
+        print(f"  unpacking {path}")
+        with zipfile.ZipFile(str(path)) as archive:
+            for member in archive.namelist():
+                parts = Path(member).parts
+                if not parts or ".." in parts or Path(member).is_absolute():
+                    continue
+                if parts[0] == "packaging":  # zipped with the folder
+                    parts = parts[1:]
+                if parts and parts[0] in ("tessdata", "models", "ocr_build.json"):
+                    target = HERE.joinpath(*parts)
+                    if member.endswith("/"):
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(member))
+        if models_complete():
+            return True
+        print(f"  {path.name} does not hold every model this build needs")
+    return False
+
+
 def ocr_models():
     if models_complete():
         print(f"  have the OCR models ({BUILD_FILE.name})")
         return
+    if unpack_models_zip():
+        return
+    if os.name == "nt":
+        # paddle2onnx's Windows wheels import ~115 functions from paddle's
+        # libpaddle.pyd that no PyPI paddlepaddle Windows wheel exports
+        # (checked: paddle2onnx 2.0.2rc3 / 2.1.0 against paddlepaddle 3.0.0 -
+        # 3.3.1), so the conversion fails with "DLL load failed ... The
+        # specified procedure could not be found". It runs on Linux instead.
+        fail(
+            "The PaddleOCR models can't be converted on Windows (paddle2onnx does not load "
+            "with any paddlepaddle Windows build). Run the GitHub workflow 'Build Windows "
+            "portable exe', download its 'ocr-models' artifact and save it as "
+            "packaging\\ocr-models.zip (or in your Downloads folder), then build again."
+        )
     python = newer_python()
-    private = None
-    if python is None and os.name == "nt":
-        python = private = portable_python()
     if python is None:
         fail(
             "Converting the PaddleOCR models needs a python.org Python 3.9-3.12 next to 3.8 "
@@ -199,23 +219,19 @@ def ocr_models():
             "from a GitHub Actions build (artifact 'ocr-models')."
         )
     venv = ROOT / "build" / "venv_models"
-    if private:
-        # The private copy is used as it is: packages go into it, nothing else
-        exe = Path(private[0])
-        subprocess.check_call([str(exe), "-m", "ensurepip", "--default-pip"])
-    else:
-        exe = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        if venv.is_dir() and (venv_base_is_conda(venv) or not exe.is_file()):
-            print(f"  recreating {venv} (it was made from another Python)")
-            shutil.rmtree(str(venv))
-        if not exe.is_file():
-            subprocess.check_call(python + ["-m", "venv", str(venv)])
+    exe = venv / "bin" / "python"
+    if venv.is_dir() and (venv_base_is_conda(venv) or not exe.is_file()):
+        print(f"  recreating {venv} (it was made from another Python)")
+        shutil.rmtree(str(venv))
+    if not exe.is_file():
+        subprocess.check_call(python + ["-m", "venv", str(venv)])
     subprocess.check_call([str(exe), "-m", "pip", "install", "-q", "paddlepaddle", "paddle2onnx", "packaging"])
     if subprocess.call([str(exe), "-c", "import paddle, paddle2onnx"]) != 0:
         fail(
-            f"paddle2onnx does not load in {exe.parent} (see the error above). Install the "
-            "latest Visual C++ x64 redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) "
-            "and run the build again."
+            f"paddle2onnx does not load in {exe.parent} (see the error above). Download the "
+            "'ocr-models' artifact of a GitHub 'Build Windows portable exe' run, save it as "
+            "packaging\\ocr-models.zip (or in Downloads) and run the build again; or install the "
+            "latest Visual C++ x64 redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe)."
         )
     subprocess.check_call([str(exe), str(HERE / "fetch_ocr_models.py")] + OCR_ARGS)
     if not models_complete():
