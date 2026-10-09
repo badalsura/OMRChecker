@@ -16,7 +16,10 @@ What a build always ships:
 Tesseract is copied from an installed UB Mannheim build (installed with winget
 if missing). The OCR models come from packaging/fetch_ocr_models.py; converting
 the PaddleOCR models needs paddle2onnx, which has no Python 3.8 wheels, so this
-runs it with a newer Python (py -3.12 / 3.11 / 3.10 / 3.9) in build\\venv_models.
+runs it with a newer python.org Python (py -3.11 / 3.12 / 3.10 / 3.9) in
+build\\venv_models, or, when there is none, with a private Python 3.11 downloaded
+into build\\python311 (python.org's NuGet package; nothing is installed and no
+system setting changes).
 
 Standard library only; runs on Python 3.8.
 """
@@ -140,6 +143,31 @@ def newer_python():
     return None
 
 
+# python.org's own build of CPython, published as a NuGet package: a zip with
+# a complete Python under tools\ that runs from any folder, no installer
+PORTABLE_PYTHON_URL = "https://www.nuget.org/api/v2/package/python/3.11.9"
+
+
+def portable_python():
+    """A private Python 3.11 under build\\python311 (Windows; nothing installed)."""
+    import io
+    import zipfile
+
+    folder = ROOT / "build" / "python311"
+    exe = folder / "tools" / "python.exe"
+    if not exe.is_file():
+        print(f"  downloading a private Python 3.11 into {folder}")
+        request = urllib.request.Request(PORTABLE_PYTHON_URL, headers={"User-Agent": "omr-build"})
+        with urllib.request.urlopen(request, timeout=600) as response:
+            data = response.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for member in archive.namelist():
+                parts = Path(member).parts
+                if parts and parts[0] == "tools" and ".." not in parts:
+                    archive.extract(member, str(folder))
+    return [str(exe)] if exe.is_file() else None
+
+
 def venv_base_is_conda(venv):
     """True if an existing venv was made from an Anaconda Python."""
     try:
@@ -159,6 +187,9 @@ def ocr_models():
         print(f"  have the OCR models ({BUILD_FILE.name})")
         return
     python = newer_python()
+    private = None
+    if python is None and os.name == "nt":
+        python = private = portable_python()
     if python is None:
         fail(
             "Converting the PaddleOCR models needs a python.org Python 3.9-3.12 next to 3.8 "
@@ -168,12 +199,17 @@ def ocr_models():
             "from a GitHub Actions build (artifact 'ocr-models')."
         )
     venv = ROOT / "build" / "venv_models"
-    exe = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    if venv.is_dir() and (venv_base_is_conda(venv) or not exe.is_file()):
-        print(f"  recreating {venv} (it was made from another Python)")
-        shutil.rmtree(str(venv))
-    if not exe.is_file():
-        subprocess.check_call(python + ["-m", "venv", str(venv)])
+    if private:
+        # The private copy is used as it is: packages go into it, nothing else
+        exe = Path(private[0])
+        subprocess.check_call([str(exe), "-m", "ensurepip", "--default-pip"])
+    else:
+        exe = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if venv.is_dir() and (venv_base_is_conda(venv) or not exe.is_file()):
+            print(f"  recreating {venv} (it was made from another Python)")
+            shutil.rmtree(str(venv))
+        if not exe.is_file():
+            subprocess.check_call(python + ["-m", "venv", str(venv)])
     subprocess.check_call([str(exe), "-m", "pip", "install", "-q", "paddlepaddle", "paddle2onnx", "packaging"])
     if subprocess.call([str(exe), "-c", "import paddle, paddle2onnx"]) != 0:
         fail(

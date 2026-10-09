@@ -72,8 +72,10 @@ always include, or stop the build:
 * `cloudflared.exe` for remote access
 
 A local build copies Tesseract from an installed UB Mannheim build (installing
-it with winget if missing) and converts the PaddleOCR models with a Python 3.9+
-next to 3.8 (`py -3.11`; paddle2onnx has no 3.8 wheels).
+it with winget if missing) and converts the PaddleOCR models with Python 3.11
+(paddle2onnx has no 3.8 wheels): a python.org Python 3.9-3.12 if one is
+installed, otherwise a private copy downloaded into `build\python311`. Nothing
+is installed on the system and no Python setting changes.
 
 Everything fetched stays in `packaging\tesseract`, `packaging\tessdata`,
 `packaging\models`, `packaging\cloudflared` (git-ignored) and is reused by
