@@ -976,9 +976,13 @@ def group_highlights(result):
 
 def overlay_payload(result, info):
     """Everything the browser needs to draw and edit the overlay."""
-    highlights = group_highlights(result)
+    # A verified sheet is settled: what was flagged when read no longer shows
+    # as flagged (the flags themselves stay listed, and in the statistics)
+    settled = bool(result.get("verified"))
+    logged = result.get("review_log") or {}
+    highlights = {} if settled else group_highlights(result)
     flagged = {}
-    for name, flag in flag_rows(result):
+    for name, flag in [] if settled else flag_rows(result):
         flagged.setdefault(name, []).append(flag)
     pending = {item["name"] for item in result.get("review") or []}
     fields = []
@@ -1003,7 +1007,8 @@ def overlay_payload(result, info):
                 "corrected": original_value(field) != value,
                 "confidence": field.get("confidence"),
                 "flags": field.get("flags") or [],
-                "flagged": name in flagged,
+                # ... and neither does a field a person accepted or corrected
+                "flagged": name in flagged and not field.get("reviewed"),
                 "pending": name in pending,
                 "group_flags": highlights.get(name, []),
                 "box": box,
@@ -1037,7 +1042,7 @@ def overlay_payload(result, info):
                 "corrected": original_value(zone) != zone.get("value", ""),
                 "confidence": zone.get("confidence"),
                 "flags": zone.get("flags") or [],
-                "flagged": name in flagged,
+                "flagged": name in flagged and not zone.get("reviewed"),
                 "pending": name in pending,
                 "box": zone.get("box") or None,
                 "format": zone.get("format"),
@@ -1095,9 +1100,9 @@ def overlay_payload(result, info):
                 "original_value": original,
                 "parts": parts,
                 "flagged": any(m["flagged"] for m in members)
-                or name in flagged
-                or check_name in flagged
-                or bool(check.get("flags")),
+                or (name in flagged and name not in logged)
+                or (check_name in flagged and check_name not in logged)
+                or (bool(check.get("flags")) and not settled),
                 "pending": any(m["pending"] for m in members)
                 or name in pending
                 or check_name in pending,

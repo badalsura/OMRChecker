@@ -196,9 +196,9 @@ function renderList() {
         "li",
         { class: selected ? "selected" : "", onclick: () => openAt(index), title: item.file_name },
         el("span", { class: "name" }, item.file_name || item.id.slice(0, 8)),
-        item.flag_count ? el("span", { class: "chip flag", title: "fields flagged when read" }, `⚑${item.flag_count}`) : null,
+        item.flag_count && !item.verified ? el("span", { class: "chip flag", title: "fields flagged when read" }, `⚑${item.flag_count}`) : null,
         item.corrected ? el("span", { class: "chip corrected", title: "corrected" }, "✎") : null,
-        item.verified ? el("span", { class: "chip ok", title: "verified" }, "✓") : null,
+        item.verified ? el("span", { class: "chip ok", title: item.flag_count ? `verified (${item.flag_count} field(s) were flagged when read)` : "verified" }, "✓") : null,
         item.status === "error" ? chip("error", "error") : null,
         !item.verified && item.status === "needs_review" ? el("span", { class: "dot-flag", title: "needs review" }) : null
       )

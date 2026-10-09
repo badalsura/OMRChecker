@@ -232,6 +232,21 @@ def test_listing_filters_and_neighbours(tmp_path, spec):
         assert page["total"] == 3 and [i["id"] for i in page["items"]] == [ids[2]]
         assert client.get("/results?view=bogus").status_code == 422
 
+        # Verifying a flagged sheet settles it: no longer flagged anywhere
+        client.post(f"/scans/{ids[1]}/verify")
+        flagged = client.get("/results?view=flagged").json()
+        assert ids[1] not in [i["id"] for i in flagged["items"]]
+        unflagged = client.get("/results?view=unflagged").json()
+        assert ids[1] in [i["id"] for i in unflagged["items"]]
+        rendered = client.get(f"/scans/{ids[1]}/overlay").json()
+        assert not any(o["flagged"] for o in rendered["outputs"])
+        q3 = next(f for f in rendered["fields"] if f["name"] == "q3")
+        assert q3["flags"] and not q3["flagged"]
+        # ... and flagged again once the verification is undone
+        client.delete(f"/scans/{ids[1]}/verify")
+        flagged = client.get("/results?view=flagged").json()
+        assert ids[1] in [i["id"] for i in flagged["items"]]
+
 
 def test_moved_folder_remap_and_fallback(tmp_path, spec):
     folder = tmp_path / "inbox"

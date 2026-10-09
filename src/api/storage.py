@@ -546,8 +546,9 @@ class ScanIndex:
     # ---- results screen -------------------------------------------------
     RESULT_VIEWS = {
         "all": "",
-        "flagged": "flag_count > 0",
-        "unflagged": "flag_count = 0",
+        # A verified sheet no longer counts as flagged
+        "flagged": "(flag_count > 0 AND verified = 0)",
+        "unflagged": "(flag_count = 0 OR verified = 1)",
         "reviewed": "(verified = 1 OR (flag_count > 0 AND review_count = 0))",
         "not_reviewed": "(verified = 0 AND NOT (flag_count > 0 AND review_count = 0))",
         "verified": "verified = 1",
