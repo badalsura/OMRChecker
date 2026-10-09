@@ -27,6 +27,9 @@ on:
       cloudflared:
         description: "cloudflared release to bundle (latest or e.g. 2025.9.1)"
         default: latest
+      installer_release:
+        description: "Also publish the online installer: GitHub release tag for its downloads (e.g. v1.0.0; empty = no installer)"
+        default: ""
   push:
     tags:
       - "v*"
@@ -212,4 +215,107 @@ jobs:
           path: |
             dist/OMRChecker-portable-win64.zip
             dist/OMRChecker-onefile.exe
+          if-no-files-found: error
+
+  # Online installer: a small Setup.exe that downloads the program and its
+  # heavy files from a public GitHub release while installing
+  # (packaging/installer/OMRChecker.iss). Runs for a pushed v* tag, or when the
+  # workflow is run with installer_release set; needs the onedir build.
+  installer:
+    needs: build
+    if: >-
+      (github.event_name == 'push' || github.event.inputs.installer_release != '')
+      && (github.event.inputs.mode || 'both') != 'onefile'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.inputs.installer_release || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      INNO_VERSION: "6.7.1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: OMRChecker-windows-portable
+          path: dist
+
+      - name: Split the build into the installer's downloads
+        shell: pwsh
+        run: |
+          Expand-Archive dist\OMRChecker-portable-win64.zip -DestinationPath build\portable
+          $app = "build\portable\OMRChecker"
+          if (!(Test-Path "$app\OMRChecker.exe")) { Write-Error "no onedir build in the artifact"; exit 1 }
+          New-Item -ItemType Directory -Force build\parts\models, build\parts\tools | Out-Null
+          Move-Item "$app\tessdata", "$app\models", "$app\ocr_build.json" build\parts\models
+          Move-Item "$app\tesseract", "$app\cloudflared" build\parts\tools
+          if (Test-Path "$app\omr_data") { Remove-Item -Recurse -Force "$app\omr_data" }
+          New-Item -ItemType Directory -Force build\release | Out-Null
+          $parts = @{ App = $app; Models = "build\parts\models"; Tools = "build\parts\tools" }
+          $names = @{ App = "OMRChecker-app.zip"; Models = "OMRChecker-ocr-models.zip"; Tools = "OMRChecker-tools.zip" }
+          $defines = @()
+          foreach ($key in "App", "Models", "Tools") {
+            $zip = "build\release\" + $names[$key]
+            # Contents only, so each zip unpacks straight into the install folder
+            7z a -tzip -mx=7 $zip ".\$($parts[$key])\*" | Out-Null
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            $size = (Get-ChildItem -Recurse -File $parts[$key] | Measure-Object -Sum Length).Sum
+            $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+            Write-Host "$($names[$key]): $((Get-Item $zip).Length) bytes, unpacked $size, sha256 $hash"
+            $defines += "/D$($key)Size=$size", "/D$($key)Hash=$hash"
+          }
+          $defines -join "`n" | Set-Content build\defines.txt
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --version $env:INNO_VERSION -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build Setup.exe
+        shell: pwsh
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          $base = "https://github.com/${{ github.repository }}/releases/download/$env:TAG"
+          $defines = Get-Content build\defines.txt
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DBaseUrl=$base" @defines packaging\installer\OMRChecker.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item "dist\OMRChecker-setup-$version.exe" build\release\
+
+      - name: Publish the downloads and Setup.exe as a GitHub release
+        shell: pwsh
+        run: |
+          gh release view $env:TAG 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG --target ${{ github.sha }} --title "OMR Checker $env:TAG" --notes "Run OMRChecker-setup-*.exe: it downloads the other files of this release while installing. Without internet, keep the three .zip files next to it."
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          gh release upload $env:TAG (Get-ChildItem build\release\*).FullName --clobber
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Install from the release and smoke-test
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem build\release\OMRChecker-setup-*.exe).FullName
+          # Run from another folder so the zips beside it are not used: this tests the downloads
+          New-Item -ItemType Directory -Force build\setup-only | Out-Null
+          Copy-Item $setup build\setup-only\
+          $exe = (Get-ChildItem build\setup-only\*.exe).FullName
+          $p = Start-Process -FilePath $exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\OMRCheckerTest","/LOG=build\setup.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content build\setup.log -Tail 40; exit 1 }
+          foreach ($f in "OMRChecker.exe", "installed.ini", "ocr_build.json", "tesseract\tesseract.exe", "cloudflared\cloudflared.exe", "models\paddleocr") {
+            if (!(Test-Path "C:\OMRCheckerTest\$f")) { Write-Error "$f was not installed"; exit 1 }
+          }
+          C:\OMRCheckerTest\OMRChecker.exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $u = Start-Process -FilePath C:\OMRCheckerTest\unins000.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait -PassThru
+          Start-Sleep -Seconds 5
+          if (Test-Path C:\OMRCheckerTest\OMRChecker.exe) { Write-Error "uninstall left the program behind"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OMRChecker-windows-installer
+          path: build/release/OMRChecker-setup-*.exe
           if-no-files-found: error
