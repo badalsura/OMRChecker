@@ -127,7 +127,7 @@ def stub_engines(monkeypatch, reads, available=("tesseract", "paddle")):
 
     monkeypatch.setattr(text_reader, "engine_read", fake_engine_read)
     monkeypatch.setattr(
-        text_reader, "engine_available", lambda name, s, lang=None: name in available
+        text_reader, "engine_available", lambda name, s, lang=None, zone=None: name in available
     )
     return calls
 
@@ -471,3 +471,42 @@ def test_ocr_api_routes(tmp_path):
     response = client.get(f"/results/{scan_id}/zone-image/photo")
     assert response.status_code == 200 and response.content[:4] == b"\x89PNG"
     assert client.get(f"/results/{scan_id}/zone-image/other").status_code == 404
+
+
+def test_icr_without_a_model_reads_handwriting_with_paddle(paddle_models):
+    from src.readers import icr
+    from src.readers.base import finalize
+
+    def boxed(text, boxes):
+        width = boxes * 40
+        crop = np.full((40, width, 3), 255, np.uint8)
+        for i, ch in enumerate(text):
+            if ch != " ":
+                cv2.putText(crop, ch, (i * 40 + 8, 32), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 0, 3)
+        return page_with(crop), make_zone({"characterBoxes": boxes}, "icr", dims=(width, 40))
+
+    settings = {"paddle_model_dir": str(paddle_models)}
+    # One character per inked box from the line read; the blank box stays empty
+    page, zone = boxed("12 3", 4)
+    result = finalize(icr.read_icr_zone(zone, page, None, settings), zone)
+    assert result.engine == "paddle" and result.details["mode"] == "line"
+    assert result.details["characters"] == ["1", "2", "", "3"]
+    assert result.value == "123" and not result.needs_review
+    # The line gives the wrong count: each box is read on its own
+    page, zone = boxed("1234", 4)
+    result = icr.read_icr_zone(zone, page, None, settings)
+    assert result.details["mode"] == "boxes"
+    # Tesseract only when asked
+    off = icr.read_icr_zone(zone, page, None, dict(settings, icr_engine="tesseract"))
+    assert "no_icr_model" in off.flags
+
+
+def test_zone_picks_its_paddle_model(paddle_models):
+    settings = text_reader.ocr_settings({"paddle_model_dir": str(paddle_models)})
+    # Only the English mobile model is installed: server / main fall back to it
+    zone = make_zone({"paddleModel": "server"}, "icr", dims=(120, 40))
+    engine = text_reader.paddle_engine(settings, zone=zone)
+    assert engine.available and engine.rec_path.name == "en_PP-OCRv5_mobile_rec.onnx"
+    caps = text_reader.ocr_capabilities({"paddle_model_dir": str(paddle_models)})
+    assert {"size": "mobile", "lang": "en"} in caps["paddle_models"]
+    assert {"size": "server", "lang": "ch"} not in caps["paddle_models"]

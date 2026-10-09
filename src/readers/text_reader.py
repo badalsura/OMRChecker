@@ -50,6 +50,7 @@ OCR_DEFAULTS = {
     "user_patterns": True,
     "min_char_confidence": 0,
     "icr_second_reader": "auto",
+    "icr_engine": "auto",
 }
 
 def ocr_settings(params=None):
@@ -136,29 +137,49 @@ def better(a, b):
     return b if key_b > key_a else a
 
 
-def paddle_engine(settings, lang=None):
+# Zone option paddleLang: "en", "devanagari", or "ch" (the main multilingual
+# recogniser, also trained on handwriting)
+PADDLE_LANGS = ("en", "devanagari", "ch")
+
+
+def paddle_engine(settings, lang=None, zone=None):
+    """
+    The PaddleOCR engine for a zone: its paddleModel (mobile / server) and
+    paddleLang options, else the config. ICR zones prefer the main recogniser
+    (handwriting) when it is installed.
+    """
     from src.readers import paddle_ocr
 
+    options = zone.options if zone is not None else {}
+    lang = lang or options.get("lang")
     paddle_lang = settings.get("paddle_lang") or "en"
     if lang:
         first = lang.split("+")[0]
         if first in ("hin", "mar", "nep", "san"):
             paddle_lang = "devanagari"
-    return paddle_ocr.get_engine(
-        settings.get("paddle_det_model", "mobile"),
-        settings.get("paddle_rec_model", "mobile"),
-        paddle_lang,
-        settings.get("paddle_model_dir"),
-    )
+    size = options.get("paddleModel") or None
+    det = size or settings.get("paddle_det_model", "mobile")
+    rec = size or settings.get("paddle_rec_model", "mobile")
+    if options.get("paddleLang") in PADDLE_LANGS:
+        langs = [options["paddleLang"]]
+    elif zone is not None and zone.type == "icr" and paddle_lang == "en":
+        langs = ["ch", paddle_lang]
+    else:
+        langs = [paddle_lang]
+    engines = [
+        paddle_ocr.get_engine(det, rec, name, settings.get("paddle_model_dir"))
+        for name in langs
+    ]
+    return next((e for e in engines if e.available), engines[0])
 
 
-def engine_available(name, settings, lang=None):
+def engine_available(name, settings, lang=None, zone=None):
     from src.readers import ocr
 
     if name == "tesseract":
         return ocr.tesseract_available()
     if name == "paddle":
-        return paddle_engine(settings, lang).available
+        return paddle_engine(settings, lang, zone).available
     return False
 
 
@@ -220,7 +241,7 @@ def tesseract_read(crop, zone, settings, min_confidence, expected_lines=1):
 
 def paddle_read(crop, zone, settings):
     whitelist = zone.options.get("whitelist")
-    engine = paddle_engine(settings, zone.options.get("lang"))
+    engine = paddle_engine(settings, zone=zone)
     single_line = zone.options.get("psm", 7) in (7, 8, 13)
     text, confidence, chars, details = engine.read(
         crop, set(whitelist) if whitelist else None, single_line
@@ -250,16 +271,16 @@ def choose_engines(zone, settings):
         fallback = settings.get("fallback_engine", "none")
     if fallback not in ENGINES or fallback == primary:
         fallback = None
-    if not engine_available(primary, settings, lang):
+    if not engine_available(primary, settings, lang, zone):
         other = "paddle" if primary == "tesseract" else "tesseract"
         notes["engine_unavailable"] = primary
         if primary == "paddle":
-            notes["reason"] = paddle_engine(settings, lang).unavailable_reason
-        if engine_available(other, settings, lang):
+            notes["reason"] = paddle_engine(settings, lang, zone).unavailable_reason
+        if engine_available(other, settings, lang, zone):
             primary, fallback = other, None
         else:
             return None, None, notes
-    if fallback and not engine_available(fallback, settings, lang):
+    if fallback and not engine_available(fallback, settings, lang, zone):
         notes["fallback_unavailable"] = fallback
         fallback = None
     return primary, fallback, notes
@@ -360,6 +381,13 @@ def ocr_capabilities(ocr_params=None):
         "paddle_languages": sorted(
             {k[2] for k in paddle_ocr.MODEL_FILES if k[0] == "rec"}
         ),
+        # Recognition models installed here: {"size", "lang"} pairs
+        "paddle_models": [
+            {"size": k[1], "lang": k[2]}
+            for k, (name, _) in sorted(paddle_ocr.MODEL_FILES.items())
+            if k[0] == "rec"
+            and paddle_ocr.find_model_file(name, settings.get("paddle_model_dir"))
+        ],
         "directions": list(DIRECTIONS) + ["auto"],
         "defaults": {k: settings[k] for k in OCR_DEFAULTS},
     }

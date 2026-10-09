@@ -13,17 +13,20 @@ on:
         description: "OCR engine tried when the first read is empty, unsure or invalid: paddle | tesseract | none"
         default: paddle
       paddle_models:
-        description: "PaddleOCR model size to bundle: mobile | server | none"
-        default: mobile
+        description: "PaddleOCR model sizes to bundle, space separated; the first is the default: mobile server"
+        default: mobile server
       paddle_langs:
-        description: "PaddleOCR languages, space separated (en, devanagari)"
-        default: en
+        description: "PaddleOCR recognisers, space separated (en, devanagari, ch = main multilingual, reads handwriting)"
+        default: en devanagari ch
       tessdata:
         description: "Tesseract model set: best | fast"
         default: best
       tess_langs:
         description: "Tesseract languages, space separated (eng, hin, ...)"
-        default: eng
+        default: eng hin
+      cloudflared:
+        description: "cloudflared release to bundle (latest or e.g. 2025.9.1)"
+        default: latest
   push:
     tags:
       - "v*"
@@ -39,10 +42,10 @@ jobs:
     env:
       DEFAULT_ENGINE: ${{ github.event.inputs.default_engine || 'tesseract' }}
       FALLBACK_ENGINE: ${{ github.event.inputs.fallback_engine || 'paddle' }}
-      PADDLE_MODELS: ${{ github.event.inputs.paddle_models || 'mobile' }}
-      PADDLE_LANGS: ${{ github.event.inputs.paddle_langs || 'en' }}
+      PADDLE_MODELS: ${{ github.event.inputs.paddle_models || 'mobile server' }}
+      PADDLE_LANGS: ${{ github.event.inputs.paddle_langs || 'en devanagari ch' }}
       TESSDATA: ${{ github.event.inputs.tessdata || 'best' }}
-      TESS_LANGS: ${{ github.event.inputs.tess_langs || 'eng' }}
+      TESS_LANGS: ${{ github.event.inputs.tess_langs || 'eng hin' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,18 +53,30 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Models are kept between runs: fetched and converted only when the
+      # choices or the fetch script change
+      - name: Reuse fetched models
+        id: models-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            packaging/tessdata/
+            packaging/models/
+            packaging/ocr_build.json
+          key: ocr-models-${{ hashFiles('packaging/fetch_ocr_models.py') }}-${{ env.TESSDATA }}-${{ env.TESS_LANGS }}-${{ env.PADDLE_MODELS }}-${{ env.PADDLE_LANGS }}-${{ env.DEFAULT_ENGINE }}-${{ env.FALLBACK_ENGINE }}
+
       - name: Install the model converter (build machine only)
-        if: env.PADDLE_MODELS != 'none'
+        if: steps.models-cache.outputs.cache-hit != 'true'
         # paddle2onnx imports "packaging" without declaring it
         run: python -m pip install paddlepaddle paddle2onnx packaging
 
       - name: Fetch Tesseract and PaddleOCR models
+        if: steps.models-cache.outputs.cache-hit != 'true'
         run: |
-          args="--tessdata $TESSDATA --langs $TESS_LANGS --default-engine $DEFAULT_ENGINE --fallback-engine $FALLBACK_ENGINE"
-          if [ "$PADDLE_MODELS" != "none" ]; then
-            args="$args --paddle $PADDLE_MODELS --paddle-langs $PADDLE_LANGS"
-          fi
-          python packaging/fetch_ocr_models.py $args
+          # Every build bundles Tesseract and PaddleOCR (PaddleOCR also reads ICR zones)
+          python packaging/fetch_ocr_models.py --tessdata $TESSDATA --langs $TESS_LANGS \
+            --paddle $PADDLE_MODELS --paddle-langs $PADDLE_LANGS \
+            --default-engine $DEFAULT_ENGINE --fallback-engine $FALLBACK_ENGINE
           cat packaging/ocr_build.json
           ls -l packaging/tessdata packaging/models/paddleocr 2>/dev/null || true
 
@@ -109,7 +124,17 @@ jobs:
       - name: Engine smoke test from source
         run: python packaging/omr_desktop.py --selftest
 
+      - name: Reuse Tesseract and cloudflared
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            packaging/tesseract/
+            packaging/cloudflared/
+          key: win-tools-${{ github.event.inputs.cloudflared || 'latest' }}-${{ hashFiles('packaging/prepare_bundle.py') }}
+
       - name: Bundle Tesseract (UB Mannheim build)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           choco install tesseract -y --no-progress
@@ -130,6 +155,14 @@ jobs:
           if (Test-Path "$src\tessdata\configs") { Copy-Item -Recurse "$src\tessdata\configs" "$dst\tessdata" }
           & "$dst\tesseract.exe" --version
           if ($LASTEXITCODE -ne 0) { Write-Error "the copied tesseract.exe does not start"; exit 1 }
+
+      - name: Bundle cloudflared
+        shell: pwsh
+        run: |
+          python packaging/prepare_bundle.py --only cloudflared --cloudflared-release "${{ github.event.inputs.cloudflared || 'latest' }}"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          packaging\cloudflared\cloudflared.exe --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "cloudflared does not start"; exit 1 }
 
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean packaging/omr.spec
@@ -163,6 +196,7 @@ jobs:
           # The runner has Tesseract installed too, so check the bundled copy itself
           if (!(Test-Path dist\OMRChecker\tesseract\tesseract.exe)) { Write-Error "Tesseract is missing from the exe folder"; exit 1 }
           if (-not $r.engines.tesseract) { Write-Error "Tesseract was bundled but is not found by the exe"; exit 1 }
+          if (!(Test-Path dist\OMRChecker\cloudflared\cloudflared.exe)) { Write-Error "cloudflared is missing from the exe folder"; exit 1 }
           Compress-Archive -Force -Path dist\OMRChecker -DestinationPath dist\OMRChecker-portable-win64.zip
 
       - name: Smoke-test the onefile exe

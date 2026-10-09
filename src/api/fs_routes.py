@@ -6,8 +6,11 @@ Server folder picker for the New Job screen (plan item 11).
     GET /fs/check?path=      "does this folder exist, may I read it, what is in it"
     GET /fs/recent           the last 10 folders jobs were started from
 
-When OMR_ALLOWED_DIRS is set only folders inside it are listed or accepted, so
-a shared server never shows the rest of its disks.
+Who sees what (folder_scope): administrators, the API key and a station
+without accounts may use every folder; any other signed-in user only the
+folders an administrator allowed for that account (none: upload only). When
+OMR_ALLOWED_DIRS is set it limits everyone, so a shared server never shows the
+rest of its disks.
 """
 
 import os
@@ -16,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException, Query
+from fastapi import HTTPException, Query, Request
 
 from src.api.jobs import INPUT_SUFFIXES
 from src.api.storage import read_json, write_json_atomic
@@ -41,18 +44,46 @@ def _resolve(path):
         raise FolderError("Not a valid folder path", 400) from None
 
 
-def is_allowed(settings, path):
-    roots = settings.allowed_dirs
-    return not roots or any(path == root or root in path.parents for root in roots)
+def _inside(path, roots):
+    return any(path == root or root in path.parents for root in roots)
 
 
-def checked_folder(settings, raw):
+def folder_scope(settings, request=None):
+    """
+    The folders a request may use: None means any folder. Administrators, the
+    API key and a station without accounts get OMR_ALLOWED_DIRS (or anything);
+    another signed-in user gets the folders allowed for the account, kept
+    inside OMR_ALLOWED_DIRS.
+    """
+    station = list(settings.allowed_dirs) or None
+    user = getattr(request.state, "user", None) if request is not None else None
+    if not user or user.get("role") == "admin":
+        return station
+    mine = []
+    for folder in user.get("folders") or []:
+        try:
+            mine.append(_resolve(folder))
+        except FolderError:
+            continue
+    if station is None:
+        return mine
+    # Where the two overlap: a user folder inside the station's, or the reverse
+    return [p for p in mine if _inside(p, station)] + [
+        s for s in station if any(p in s.parents for p in mine)
+    ]
+
+
+def is_allowed(scope, path):
+    return scope is None or _inside(path, scope)
+
+
+def checked_folder(scope, raw):
     """Resolved Path of an existing, allowed folder, or FolderError."""
     if not raw or not str(raw).strip():
         raise FolderError("Enter a folder path", 400)
     path = _resolve(raw)
-    if not is_allowed(settings, path):
-        raise FolderError("Outside the allowed folders (OMR_ALLOWED_DIRS)", 403)
+    if not is_allowed(scope, path):
+        raise FolderError("Outside the allowed folders", 403)
     if not path.exists():
         raise FolderError("Folder not found", 404)
     if not path.is_dir():
@@ -78,11 +109,11 @@ def windows_drives():
     return drives
 
 
-def roots(settings):
-    if settings.allowed_dirs:
+def roots(scope):
+    if scope is not None:
         return [
             {"path": str(root), "name": str(root), "kind": "allowed"}
-            for root in settings.allowed_dirs
+            for root in scope
             if root.is_dir()
         ]
     if sys.platform.startswith("win"):
@@ -129,8 +160,8 @@ def count_inputs(folder, limit=COUNT_LIMIT, recursive=False):
     return {"images": images, "pdfs": pdfs, "truncated": truncated}
 
 
-def browse(settings, raw):
-    folder = checked_folder(settings, raw)
+def browse(scope, raw):
+    folder = checked_folder(scope, raw)
     folders = []
     try:
         with os.scandir(folder) as entries:
@@ -153,7 +184,7 @@ def browse(settings, raw):
     return {
         "path": str(folder),
         "parent": str(parent)
-        if parent != folder and is_allowed(settings, parent)
+        if parent != folder and is_allowed(scope, parent)
         else None,
         "folders": folders,
         "more_folders": max(0, len(children) - MAX_FOLDERS),
@@ -161,9 +192,9 @@ def browse(settings, raw):
     }
 
 
-def check(settings, raw, recursive=True):
+def check(scope, raw, recursive=True):
     try:
-        folder = checked_folder(settings, raw)
+        folder = checked_folder(scope, raw)
     except FolderError as error:
         return {"ok": False, "path": raw, "error": str(error)}
     counts = count_inputs(folder, CHECK_LIMIT, recursive)
@@ -176,9 +207,10 @@ def check(settings, raw, recursive=True):
     return result
 
 
-def recent(ctx):
+def recent(ctx, scope=None):
     stored = read_json(ctx.data.settings_file, {}) or {}
-    return [str(p) for p in stored.get("recent_folders") or []][:RECENT_LIMIT]
+    folders = [str(p) for p in stored.get("recent_folders") or []][:RECENT_LIMIT]
+    return [f for f in folders if is_allowed(scope, Path(f))]
 
 
 def remember_folder(ctx, folder):
@@ -200,34 +232,39 @@ def register(app, ctx, secured):
         raise HTTPException(error.status, str(error)) from None
 
     @app.get("/fs/roots", tags=["folders"], dependencies=secured)
-    def fs_roots():
+    def fs_roots(request: Request):
         """Starting points of the folder picker: drives, or the allowed folders."""
+        scope = folder_scope(settings, request)
+        user = getattr(request.state, "user", None)
         return {
-            "roots": roots(settings),
-            "restricted": bool(settings.allowed_dirs),
+            "roots": roots(scope),
+            "restricted": scope is not None,
+            # Restricted by the account (an administrator's choice), not the server
+            "per_user": bool(user and user.get("role") != "admin"),
             "separator": os.sep,
-            "recent": recent(ctx),
+            "recent": recent(ctx, scope),
         }
 
     @app.get("/fs/browse", tags=["folders"], dependencies=secured)
-    def fs_browse(path: str = Query(..., description="Folder to list")):
+    def fs_browse(request: Request, path: str = Query(..., description="Folder to list")):
         """Sub-folders of a server folder with the images and PDFs directly in each."""
         try:
-            return browse(settings, path)
+            return browse(folder_scope(settings, request), path)
         except FolderError as error:
             fail(error)
 
     @app.get("/fs/check", tags=["folders"], dependencies=secured)
     def fs_check(
+        request: Request,
         path: str = Query(..., description="Folder to check"),
         recursive: bool = Query(True, description="Count subfolders too"),
     ):
         """ok, images and pdfs for a pasted path, or a plain error message."""
-        return check(settings, path, recursive)
+        return check(folder_scope(settings, request), path, recursive)
 
     @app.get("/fs/recent", tags=["folders"], dependencies=secured)
-    def fs_recent(check_exists: Optional[bool] = Query(False)):
-        folders = recent(ctx)
+    def fs_recent(request: Request, check_exists: Optional[bool] = Query(False)):
+        folders = recent(ctx, folder_scope(settings, request))
         if check_exists:
             return {
                 "folders": [

@@ -120,6 +120,51 @@ function languageOptions(caps, current) {
   return options;
 }
 
+// PaddleOCR model size and recogniser for an OCR / ICR zone; options the
+// server has no model for are marked "not installed".
+const PADDLE_LANGS = [
+  ["en", "English"],
+  ["ch", "Main (multilingual, handwriting)"],
+  ["devanagari", "Devanagari (Hindi)"],
+];
+function paddleControls(raw, opts, setOpt) {
+  const icr = raw.type === "icr";
+  const sizeSel = el("span", {});
+  const langSel = el("span", {});
+  const render = (installed) => {
+    const has = (size, lang) => !installed || installed.some((m) => (!size || m.size === size) && (!lang || m.lang === lang));
+    const mark = (label, ok) => (ok ? label : `${label} (not installed)`);
+    sizeSel.replaceChildren(
+      select(
+        opts.paddleModel || "",
+        [["", "config default"], ["mobile", mark("mobile (fast)", has("mobile"))], ["server", mark("server (most accurate, slower)", has("server"))]],
+        (v) => setOpt("paddleModel", v || null)
+      )
+    );
+    langSel.replaceChildren(
+      select(
+        opts.paddleLang || "",
+        [["", icr ? "default (main, else English)" : "default (from the language)"], ...PADDLE_LANGS.map(([v, t]) => [v, mark(t, has(null, v))])],
+        (v) => setOpt("paddleLang", v || null)
+      )
+    );
+  };
+  render(null);
+  ocrCapabilities().then((caps) => caps && render(caps.paddle_models || []));
+  return el(
+    "div",
+    { class: "two" },
+    withHelp("PaddleOCR model", sizeSel, "Model size PaddleOCR uses for this zone. Server models read better (handwriting especially) but are slower."),
+    withHelp(
+      "PaddleOCR recogniser",
+      langSel,
+      icr
+        ? "Recogniser for this handwriting zone. The main multilingual one is trained on handwriting too; English and Devanagari are smaller."
+        : "Recogniser for this zone when PaddleOCR reads it. 'Main' reads English and is trained on handwriting too."
+    )
+  );
+}
+
 // Controls for one zone; returns DOM nodes to append to the zone panel.
 export function ocrZoneControls(editor, raw, opts, setOpt, zoneName) {
   const nodes = [];
@@ -133,6 +178,7 @@ export function ocrZoneControls(editor, raw, opts, setOpt, zoneName) {
       directionPreview(editor, raw, opts, zoneName)
     );
   }
+  if (raw.type === "ocr" || raw.type === "icr") nodes.push(paddleControls(raw, opts, setOpt));
   if (raw.type === "ocr") {
     const engines = [["default", "config default"], ["tesseract", "Tesseract"], ["paddle", "PaddleOCR"]];
     const fallbacks = [["default", "config default"], ["none", "none"], ["tesseract", "Tesseract"], ["paddle", "PaddleOCR"]];

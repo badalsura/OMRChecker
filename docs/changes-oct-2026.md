@@ -244,6 +244,9 @@ this station.
   - The Exam / olympiad field sends `batch` with each upload, so all sheets
     of one exam land in one job. Review, Results, CSV export and cleanup then
     work per exam through the Job filters.
+  - With the field empty, sheets go into the job "Camera / phone uploads"
+    (one per template). Sheets dropped on the Scan tab go into "Single
+    uploads" the same way.
   - **Source label for the exam** sets the job's label; the default is
     "camera / single uploads".
   - **Sheet name** renames the uploaded photo; empty keeps the photo's name.
@@ -280,6 +283,34 @@ this station.
 | `GET /results?view=` | Adds `unflagged`; `flagged` leaves out verified sheets |
 | `POST /templates/{id}/generator/printed-boxes`, `/calibrate-index`, `/verify` | Template generator helpers |
 
+## Windows exe: bundled OCR, handwriting and remote access
+
+- Every build bundles Tesseract ("best" English, Hindi), PaddleOCR PP-OCRv5
+  (detection and the main recogniser in mobile and server size, English and
+  Devanagari recognisers) and `cloudflared`; the build stops if one is missing
+  (`packaging/prepare_bundle.py`).
+- Template editor, OCR and ICR zones: "PaddleOCR model" (mobile / server) and
+  "PaddleOCR recogniser" (English / main / Devanagari); models the server lacks
+  are marked "not installed".
+- ICR zones without a trained ICR model are read by PaddleOCR, preferring the
+  main recogniser (trained on handwriting too). Boxed zones are read as one line, or box by box
+  when the line gives the wrong count; the usual `minConfidence` decides
+  review. `ocr_params.icr_engine: "tesseract"` restores the old behaviour
+  (Tesseract, always reviewed).
+- Launcher window: port, Start / Stop server, Start / Stop remote, Cloudflare
+  settings (quick tunnel, tunnel token, or API token + hostname) with Copy
+  buttons for both addresses, and Quit. See
+  [packaging/README.md](../packaging/README.md#the-launcher-window).
+
+## Server folders per user
+
+- Administrators browse and scan every folder on the server. Other users see
+  and scan only the folders an administrator allowed for their account
+  (**Users > Server folders**, typed or picked with Browse); with none they
+  can only upload files. Recent folders are filtered the same way.
+- `PATCH /auth/users/{name}` takes `folders` (a list of full paths);
+  `/fs/roots` reports `per_user`. `OMR_ALLOWED_DIRS` still limits everyone.
+
 ## Fixes
 
 - Jobs: a pause could race a job's start (409 on resume); a queued job is now
@@ -311,7 +342,7 @@ this station.
 
 **Using the camera from a phone (Windows).**
 1. Run the station with an API key (`OMR_API_KEY`).
-2. Expose it over HTTPS with a tunnel, for example `cloudflared tunnel --url http://localhost:<port>`.
+2. Expose it over HTTPS: the launcher's **Start remote** (or `cloudflared tunnel --url http://localhost:<port>`).
 3. Open `<tunnel URL>/browser/demo.html?source=server` on the phone. The API
    base URL fills in by itself.
 

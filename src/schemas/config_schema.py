@@ -187,6 +187,11 @@ CONFIG_SCHEMA = {
                     "type": "string",
                     "enum": ["auto", "paddle", "none"],
                 },
+                # Reader of ICR zones without a trained ICR model
+                "icr_engine": {
+                    "type": "string",
+                    "enum": ["auto", "paddle", "tesseract"],
+                },
             },
         },
         "outputs": {

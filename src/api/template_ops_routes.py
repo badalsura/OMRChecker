@@ -27,6 +27,7 @@ from fastapi import Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from src.api.accounts import request_user
 from src.api.storage import read_json, safe_filename, write_json_atomic
 from src.api.templates import META_FILE, schema_errors
 
@@ -177,7 +178,7 @@ def register(app, ctx, secured, template_detail):
         return store.path(template_id)
 
     def user_of(request):
-        return request.headers.get("x-user") or DEFAULT_USER
+        return request_user(request, None, DEFAULT_USER)
 
     @app.post(
         "/templates/answer-key/parse", tags=["templates"], dependencies=secured

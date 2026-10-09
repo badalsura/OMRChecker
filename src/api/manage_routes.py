@@ -20,6 +20,7 @@ from typing import List, Optional
 from fastapi import HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from src.api.accounts import request_user
 from src.api import jobs as jobs_module
 from src.api.results import DEFAULT_USER, ResultsError
 from src.api.review import ReviewError, apply_review, current_value
@@ -90,7 +91,7 @@ def register(app, ctx, secured):
     service = ctx.results
 
     def user_of(request, explicit=None):
-        return request.headers.get("x-user") or explicit or DEFAULT_USER
+        return request_user(request, explicit, DEFAULT_USER)
 
     def drop_caches(scan_id):
         service.renders.drop(scan_id)

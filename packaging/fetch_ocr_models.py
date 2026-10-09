@@ -7,6 +7,7 @@ Nothing downloaded here is committed to git. See packaging/ocr_models.md.
     python packaging/fetch_ocr_models.py --tessdata best fast --langs eng hin
     python packaging/fetch_ocr_models.py --paddle mobile --paddle-langs en devanagari \
         --default-engine tesseract --fallback-engine paddle
+    python packaging/fetch_ocr_models.py --paddle mobile server --paddle-langs en devanagari ch
     python packaging/fetch_ocr_models.py --paddle server --paddle-onnx-dir D:\\converted
 
 Outputs (all git-ignored, picked up by packaging/omr.spec and by a source
@@ -133,14 +134,17 @@ def convert_to_onnx(model_dir, onnx_path):
     subprocess.check_call(command)
 
 
-def fetch_paddle(size, langs, onnx_dir=None, force=False):
+def fetch_paddle(sizes, langs, onnx_dir=None, force=False):
     PADDLE_DIR.mkdir(parents=True, exist_ok=True)
-    wanted = [PADDLE_MODELS[("det", size, None)]]
-    for lang in langs:
-        key = ("rec", size, lang)
-        if key not in PADDLE_MODELS:
-            key = ("rec", "mobile", lang)  # only mobile exists for en / devanagari
-        wanted.append(PADDLE_MODELS[key])
+    wanted = []
+    for size in sizes:
+        wanted.append(PADDLE_MODELS[("det", size, None)])
+        for lang in langs:
+            key = ("rec", size, lang)
+            if key not in PADDLE_MODELS:
+                key = ("rec", "mobile", lang)  # only mobile exists for en / devanagari
+            wanted.append(PADDLE_MODELS[key])
+    wanted = list(dict.fromkeys(wanted))
     for name in wanted:
         onnx_path = PADDLE_DIR / f"{name}.onnx"
         dict_name = DICT_NAMES.get(name)
@@ -186,8 +190,8 @@ def write_build_file(args):
         "langs": ["eng"] if "eng" in args.langs else args.langs[:1],
     }
     if args.paddle:
-        params["paddle_det_model"] = args.paddle
-        params["paddle_rec_model"] = args.paddle
+        params["paddle_det_model"] = args.paddle[0]
+        params["paddle_rec_model"] = args.paddle[0]
         params["paddle_lang"] = args.paddle_langs[0]
     elif args.default_engine == "paddle":
         raise SystemExit("--default-engine paddle needs --paddle mobile|server")
@@ -207,8 +211,9 @@ def main(argv=None):
                         help="Tesseract model sets to bundle; the first is the default")
     parser.add_argument("--langs", nargs="+", default=["eng"],
                         help="Tesseract languages, e.g. eng hin (traineddata names)")
-    parser.add_argument("--paddle", choices=["mobile", "server"], default=None,
-                        help="Bundle PaddleOCR PP-OCRv5 models of this size (default: none)")
+    parser.add_argument("--paddle", nargs="+", choices=["mobile", "server"], default=None,
+                        help="Bundle PaddleOCR PP-OCRv5 models of these sizes; the first is "
+                             "the default (default: none)")
     parser.add_argument("--paddle-langs", nargs="+", default=["en"],
                         choices=["en", "ch", "devanagari"],
                         help="PaddleOCR recognition languages; the first is the default")

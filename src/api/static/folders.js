@@ -109,7 +109,8 @@ async function checkPath(path) {
 // ---------------------------------------------------------------------------
 // the Browse dialog
 // ---------------------------------------------------------------------------
-async function openBrowser(start) {
+// onSelect(path) gets the chosen folder (default: the New Job folder box)
+export async function openBrowser(start, onSelect) {
   const pathLine = el("div", { class: "fs-path mono" });
   const list = el("ul", { class: "fs-list" });
   const note = el("div", { class: "small muted" });
@@ -140,8 +141,9 @@ async function openBrowser(start) {
       disabled: true,
       onclick: () => {
         if (!current) return;
-        $("job-folder").value = current.path;
         dialog.close();
+        if (onSelect) return onSelect(current.path);
+        $("job-folder").value = current.path;
         scheduleCheck();
       },
     },
@@ -166,7 +168,9 @@ async function openBrowser(start) {
       note.textContent = error.message;
       return;
     }
-    note.textContent = roots.restricted ? "Only the folders this server allows (OMR_ALLOWED_DIRS) are shown." : "";
+    if (roots.per_user && !roots.roots.length) note.textContent = "No server folders are allowed for your account. Upload files instead, or ask an administrator to allow a folder.";
+    else if (roots.per_user) note.textContent = "Only the folders an administrator allowed for your account are shown.";
+    else note.textContent = roots.restricted ? "Only the folders this server allows (OMR_ALLOWED_DIRS) are shown." : "";
     for (const root of roots.roots) {
       list.append(el("li", { onclick: () => go(root.path, true) }, el("span", { class: "fs-icon" }, root.kind === "drive" ? "🖴" : "📁"), el("span", { class: "fs-name" }, root.name)));
     }

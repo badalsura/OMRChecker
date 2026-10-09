@@ -479,10 +479,40 @@ Open `http://host:8000/` for the GUI and `/docs` for the OpenAPI reference.
 | Results | browse graded sheets with their overlay, toggle bubbles, edit values, verify, regrade, measure accuracy ([below](#results-screen)) |
 | Exports | CSV, XLSX, PDF, SQLite or any SQL database, with export profiles ([below](#exports)) |
 
-Set `OMR_API_KEY` to require an `X-API-Key` header. Set `OMR_ALLOWED_DIRS`
-before exposing folder jobs beyond localhost. Send `X-User: <name>` to record
+Set `OMR_API_KEY` to require an `X-API-Key` header. Server folders: once
+accounts exist, administrators can browse and scan any folder; every other
+user only the folders an administrator allows for that account (**Users >
+Server folders**; none means upload only). `OMR_ALLOWED_DIRS` limits everyone,
+administrators included. Send `X-User: <name>` to record
 who made a correction; the GUI sets it from **User** in the header, and
 otherwise corrections are recorded as `local`.
+
+### Accounts and sign-in
+
+Sign-in is off on a new station. **User › Create the administrator account**
+turns it on: that first account is the administrator, and from then on the
+GUI asks everyone to sign in (`/health` and the static pages stay open).
+
+- **Registration** (User › Manage users): *approval* (default; anyone can
+  register and an administrator approves them), *open*, or *closed* (only
+  administrators add accounts).
+- **Roles**: administrators manage users; everyone signed in can scan,
+  review, export and edit templates. The last active administrator can't be
+  demoted, disabled or deleted.
+- **Audit**: corrections are recorded under the signed-in user name; a
+  client's `X-User` header is ignored while someone is signed in.
+- **Programs and the SDK** keep using `OMR_API_KEY` (`X-API-Key`), or a token
+  from `POST /auth/login` sent as `Authorization: Bearer <token>`.
+- **Sessions** last 30 days in an HttpOnly cookie, so images, downloads and
+  the live camera page on the same server are signed in too. Disabling an
+  account or changing its password signs it out everywhere. Ten wrong
+  passwords lock a user name for five minutes.
+- Accounts live in `<data dir>/accounts.sqlite3` (PBKDF2-SHA256 password
+  hashes). Deleting that file turns sign-in off again.
+
+Endpoints: `GET /auth/status`, `POST /auth/register`, `/auth/login`,
+`/auth/logout`, `/auth/password`; administrators: `GET/POST /auth/users`,
+`PATCH/DELETE /auth/users/{name}`, `PATCH /auth/settings`.
 
 ## Results screen
 

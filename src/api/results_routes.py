@@ -7,6 +7,7 @@ from fastapi import Body, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from src.api.accounts import request_user
 from src.api.results import DEFAULT_USER, ResultsError, clean_rules
 
 VIEW_PATTERN = (
@@ -92,7 +93,7 @@ def register(app, ctx, secured):
         raise HTTPException(error.status, str(error)) from None
 
     def user_of(request: Request, explicit=None):
-        return request.headers.get("x-user") or explicit or DEFAULT_USER
+        return request_user(request, explicit, DEFAULT_USER)
 
     def overlay_response(result, info=None, **extra):
         payload = service.overlay(result, info)

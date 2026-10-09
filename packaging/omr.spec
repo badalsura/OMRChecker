@@ -71,6 +71,8 @@ datas += tree("packaging/tesseract", "tesseract", skip=())
 # OCR models and choices from packaging/fetch_ocr_models.py (packaging/ocr_models.md)
 datas += tree("packaging/tessdata", "tessdata", skip=())
 datas += tree("packaging/models/paddleocr", "models/paddleocr", skip=())
+# cloudflared for the launcher's "Start remote" (packaging/prepare_bundle.py)
+datas += tree("packaging/cloudflared", "cloudflared", skip=())
 if (ROOT / "packaging" / "ocr_build.json").is_file():
     datas.append((str(ROOT / "packaging" / "ocr_build.json"), "."))
 datas += optional(collect_data_files, "zxingcpp")
