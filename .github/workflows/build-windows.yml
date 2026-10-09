@@ -53,11 +53,25 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Models are kept between runs: fetched and converted only when the
+      # choices or the fetch script change
+      - name: Reuse fetched models
+        id: models-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            packaging/tessdata/
+            packaging/models/
+            packaging/ocr_build.json
+          key: ocr-models-${{ hashFiles('packaging/fetch_ocr_models.py') }}-${{ env.TESSDATA }}-${{ env.TESS_LANGS }}-${{ env.PADDLE_MODELS }}-${{ env.PADDLE_LANGS }}-${{ env.DEFAULT_ENGINE }}-${{ env.FALLBACK_ENGINE }}
+
       - name: Install the model converter (build machine only)
+        if: steps.models-cache.outputs.cache-hit != 'true'
         # paddle2onnx imports "packaging" without declaring it
         run: python -m pip install paddlepaddle paddle2onnx packaging
 
       - name: Fetch Tesseract and PaddleOCR models
+        if: steps.models-cache.outputs.cache-hit != 'true'
         run: |
           # Every build bundles Tesseract and PaddleOCR (PaddleOCR also reads ICR zones)
           python packaging/fetch_ocr_models.py --tessdata $TESSDATA --langs $TESS_LANGS \
@@ -110,7 +124,17 @@ jobs:
       - name: Engine smoke test from source
         run: python packaging/omr_desktop.py --selftest
 
+      - name: Reuse Tesseract and cloudflared
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            packaging/tesseract/
+            packaging/cloudflared/
+          key: win-tools-${{ github.event.inputs.cloudflared || 'latest' }}-${{ hashFiles('packaging/prepare_bundle.py') }}
+
       - name: Bundle Tesseract (UB Mannheim build)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           choco install tesseract -y --no-progress

@@ -75,6 +75,12 @@ A local build copies Tesseract from an installed UB Mannheim build (installing
 it with winget if missing) and converts the PaddleOCR models with a Python 3.9+
 next to 3.8 (`py -3.11`; paddle2onnx has no 3.8 wheels).
 
+Everything fetched stays in `packaging\tesseract`, `packaging\tessdata`,
+`packaging\models`, `packaging\cloudflared` (git-ignored) and is reused by
+later builds; delete a folder to fetch it again (e.g. a newer cloudflared). The
+GitHub build keeps the same folders in its Actions cache and fetches again only
+when the model choices or the fetch scripts change.
+
 ### OCR (Tesseract)
 
 `tesserocr` has no Windows wheels, so the Windows build uses `pytesseract`,
