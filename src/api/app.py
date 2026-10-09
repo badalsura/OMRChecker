@@ -589,6 +589,13 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         pdf_page: Optional[str] = Form(
             None, description="PDF pages: '1', '2-4', '3-' or 'all'"
         ),
+        batch: Optional[str] = Form(
+            None,
+            max_length=120,
+            description="Exam or olympiad name: sheets sent with the same name "
+            "and template are collected in one job (review, results and export "
+            "per exam)",
+        ),
     ):
         """Read sheets synchronously. Use /jobs for large batches."""
         require_template(template_id)
@@ -602,17 +609,21 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(400, "save_images must be all, review or none")
         upload_dir = ctx.data.uploads / new_id()
         stored = []
+        job_id, first_seq = None, 0
+        if batch and batch.strip():
+            job_id = ctx.jobs.batch_job(template_id, batch)["id"]
+            first_seq = ctx.jobs.reserve_batch(job_id, len(files))
         version = archive_template_version(
             ctx.templates.path(template_id), ctx.data.template_versions, template_id
         )
         try:
             paths = [save_upload(upload, upload_dir) for upload in files]
             with ctx.engines.engine(template_id) as engine:
-                for path, upload in zip(paths, files):
+                for index, (path, upload) in enumerate(zip(paths, files)):
                     meta = {
                         "template_id": template_id,
-                        "job_id": None,
-                        "seq": 0,
+                        "job_id": job_id,
+                        "seq": first_seq + index if job_id else 0,
                         "file_name": safe_filename(upload.filename, path.name),
                         "template_version": version,
                         "pdf_params": pdf_params,
@@ -630,7 +641,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
         ctx.index.add_scans(stored)
-        return {"scans": [with_links(result) for result in stored]}
+        if job_id:
+            ctx.jobs.finish_batch(job_id, len(files))
+        return {
+            "scans": [with_links(result) for result in stored],
+            "job_id": job_id,
+        }
 
     @app.get("/scans", tags=["scans"], dependencies=secured)
     def list_scans(

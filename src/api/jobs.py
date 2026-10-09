@@ -36,6 +36,8 @@ from src.logger import logger
 INPUT_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".pdf"}
 
 QUEUED, UPLOADING, RUNNING = "queued", "uploading", "running"
+# Source of a job that collects single uploads (phone photos) by exam name
+BATCH = "batch"
 COMPLETED, FAILED, CANCELLED, INTERRUPTED = (
     "completed",
     "failed",
@@ -114,6 +116,7 @@ class JobManager:
         self.live = {}  # job_id -> job dict while queued/running
         self.cancelled = set()
         self.paused = set()
+        self.batch_ids = {}
         self.resume_after = set()
         self.pool = None
         self.pool_workers = None
@@ -206,6 +209,69 @@ class JobManager:
         else:
             self.live[job_id] = job
         return job
+
+    # ---- batches: single uploads (phone photos) grouped by exam ----------
+    def batch_job(self, template_id, name):
+        """The job collecting single uploads called name for this template (an
+        exam or olympiad), created on first use. It is never run: sheets are
+        read as they arrive and recorded with reserve_batch / finish_batch."""
+        name = " ".join(name.split())
+        key = (template_id, name.lower())
+        with self.lock:
+            job_id = self.batch_ids.get(key)
+            job = read_json(self.data.job_file(job_id)) if job_id else None
+            if job is None:
+                for job_file in self.data.jobs.glob("*.json"):
+                    found = read_json(job_file)
+                    if (
+                        found
+                        and found.get("source") == BATCH
+                        and found.get("template_id") == template_id
+                        and " ".join((found.get("name") or "").split()).lower() == key[1]
+                    ):
+                        job = found
+                        break
+            if job is None:
+                now = time.time()
+                job = {
+                    "id": new_id(),
+                    "template_id": template_id,
+                    "source": BATCH,
+                    "state": COMPLETED,
+                    "options": {"save_images": SAVE_REVIEW},
+                    "name": name,
+                    "path_remap": [],
+                    "total_files": 0,
+                    "processed_files": 0,
+                    "pages": 0,
+                    "counts": {},
+                    "errors": [],
+                    "created_at": now,
+                    "started_at": now,
+                    "finished_at": now,
+                    "throughput_per_s": None,
+                }
+                self._save(job)
+            self.batch_ids[key] = job["id"]
+            return job
+
+    def reserve_batch(self, job_id, count):
+        """Sequence numbers for count new sheets of a batch job (first one)."""
+        with self.lock:
+            job = read_json(self.data.job_file(job_id))
+            first = job.get("total_files", 0) + 1
+            job["total_files"] = first - 1 + count
+            self._save(job)
+            return first
+
+    def finish_batch(self, job_id, count):
+        with self.lock:
+            job = read_json(self.data.job_file(job_id))
+            job["processed_files"] = job.get("processed_files", 0) + count
+            job["finished_at"] = time.time()
+            self._refresh_counts(job)
+            self._save(job)
+            return job
 
     def inputs_dir(self, job_id):
         path = self.data.jobs / job_id / "inputs"

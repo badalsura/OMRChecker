@@ -169,7 +169,9 @@
       <input type="password" id="apiKey" placeholder="X-API-Key (if the server requires one)" autocomplete="off">
       <label for="templateId">Template id on the server</label>
       <input type="text" id="templateId" placeholder="exam-2024">
-      <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue.</p>
+      <label for="batchName">Exam / olympiad</label>
+      <input type="text" id="batchName" placeholder="e.g. Science Olympiad 2026 (optional)" maxlength="120">
+      <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue. Sheets sent with the same exam name are grouped together there, as one job.</p>
     </section>
   </div>
 
@@ -211,7 +213,7 @@
 
   function store(key, value) { try { localStorage.setItem("omr-demo:" + key, value); } catch (e) { /* storage blocked */ } }
   function recall(key) { try { return localStorage.getItem("omr-demo:" + key); } catch (e) { return null; } }
-  ["apiBase", "apiKey", "templateId", "templateUrl", "assetsUrl"].forEach(function (id) {
+  ["apiBase", "apiKey", "templateId", "templateUrl", "assetsUrl", "batchName"].forEach(function (id) {
     var saved = params.get(id) || recall(id);
     if (saved) $(id).value = saved;
     $(id).addEventListener("change", function () { store(id, $(id).value.trim()); });
@@ -681,6 +683,8 @@
     var form = new FormData();
     form.append("template_id", id);
     form.append("files", state.lastBlob, state.lastName || "sheet.jpg");
+    var batch = $("batchName").value.trim();
+    if (batch) form.append("batch", batch);
     message($("sendMsg"), "Uploading…");
     $("sendBtn").disabled = true;
     fetch(base + "/scans", { method: "POST", body: form, headers: apiHeaders() }).then(function (r) {
@@ -690,7 +694,7 @@
       });
     }).then(function (body) {
       var scan = body.scans && body.scans[0];
-      message($("sendMsg"), scan ? "Stored on the server as " + (scan.scan_id || scan.file_id) + " (server status: " + scan.status + ")" : "Uploaded.", "ok");
+      message($("sendMsg"), scan ? "Stored on the server as " + (scan.scan_id || scan.file_id) + (batch ? " in “" + batch + "”" : "") + " (server status: " + scan.status + ")" : "Uploaded.", "ok");
     }).catch(function (e) {
       message($("sendMsg"), "Upload failed: " + e.message, "err");
     }).then(function () { $("sendBtn").disabled = false; });

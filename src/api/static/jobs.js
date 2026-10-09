@@ -111,7 +111,7 @@ export async function refreshJobs() {
       el(
         "tr",
         {},
-        el("td", {}, el("div", {}, job.name || job.id.slice(0, 8)), el("div", { class: "muted small" }, job.source === "folder" ? job.folder || "folder" : "upload")),
+        el("td", {}, el("div", {}, job.name || job.id.slice(0, 8)), el("div", { class: "muted small" }, job.source === "folder" ? job.folder || "folder" : job.source === "batch" ? "camera / single uploads" : "upload")),
         el("td", {}, names[job.template_id] || job.template_id),
         el("td", {}, chip(job.state, job.state)),
         el("td", {}, el("div", { class: "progress" }, el("div", { style: { width: `${pct}%` } })), el("div", { class: "muted small" }, `${job.processed_files || 0} / ${total} files · ${pct}%`)),

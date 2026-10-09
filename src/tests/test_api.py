@@ -745,3 +745,30 @@ def test_whole_sheet_review_item_shows_the_sheet(tmp_path, spec):
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/jpeg"
         assert client.get(f"/scans/{scan_id}/crop?name=nothing").status_code == 404
+
+
+def test_single_uploads_grouped_by_exam(tmp_path, spec):
+    sheets = [make_sheet(spec, seed) for seed in range(3)]
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+
+        def send(index, batch):
+            image = sheets[index][0]
+            data = {"template_id": template_id}
+            if batch:
+                data["batch"] = batch
+            response = client.post("/scans", data=data, files=[("files", (f"p{index}.png", png_bytes(image), "image/png"))])
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        first = send(0, "Science  Olympiad")
+        second = send(1, "science olympiad")
+        assert first["job_id"] and first["job_id"] == second["job_id"]
+        assert send(2, None)["job_id"] is None
+        job = client.get(f"/jobs/{first['job_id']}").json()
+        assert job["name"] == "Science Olympiad" and job["source"] == "batch"
+        assert job["state"] == "completed" and job["processed_files"] == 2
+        listed = client.get(f"/scans?job_id={first['job_id']}").json()
+        assert listed["total"] == 2
+        assert client.delete(f"/jobs/{first['job_id']}").status_code == 200
+        assert client.get("/scans").json()["total"] == 1
