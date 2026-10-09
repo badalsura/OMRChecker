@@ -154,7 +154,7 @@ export function blockAlignmentFields(editor, raw) {
     "div",
     {},
     raw.rectifyOnBorder ? helpField("Outer frame gap (px, two-level search)", outer, HELP.outerBorderPadding) : null,
-    helpField("Fit to bubble outlines (blockPerspective)", fit, HELP.blockPerspective)
+    helpField("Fit to bubble outlines", fit, HELP.blockPerspective)
   );
 }
 

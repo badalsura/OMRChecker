@@ -1127,9 +1127,13 @@ export class TemplateEditor {
 
   // A collapsible group of the page panel; open state survives re-renders
   sideGroup(key, title, count, ...children) {
+    return this.group(key, title, count, SIDE_GROUPS_OPEN.has(key), ...children);
+  }
+
+  group(key, title, count, openByDefault, ...children) {
     const id = `group-${key}`;
-    const open = this.openSections.has(id) || (!this.closedSections.has(id) && SIDE_GROUPS_OPEN.has(key));
-    const box = el("details", { class: "ed-group", open: open || undefined });
+    const open = this.openSections.has(id) || (!this.closedSections.has(id) && openByDefault);
+    const box = el("details", { class: "ed-fold", open: open || undefined });
     box.addEventListener("toggle", () => {
       if (box.open) {
         this.openSections.add(id);
@@ -1212,37 +1216,50 @@ export class TemplateEditor {
       custom
         ? this.dropdown("Direction (how values are laid out)", raw.direction || "vertical", [["horizontal", "horizontal: values left→right, fields stacked"], ["vertical", "vertical: values top→bottom, fields side by side"]], (v) => set(() => (raw.direction = v)))
         : null,
-      this.input("Field labels (e.g. q1..20 or roll1..6, comma separated)", (raw.fieldLabels || []).join(", "), (v) =>
+      this.input("Field labels", (raw.fieldLabels || []).join(", "), (v) =>
         this.setFieldLabels(o, v.split(",").map((s) => s.trim()).filter(Boolean))
-      ),
+      , { placeholder: "e.g. q1..20 or roll1..6", help: "Field labels (e.g. q1..20 or roll1..6, comma separated)" }),
       el("div", { class: "muted small", style: { marginBottom: "8px" } }, `${o.nF} field(s): ${o.labels.slice(0, 4).join(", ")}${o.nF > 4 ? " … " + o.labels[o.nF - 1] : ""}`),
-      el(
-        "div",
-        { class: "two" },
-        this.num("Origin x", raw.origin?.[0], (v) => set(() => (raw.origin = [Math.round(v), raw.origin[1]]))),
-        this.num("Origin y", raw.origin?.[1], (v) => set(() => (raw.origin = [raw.origin[0], Math.round(v)]))),
-        this.num("Bubbles gap", raw.bubblesGap, (v) => set(() => (raw.bubblesGap = v)), { step: "0.1" }),
-        this.num("Labels gap", raw.labelsGap, (v) => set(() => (raw.labelsGap = v)), { step: "0.1" }),
-        this.num("Bubble width", raw.bubbleDimensions?.[0], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [v, raw.bubbleDimensions?.[1] ?? o.bh]))), { optional: true, placeholder: `page: ${o.bw}` }),
-        this.num("Bubble height", raw.bubbleDimensions?.[1], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [raw.bubbleDimensions?.[0] ?? o.bw, v]))), { optional: true, placeholder: `page: ${o.bh}` })
+      this.group(
+        "block-position",
+        "Position and spacing",
+        null,
+        true,
+        el(
+          "div",
+          { class: "two" },
+          this.num("Origin x", raw.origin?.[0], (v) => set(() => (raw.origin = [Math.round(v), raw.origin[1]]))),
+          this.num("Origin y", raw.origin?.[1], (v) => set(() => (raw.origin = [raw.origin[0], Math.round(v)]))),
+          this.num("Bubbles gap", raw.bubblesGap, (v) => set(() => (raw.bubblesGap = v)), { step: "0.1" }),
+          this.num("Labels gap", raw.labelsGap, (v) => set(() => (raw.labelsGap = v)), { step: "0.1" }),
+          this.num("Bubble width", raw.bubbleDimensions?.[0], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [v, raw.bubbleDimensions?.[1] ?? o.bh]))), { optional: true, placeholder: `page: ${o.bw}` }),
+          this.num("Bubble height", raw.bubbleDimensions?.[1], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [raw.bubbleDimensions?.[0] ?? o.bw, v]))), { optional: true, placeholder: `page: ${o.bh}` })
+        ),
+        this.input("Empty value", raw.emptyValue ?? "", (v) => set(() => (v === "" ? delete raw.emptyValue : (raw.emptyValue = v))), { placeholder: "inherit" }),
+        el("div", { class: "muted small" }, `Size ${Math.round(o.w)} × ${Math.round(o.h)} px`)
       ),
-      this.input("Empty value", raw.emptyValue ?? "", (v) => set(() => (v === "" ? delete raw.emptyValue : (raw.emptyValue = v))), { placeholder: "inherit" }),
-      el("div", { class: "muted small" }, `Size ${Math.round(o.w)} × ${Math.round(o.h)} px`),
-      this.dropdown(
-        "Fit to printed border (rectifyOnBorder)",
-        raw.rectifyOnBorder === undefined ? "" : String(raw.rectifyOnBorder),
-        [["", "config default (alignment_params.rectify_on_border)"], ["true", "on: snap bubbles onto the box printed around the block"], ["false", "off"]],
-        (v) => set(() => (v === "" ? delete raw.rectifyOnBorder : (raw.rectifyOnBorder = v === "true")))
-      ),
-      el(
-        "button",
-        { class: "small", title: "Show the rectangles printed on the reference sheet and click the one around this block: the gap is measured for you", onclick: () => startBorderPick(this) },
-        "Pick printed border…"
-      ),
-      raw.rectifyOnBorder
-        ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })
-        : null,
-      blockAlignmentFields(this, raw)
+      this.group(
+        "block-alignment",
+        "Alignment",
+        alignmentCount(raw),
+        alignmentCount(raw) > 0,
+        this.dropdown(
+          "Fit to printed border",
+          raw.rectifyOnBorder === undefined ? "" : String(raw.rectifyOnBorder),
+          [["", "page default"], ["true", "on: snap onto the printed box"], ["false", "off"]],
+          (v) => set(() => (v === "" ? delete raw.rectifyOnBorder : (raw.rectifyOnBorder = v === "true"))),
+          { help: "Fit to printed border (rectifyOnBorder)" }
+        ),
+        el(
+          "button",
+          { class: "small", title: "Show the rectangles printed on the reference sheet and click the one around this block: the gap is measured for you", onclick: () => startBorderPick(this) },
+          "Pick printed border…"
+        ),
+        raw.rectifyOnBorder
+          ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })
+          : null,
+        blockAlignmentFields(this, raw)
+      )
     );
     // Grouping (one output field) and validation of the block's columns
     const grouped = groups.blockGroup(this.doc, o.labels);
@@ -1749,4 +1766,9 @@ export class TemplateEditor {
       toast(error.message, "error", 6000);
     }
   }
+}
+
+// Per-block alignment settings that differ from the page defaults
+function alignmentCount(raw) {
+  return ["rectifyOnBorder", "blockPerspective", "borderPadding", "outerBorderPadding"].filter((k) => raw[k] !== undefined).length;
 }
