@@ -1,5 +1,6 @@
 // Template editor: draws the template over a reference image and lets the user
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
+import { openColumnsDialog } from "./editor_columns.js";
 import { add, api, displayName, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
 import { alignmentSection, blockAlignmentFields } from "./editor_align.js";
@@ -154,6 +155,7 @@ export class TemplateEditor {
       el("label", { class: "small muted", title: "Snap to other blocks' edges" }, edgeChk, " edges"),
       el("span", { class: "sep" }),
       this.bgSel,
+      btn("Columns…", "Output columns and groups: reorder, combine, split", () => openColumnsDialog(this)),
       btn("Colours…", "Sheet colours and colour removal (colorDropout)", () => new ColourPanel(this).open()),
       btn("Edit JSON", "Edit template.json, config.json and evaluation.json directly", () => openJsonEditor(this)),
       btn("Scoring…", "Answer key and marking scheme (evaluation.json)", () => openScoring(this)),

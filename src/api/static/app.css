@@ -377,3 +377,8 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .regrade-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 14px; }
 .regrade-advanced { margin: 4px 0 10px; }
 .regrade-advanced > summary { cursor: pointer; font-size: 13px; margin-bottom: 6px; }
+.ed-col-tools { margin-bottom: 6px; }
+.ed-col-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 60vh; overflow: auto; border: 1px solid var(--border, #ddd); border-radius: 6px; }
+.ed-col-list li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--border, #eee); cursor: pointer; }
+.ed-col-list li:last-child { border-bottom: none; }
+.ed-col-list li.on { background: rgba(47, 111, 223, 0.08); }
