@@ -90,6 +90,75 @@ def item_box(result, name, custom_labels=None, _depth=0):
     return kind, [x0, y0, x1 - x0, y1 - y0]
 
 
+def sheet_entry(result, name):
+    """The whole-sheet review entry called name (index points, blank sheet...)."""
+    for entry in result.get("review") or []:
+        if entry.get("name") == name and entry.get("kind") == "sheet":
+            return entry
+    return None
+
+
+def template_index_points(template_json):
+    """Index points of a template's TimingMarkAlignment, in template px."""
+    for processor in template_json.get("preProcessors") or []:
+        points = (processor.get("options") or {}).get("indexPoints")
+        if points:
+            return [
+                {
+                    "name": point.get("name") or "point%d" % (i + 1),
+                    "center": point["center"],
+                    "size": point.get("size") or [20, 20],
+                }
+                for i, point in enumerate(points)
+            ]
+    return []
+
+
+def sheet_overview(image, result, entry, index_points=(), max_width=1000):
+    """The whole aligned sheet with every field drawn (marked bubbles filled,
+    flagged fields boxed) and the index points: found in green, missing in red."""
+    canvas = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+    fill = canvas.copy()
+    flagged = {item.get("name") for item in result.get("review") or []}
+    for name, field in (result.get("fields") or {}).items():
+        bubbles = field.get("bubbles") or []
+        for b in bubbles:
+            corner = (int(b["x"]), int(b["y"]))
+            far = (int(b["x"] + b["w"]), int(b["y"] + b["h"]))
+            if b.get("marked"):
+                cv2.rectangle(fill, corner, far, (223, 111, 47), -1)
+            else:
+                cv2.rectangle(canvas, corner, far, (150, 150, 150), 1)
+        box = _field_box(field)
+        if box and name in flagged:
+            x, y, w, h = [int(v) for v in box]
+            cv2.rectangle(canvas, (x - 4, y - 4), (x + w + 4, y + h + 4), (0, 140, 255), 2)
+    cv2.addWeighted(fill, 0.45, canvas, 0.55, 0, canvas)
+    missing = set((entry or {}).get("missing") or [])
+    for point in index_points:
+        cx, cy = int(point["center"][0]), int(point["center"][1])
+        radius = int(max(point["size"]) * 0.5 + 12)
+        colour = (40, 40, 220) if point["name"] in missing else (40, 160, 40)
+        cv2.circle(canvas, (cx, cy), radius, colour, 4 if point["name"] in missing else 2)
+        text = point["name"] + (" missing" if point["name"] in missing else "")
+        width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0][0]
+        # Labels go towards the middle of the page so they stay on it
+        x = cx + radius + 4 if cx < canvas.shape[1] / 2 else cx - radius - 4 - width
+        cv2.putText(
+            canvas,
+            text,
+            (x, cy + 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            colour,
+            2,
+        )
+    if canvas.shape[1] > max_width:
+        scale = max_width / canvas.shape[1]
+        canvas = cv2.resize(canvas, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return canvas
+
+
 def crop_box(image, box, pad=20):
     x, y, w, h = [int(v) for v in box]
     img_h, img_w = image.shape[:2]

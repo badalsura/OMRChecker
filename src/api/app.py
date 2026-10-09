@@ -59,6 +59,9 @@ from src.api.review import (
     crop_box,
     item_box,
     recompute,
+    sheet_entry,
+    sheet_overview,
+    template_index_points,
     write_training_records,
 )
 from src.api.settings import Settings
@@ -677,7 +680,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         if not target:
             raise HTTPException(400, "Pass field=<label> or zone=<name>")
         kind, box = item_box(result, target)
-        if kind is None or box is None:
+        entry = sheet_entry(result, target) if box is None else None
+        if entry is None and (kind is None or box is None):
             raise HTTPException(404, f"'{target}' is not a field or zone of this scan")
         image = ctx.aligned_image(scan_id, result)
         if image is None:
@@ -686,6 +690,11 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 "No aligned image stored for this scan, and the original file "
                 "could not be read again (moved or changed)",
             )
+        if entry is not None:
+            # A whole-sheet item: the sheet with every field and index point
+            overview = sheet_overview(image, result, entry, sheet_index_points(result))
+            ok, buffer = cv2.imencode(".jpg", overview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            return Response(content=buffer.tobytes(), media_type="image/jpeg")
         crop = crop_box(image, box, pad)
         if crop is None:
             raise HTTPException(404, "Crop is outside the image")
@@ -827,6 +836,13 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             item["details"] = zone.get("details")
         return item
 
+    def sheet_index_points(result):
+        try:
+            path = ctx.templates.path(result.get("template_id") or "") / "template.json"
+            return template_index_points(read_json(path) or {})
+        except KeyError:
+            return []
+
     def sheet_reasons(entry):
         if not entry or entry.get("kind") != "sheet":
             return []
@@ -835,6 +851,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 f"{entry['marked_bubbles']} marked bubbles, fewer than "
                 f"{entry.get('min_marked_bubbles')}: blank or misread sheet? "
                 "Accept to dismiss"
+            ]
+        if entry.get("missing"):
+            names = ", ".join(entry["missing"])
+            return [
+                f"Index point {names} not found (red circle): check it is printed "
+                "and the sheet sits right. Accept to dismiss"
             ]
         return ["Sheet-level check; accept to dismiss"]
 
@@ -884,7 +906,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "candidates": candidates,
             "crop_url": (
                 f"/scans/{scan_id}/crop?name={quote(name)}"
-                if has_crops(result) and box
+                if has_crops(result) and (box or kind == "sheet")
                 else None
             ),
             "options": None,

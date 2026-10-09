@@ -699,6 +699,7 @@ class ScanIndex:
             for view in (
                 "all",
                 "flagged",
+                "unflagged",
                 "reviewed",
                 "not_reviewed",
                 "corrected",

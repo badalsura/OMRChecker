@@ -739,3 +739,21 @@ def test_jobs_without_images_draw_crops_from_the_original(tmp_path, spec):
         name = next(iter(scan["fields"]))
         crop = client.get(f"/scans/{rows[0]['id']}/crop?name={name}")
         assert crop.status_code == 200 and crop.headers["content-type"] == "image/png"
+
+
+def test_whole_sheet_review_item_shows_the_sheet(tmp_path, spec):
+    image, _ = make_sheet(spec, 3)
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        result = scan_one(client, template_id, image)
+        scan_id = result["scan_id"]
+        path = next((tmp_path / "data").rglob(f"{scan_id}/result.json"))
+        stored = json.loads(path.read_text())
+        stored["review"] = (stored.get("review") or []) + [
+            {"kind": "sheet", "name": "index_points", "flags": ["index_point_missing"], "missing": ["P1"]}
+        ]
+        path.write_text(json.dumps(stored))
+        response = client.get(f"/scans/{scan_id}/crop?name=index_points&pad=24&outline=true")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        assert client.get(f"/scans/{scan_id}/crop?name=nothing").status_code == 404
