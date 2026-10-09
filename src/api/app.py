@@ -47,6 +47,8 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.api import auth_routes
+from src.api.accounts import Accounts, request_user
 from src.api import align_routes
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
@@ -110,6 +112,7 @@ class Context:
         self.settings = settings
         self.data = DataDir(settings.data_dir)
         self.index = ScanIndex(self.data.root / "index.sqlite3")
+        self.accounts = Accounts(self.data.root / "accounts.sqlite3")
         self.templates = TemplateStore(self.data.templates)
         self.engines = EnginePool(self.templates)
         self.jobs = jobs_module.JobManager(
@@ -194,17 +197,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             expose_headers=["Content-Disposition"],
         )
 
-    def require_api_key(request: Request):
-        expected = settings.api_key
-        if not expected:
-            return
-        provided = request.headers.get("x-api-key") or request.query_params.get(
-            "api_key"
-        )
-        if not provided or not secrets.compare_digest(provided, expected):
-            raise HTTPException(401, "Missing or invalid API key (X-API-Key header)")
-
-    secured = [Depends(require_api_key)]
+    # The API key (programs), or a signed-in user once accounts exist
+    secured = [Depends(auth_routes.make_access(settings, ctx.accounts))]
+    auth_routes.register(app, ctx)
 
     # ------------------------------------------------------------------
     # helpers
@@ -324,7 +319,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "cpu_count": os.cpu_count() or 1,
             "max_upload_mb": settings.max_upload_mb,
             "sync_max_files": settings.sync_max_files,
-            "auth_required": bool(settings.api_key),
+            "auth_required": bool(settings.api_key) or ctx.accounts.enabled(),
+            "login": ctx.accounts.enabled(),
             "template_generation": _template_gen_available(),
         }
 
@@ -734,7 +730,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
 
     @app.post("/scans/{scan_id}/review", tags=["review"], dependencies=secured)
     def review_scan(scan_id: str, body: ReviewBody, request: Request):
-        reviewer = request.headers.get("x-user") or body.reviewer or DEFAULT_USER
+        reviewer = request_user(request, body.reviewer, DEFAULT_USER)
         with ctx.scan_lock(scan_id):
             result = load_result(scan_id)
             info = ctx.results.template_info(result)

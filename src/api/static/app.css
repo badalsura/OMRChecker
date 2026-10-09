@@ -382,3 +382,12 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .ed-col-list li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--border, #eee); cursor: pointer; }
 .ed-col-list li:last-child { border-bottom: none; }
 .ed-col-list li.on { background: rgba(47, 111, 223, 0.08); }
+.auth-overlay { position: fixed; inset: 0; z-index: 60; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; overflow: auto; }
+.auth-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12); width: 380px; max-width: 100%; padding: 24px; display: flex; flex-direction: column; gap: 4px; }
+.auth-card h2 { margin: 10px 0 8px; font-size: 18px; }
+.auth-card .brand { font-weight: 600; }
+.auth-card .row { margin-top: 6px; align-items: center; }
+.auth-note { min-height: 18px; font-size: 13px; }
+.auth-note.err { color: var(--err); }
+.auth-note.ok { color: var(--ok); }
+.auth-users tr.pending td { background: var(--warn-soft); }

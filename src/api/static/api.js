@@ -49,6 +49,9 @@ export async function api(path, { method = "GET", json, form, raw = false, retry
     body = form;
   }
   const response = await fetch(path, { method, headers, body });
+  if (response.status === 401 && retry && state.onUnauthorized && state.onUnauthorized()) {
+    throw new ApiError("401: Sign in to continue", 401);
+  }
   if (response.status === 401 && retry) {
     const key = prompt("This server requires an API key:", state.apiKey);
     if (key !== null) {

@@ -1,5 +1,6 @@
 // Entry point: tabs, API key, capabilities and module wiring.
 import { api, loadTemplates, setApiKey, setUser, state, toast } from "./api.js";
+import { initAuth, loadAuth, loginRequired, openAccountMenu, showLogin } from "./auth.js";
 import { initExport } from "./export.js";
 import { initJobs, onShowJobs } from "./jobs.js";
 import { bindToolbar, initResults, onShowResults } from "./results.js";
@@ -27,7 +28,8 @@ function showTab(name) {
 }
 
 function showUser() {
-  document.getElementById("user-btn").textContent = state.user ? `User: ${state.user}` : "User";
+  const signedIn = state.auth && state.auth.user;
+  document.getElementById("user-btn").textContent = signedIn ? `👤 ${signedIn.display || signedIn.name}` : state.user ? `User: ${state.user}` : "User";
 }
 
 async function init() {
@@ -41,13 +43,17 @@ async function init() {
       boot();
     }
   });
-  document.getElementById("user-btn").addEventListener("click", () => {
-    const name = prompt("Your name (recorded with every correction you make):", state.user);
-    if (name !== null) {
-      setUser(name.trim());
+  document.getElementById("user-btn").addEventListener("click", () =>
+    openAccountMenu((name) => {
+      setUser(name);
       showUser();
-    }
+    })
+  );
+  initAuth(async () => {
+    showUser();
+    await boot();
   });
+  await loadAuth();
   showUser();
   initScan();
   initReview();
@@ -58,6 +64,8 @@ async function init() {
   initTemplates();
   const initial = (location.hash || "#scan").slice(1);
   if (TABS.includes(initial)) showTab(initial);
+  // With accounts on, nothing loads until someone signs in
+  if (loginRequired()) return showLogin();
   await boot();
 }
 

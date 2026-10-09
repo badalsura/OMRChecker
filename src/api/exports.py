@@ -13,6 +13,7 @@ from fastapi import Body, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from src.api.accounts import request_user
 from src.api.results import DEFAULT_USER, ResultsError
 from src.api.storage import new_id, read_json, slugify, write_json_atomic
 from src.export import (
@@ -301,7 +302,7 @@ def register(app, ctx, secured):
         XLSX, PDF, a SQLite file or into a database (format=sql + sql_url).
         Runs in the background unless wait=true; poll GET /exports/{id}.
         """
-        user = request.headers.get("x-user") or DEFAULT_USER
+        user = request_user(request, None, DEFAULT_USER)
         try:
             return manager.create(body, user)
         except ExportError as error:
