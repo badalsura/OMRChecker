@@ -181,6 +181,7 @@
         <span class="badge" id="statusBadge"></span>
         <span id="fileLabel" class="muted"></span>
         <span id="timing" class="muted"></span>
+        <button id="retakeBtn" class="primary hidden">📷 Retake</button>
       </div>
       <div id="errorMsg"></div>
       <ul class="review" id="reviewList"></ul>
@@ -415,12 +416,14 @@
   }
   function onFile(input) {
     var f = input.files && input.files[0];
+    state.fromCamera = false;
     if (f) scanBlob(f, f.name || "photo.jpg");
     input.value = "";
   }
   $("photo").addEventListener("change", function () { onFile($("photo")); });
   $("pick").addEventListener("change", function () { onFile($("pick")); });
   $("sampleBtn").addEventListener("click", function () {
+    state.fromCamera = false;
     fetch("examples/sample-phone.jpg").then(function (r) { return r.blob(); }).then(function (b) { scanBlob(b, "sample-phone.jpg"); });
   });
 
@@ -443,8 +446,10 @@
     }
     openCamera(true);
   });
+  $("retakeBtn").addEventListener("click", function () { openCamera(state.cameraAuto); });
   function openCamera(auto) {
     $("autoCapture").checked = auto;
+    state.cameraAuto = auto;
     if (state.stream) { $("liveWrap").scrollIntoView({ block: "center" }); return; }
     navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false }).then(function (stream) {
       state.stream = stream;
@@ -469,13 +474,14 @@
     c.width = v.videoWidth; c.height = v.videoHeight;
     c.getContext("2d").drawImage(v, 0, 0);
     stopCamera();
+    state.fromCamera = true;
     c.toBlob(function (blob) { scanBlob(blob, "camera-" + new Date().toISOString().replace(/[:.]/g, "-") + ".jpg"); }, "image/jpeg", 0.92);
     $("resultCard").scrollIntoView({ block: "start" });
   }
   $("grabBtn").addEventListener("click", grabFrame);
 
   // ---- live preview: page outline and timing marks over the video ----------
-  var PREVIEW_SIZE = 800, PREVIEW_EVERY_MS = 300, MIN_SHARPNESS = 40, STEADY_FRAMES = 3, STEADY_MOVE = 0.015, MIN_MARKS_SHARE = 0.9;
+  var PREVIEW_SIZE = 800, PREVIEW_EVERY_MS = 200, MIN_SHARPNESS = 40, STEADY_FRAMES = 3, STEADY_MOVE = 0.015;
   function startPreview() {
     state.previewFrames = [];
     state.waitForNewSheet = false;
@@ -517,8 +523,9 @@
     return true;
   }
   function onPreview(p, frame) {
-    // A mark or two lost at preview size is normal; the full read re-finds them
-    var allMarks = p.expected === null || p.matched >= Math.ceil(MIN_MARKS_SHARE * p.expected);
+    // Ready needs the page fitted and every index point seen; timing marks are
+    // left to the full-size read (small marks are easily lost at preview size)
+    var allMarks = p.indexTotal === null || p.indexFound === p.indexTotal;
     var sharp = p.sharpness >= MIN_SHARPNESS;
     if (p.ok && p.quad) state.previewFrames.push({ quad: p.quad, w: frame.width, h: frame.height });
     else state.previewFrames = [];
@@ -528,7 +535,7 @@
     drawPreview(p, frame, ready);
     var hint;
     if (!p.ok) hint = p.quad ? "Sheet found, but " + (p.error || "it could not be aligned") + ". Line it up with the white guide." : "Line the sheet up with the white guide.";
-    else if (!allMarks) hint = "Matched " + p.matched + " of " + p.expected + " timing marks; fit the whole sheet in view.";
+    else if (!allMarks) hint = "Found " + p.indexFound + " of " + p.indexTotal + " index points; fit the whole sheet in view.";
     else if (!sharp) hint = "Too blurry (sharpness " + p.sharpness + "); hold still or move closer.";
     else if (!ready) hint = "Hold steady…";
     else if (state.waitForNewSheet) hint = "Captured. Move to the next sheet.";
@@ -578,17 +585,11 @@
     polygon(g, o.page);
     g.stroke();
     g.setLineDash([]);
-    // timing tracks: the line of marks, each mark a small square
+    // index points: ringed; once aligned, green when seen and red when not
     g.lineWidth = 2;
-    g.fillStyle = colour;
-    o.tracks.forEach(function (track) {
-      polygon(g, track, false);
-      g.stroke();
-      track.forEach(function (m) { g.fillRect(m[0] - 2.5, m[1] - 2.5, 5, 5); });
-    });
-    // index points: ringed so they stand out from the bubbles
     o.indexPoints.forEach(function (ip) {
       var r = Math.max(4, ip.radius);
+      if (!guide && ip.found !== undefined) g.strokeStyle = ip.found ? "#16a34a" : "#dc2626";
       g.beginPath();
       g.arc(ip.center[0], ip.center[1], r, 0, 2 * Math.PI);
       g.stroke();
@@ -596,6 +597,7 @@
       g.arc(ip.center[0], ip.center[1], r + 4, 0, 2 * Math.PI);
       g.stroke();
     });
+    g.strokeStyle = colour;
     var blockColour = guide ? "rgba(255, 255, 255, 0.85)" : "rgba(37, 99, 235, 0.9)";
     g.strokeStyle = blockColour;
     g.lineWidth = 1.5;
@@ -603,17 +605,8 @@
       polygon(g, quad);
       g.stroke();
     });
-    var r = Math.max(1.5, o.bubbleRadius || 2);
-    g.strokeStyle = guide ? "rgba(255, 255, 255, 0.6)" : "rgba(37, 99, 235, 0.75)";
-    g.lineWidth = 1;
-    o.bubbles.forEach(function (b) {
-      g.beginPath();
-      g.arc(b[0], b[1], r, 0, 2 * Math.PI);
-      g.stroke();
-    });
     g.restore();
   }
-
 
   // ---- result ------------------------------------------------------------
   function showResult(result) {
@@ -627,6 +620,8 @@
     var ms = (t.total || 0) + (state.engineKind === "worker" ? t.decode || 0 : 0);
     $("timing").textContent = t.total !== undefined ? Math.round(ms) + " ms" + (result.registration && result.registration.orientation ? " · rotated " + result.registration.orientation + "°" : "") : "";
     message($("errorMsg"), result.error || "", "err");
+    // A camera shot that could not be aligned: one tap to try again
+    $("retakeBtn").classList.toggle("hidden", !(result.status === "error" && state.fromCamera));
     var list = $("reviewList");
     list.innerHTML = "";
     (result.review || []).forEach(function (r) {

@@ -5169,6 +5169,9 @@
         blocks = overlay.blocks;
         bubbles = overlay.bubbles;
         bubbleRadius = overlay.bubbleRadius;
+        overlay.indexPoints.forEach(function (ip) {
+          ip.found = darkSpot(gray, ip.center, ip.radius);
+        });
       } else if (reg.corners && reg.corners.length === 4) {
         quad = reg.corners.map(toFrame);
       }
@@ -5187,8 +5190,33 @@
         // guide centred in the frame to line the sheet up with
         overlay: overlay || this.guideOverlay(gray.width, gray.height),
         sharpness: roundTo(laplacianVariance(gray), 1),
+        // index points seen where the page fit puts them (null: none in the template)
+        indexFound: overlay && overlay.indexPoints.length ? overlay.indexPoints.filter(function (ip) { return ip.found; }).length : null,
+        indexTotal: overlay && overlay.indexPoints.length ? overlay.indexPoints.length : null,
       };
     };
+    // A printed dot or square at centre: its middle clearly darker than a ring
+    // of paper around it (cheap check on the small preview frame)
+    var DARK_SPOT_CONTRAST = 35;
+    function darkSpot(img, centre, radius) {
+      var r = Math.max(2, radius), w = img.width, h = img.height, d = img.data;
+      var cx = centre[0], cy = centre[1], reach = Math.ceil(r * 2.4);
+      var inSum = 0, inN = 0, ringSum = 0, ringN = 0;
+      for (var y = Math.max(0, Math.floor(cy - reach)); y <= Math.min(h - 1, Math.ceil(cy + reach)); y++) {
+        for (var x = Math.max(0, Math.floor(cx - reach)); x <= Math.min(w - 1, Math.ceil(cx + reach)); x++) {
+          var dist = Math.hypot(x - cx, y - cy), v = d[y * w + x];
+          if (dist <= r * 0.6) {
+            inSum += v;
+            inN++;
+          } else if (dist >= r * 1.6 && dist <= r * 2.4) {
+            ringSum += v;
+            ringN++;
+          }
+        }
+      }
+      if (!inN || !ringN) return false;
+      return ringSum / ringN - inSum / inN >= DARK_SPOT_CONTRAST;
+    }
     // The template's page outline, timing tracks, index points, field blocks
     // and bubbles mapped into frame pixels by map(point); scale = frame pixels
     // per template unit (for radii)
