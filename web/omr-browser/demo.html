@@ -248,6 +248,8 @@
     $("source").value = params.get("source");
     $("source").dispatchEvent(new Event("change"));
   }
+  // Served by OMR Station itself (/browser/...): the API is this same address
+  if (!$("apiBase").value && location.pathname.indexOf("/browser/") === 0) $("apiBase").value = location.origin;
   if (!$("apiKey").value) {
     try { $("apiKey").value = localStorage.getItem("omr_api_key") || ""; } catch (e) { /* storage blocked */ }
   }
