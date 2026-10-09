@@ -127,7 +127,7 @@ def stub_engines(monkeypatch, reads, available=("tesseract", "paddle")):
 
     monkeypatch.setattr(text_reader, "engine_read", fake_engine_read)
     monkeypatch.setattr(
-        text_reader, "engine_available", lambda name, s, lang=None: name in available
+        text_reader, "engine_available", lambda name, s, lang=None, zone=None: name in available
     )
     return calls
 
@@ -499,3 +499,14 @@ def test_icr_without_a_model_reads_handwriting_with_paddle(paddle_models):
     # Tesseract only when asked
     off = icr.read_icr_zone(zone, page, None, dict(settings, icr_engine="tesseract"))
     assert "no_icr_model" in off.flags
+
+
+def test_zone_picks_its_paddle_model(paddle_models):
+    settings = text_reader.ocr_settings({"paddle_model_dir": str(paddle_models)})
+    # Only the English mobile model is installed: server / main fall back to it
+    zone = make_zone({"paddleModel": "server"}, "icr", dims=(120, 40))
+    engine = text_reader.paddle_engine(settings, zone=zone)
+    assert engine.available and engine.rec_path.name == "en_PP-OCRv5_mobile_rec.onnx"
+    caps = text_reader.ocr_capabilities({"paddle_model_dir": str(paddle_models)})
+    assert {"size": "mobile", "lang": "en"} in caps["paddle_models"]
+    assert {"size": "server", "lang": "ch"} not in caps["paddle_models"]

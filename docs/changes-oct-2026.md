@@ -282,11 +282,15 @@ this station.
 
 ## Windows exe: bundled OCR, handwriting and remote access
 
-- Every build bundles Tesseract ("best" English, Hindi, Punjabi), PaddleOCR
-  PP-OCRv5 mobile (English, Devanagari) and `cloudflared`; the build stops if
-  one is missing (`packaging/prepare_bundle.py`).
-- ICR zones without a trained ICR model are read by PaddleOCR (PP-OCRv5 is
-  trained on handwriting too). Boxed zones are read as one line, or box by box
+- Every build bundles Tesseract ("best" English, Hindi), PaddleOCR PP-OCRv5
+  (detection and the main recogniser in mobile and server size, English and
+  Devanagari recognisers) and `cloudflared`; the build stops if one is missing
+  (`packaging/prepare_bundle.py`).
+- Template editor, OCR and ICR zones: "PaddleOCR model" (mobile / server) and
+  "PaddleOCR recogniser" (English / main / Devanagari); models the server lacks
+  are marked "not installed".
+- ICR zones without a trained ICR model are read by PaddleOCR, preferring the
+  main recogniser (trained on handwriting too). Boxed zones are read as one line, or box by box
   when the line gives the wrong count; the usual `minConfidence` decides
   review. `ocr_params.icr_engine: "tesseract"` restores the old behaviour
   (Tesseract, always reviewed).

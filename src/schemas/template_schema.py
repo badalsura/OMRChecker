@@ -271,6 +271,10 @@ ZONE_SCHEMA = {
                     "type": "string",
                     "enum": ["default", "none", "tesseract", "paddle"],
                 },
+                # OCR / ICR: PaddleOCR model size and recogniser for this zone
+                # ("ch" = the main multilingual recogniser, also handwriting)
+                "paddleModel": {"type": "string", "enum": ["mobile", "server"]},
+                "paddleLang": {"type": "string", "enum": ["en", "devanagari", "ch"]},
                 # OCR: retry other Tesseract layout modes on an empty / invalid read
                 "psmRetry": {"type": "boolean"},
                 # OCR: Tesseract user patterns, e.g. ["\\d\\d\\d\\d\\d\\d\\d"]

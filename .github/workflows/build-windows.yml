@@ -13,17 +13,17 @@ on:
         description: "OCR engine tried when the first read is empty, unsure or invalid: paddle | tesseract | none"
         default: paddle
       paddle_models:
-        description: "PaddleOCR model size to bundle (also reads handwriting): mobile | server"
-        default: mobile
+        description: "PaddleOCR model sizes to bundle, space separated; the first is the default: mobile server"
+        default: mobile server
       paddle_langs:
-        description: "PaddleOCR languages, space separated (en, devanagari, ch)"
-        default: en devanagari
+        description: "PaddleOCR recognisers, space separated (en, devanagari, ch = main multilingual, reads handwriting)"
+        default: en devanagari ch
       tessdata:
         description: "Tesseract model set: best | fast"
         default: best
       tess_langs:
-        description: "Tesseract languages, space separated (eng, hin, pan, ...)"
-        default: eng hin pan
+        description: "Tesseract languages, space separated (eng, hin, ...)"
+        default: eng hin
       cloudflared:
         description: "cloudflared release to bundle (latest or e.g. 2025.9.1)"
         default: latest
@@ -42,10 +42,10 @@ jobs:
     env:
       DEFAULT_ENGINE: ${{ github.event.inputs.default_engine || 'tesseract' }}
       FALLBACK_ENGINE: ${{ github.event.inputs.fallback_engine || 'paddle' }}
-      PADDLE_MODELS: ${{ github.event.inputs.paddle_models || 'mobile' }}
-      PADDLE_LANGS: ${{ github.event.inputs.paddle_langs || 'en devanagari' }}
+      PADDLE_MODELS: ${{ github.event.inputs.paddle_models || 'mobile server' }}
+      PADDLE_LANGS: ${{ github.event.inputs.paddle_langs || 'en devanagari ch' }}
       TESSDATA: ${{ github.event.inputs.tessdata || 'best' }}
-      TESS_LANGS: ${{ github.event.inputs.tess_langs || 'eng hin pan' }}
+      TESS_LANGS: ${{ github.event.inputs.tess_langs || 'eng hin' }}
     steps:
       - uses: actions/checkout@v4
 

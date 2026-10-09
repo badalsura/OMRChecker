@@ -20,8 +20,8 @@ call build\venv38\Scripts\activate.bat
 python -m pip install --upgrade "pip<25" wheel || exit /b 1
 python -m pip install -r packaging\requirements-win7.txt || exit /b 1
 
-rem Tesseract, the OCR models (English, Hindi, Punjabi; PaddleOCR for printed
-rem text and handwriting) and cloudflared are always bundled
+rem Tesseract, the OCR models (English, Hindi; PaddleOCR mobile and server for
+rem printed text and handwriting) and cloudflared are always bundled
 python packaging\prepare_bundle.py || exit /b 1
 
 set OMR_BUILD_MODE=%MODE%

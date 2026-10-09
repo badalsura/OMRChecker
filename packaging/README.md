@@ -64,9 +64,11 @@ supported. On Windows 7 use **Chrome 109** (the last Chrome for Win7) or
 `packaging\prepare_bundle.py` (run by `build_windows.bat`) and the GitHub build
 always include, or stop the build:
 
-* Tesseract (`tesseract.exe` + DLLs) with the "best" English, Hindi and Punjabi models
-* PaddleOCR PP-OCRv5 mobile (English + Devanagari), used for OCR fallback and
-  to read handwriting (ICR zones) when no ICR model is loaded
+* Tesseract (`tesseract.exe` + DLLs) with the "best" English and Hindi models
+* PaddleOCR PP-OCRv5 in mobile and server size: detection, the main
+  recogniser (multilingual, trained on handwriting too), English and
+  Devanagari. Used for OCR fallback and to read handwriting (ICR zones) when no
+  ICR model is loaded; each zone picks its size and recogniser in the editor
 * `cloudflared.exe` for remote access
 
 A local build copies Tesseract from an installed UB Mannheim build (installing

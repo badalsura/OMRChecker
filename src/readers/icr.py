@@ -87,7 +87,7 @@ def paddle_second_reader(settings, zone):
     if choice not in ("auto", "paddle"):
         return None
     try:
-        engine = text_reader.paddle_engine(settings, zone.options.get("lang"))
+        engine = text_reader.paddle_engine(settings, zone=zone)
         return engine if engine.available else None
     except Exception:  # pragma: no cover - optional engine
         return None
@@ -181,7 +181,7 @@ def paddle_icr_engine(settings, zone):
     if settings.get("icr_engine", "auto") not in ("auto", "paddle"):
         return None
     try:
-        engine = text_reader.paddle_engine(settings, zone.options.get("lang"))
+        engine = text_reader.paddle_engine(settings, zone=zone)
         return engine if engine.available else None
     except Exception:  # pragma: no cover - optional engine
         return None

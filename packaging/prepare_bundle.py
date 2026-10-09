@@ -7,9 +7,10 @@ build with what is missing. Called by packaging/build_windows.bat.
 
 What a build always ships:
     packaging/tesseract/       tesseract.exe + DLLs (UB Mannheim build)
-    packaging/tessdata/        Tesseract "best" models: English, Hindi, Punjabi
-    packaging/models/paddleocr PaddleOCR PP-OCRv5 mobile (English + Devanagari);
-                               also the handwriting (ICR) reader
+    packaging/tessdata/        Tesseract "best" models: English, Hindi
+    packaging/models/paddleocr PaddleOCR PP-OCRv5, mobile and server: detection,
+                               the main recogniser (also handwriting / ICR),
+                               English and Devanagari
     packaging/cloudflared/     cloudflared.exe for "Start remote" in the launcher
 
 Tesseract is copied from an installed UB Mannheim build (installed with winget
@@ -38,9 +39,9 @@ BUILD_FILE = HERE / "ocr_build.json"
 # What every build bundles (the GitHub workflow uses the same defaults)
 OCR_ARGS = [
     "--tessdata", "best",
-    "--langs", "eng", "hin", "pan",
-    "--paddle", "mobile",
-    "--paddle-langs", "en", "devanagari",
+    "--langs", "eng", "hin",
+    "--paddle", "mobile", "server",
+    "--paddle-langs", "en", "devanagari", "ch",
     "--default-engine", "tesseract",
     "--fallback-engine", "paddle",
 ]
@@ -97,10 +98,13 @@ def models_complete():
         return False
     bundled = json.loads(BUILD_FILE.read_text(encoding="utf-8")).get("bundled", {})
     wanted = OCR_ARGS[OCR_ARGS.index("--langs") + 1 : OCR_ARGS.index("--paddle")]
+    sizes = OCR_ARGS[OCR_ARGS.index("--paddle") + 1 : OCR_ARGS.index("--paddle-langs")]
     paddle_langs = OCR_ARGS[OCR_ARGS.index("--paddle-langs") + 1 : OCR_ARGS.index("--default-engine")]
-    return (
+    paddle = bundled.get("paddle") or []
+    paddle = [paddle] if isinstance(paddle, str) else paddle
+    return bool(
         set(wanted) <= set(bundled.get("langs") or [])
-        and bundled.get("paddle")
+        and set(sizes) <= set(paddle)
         and set(paddle_langs) <= set(bundled.get("paddle_langs") or [])
     )
 
