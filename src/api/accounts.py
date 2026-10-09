@@ -7,6 +7,10 @@ API key, for programs). Later registrations wait for an administrator's
 approval unless registration is set to "open" (or "closed": only an
 administrator adds accounts).
 
+Server folders: administrators browse and scan any folder on the server.
+Every other account may use only the folders an administrator allows it
+(users.folders, a JSON list); with none it can only upload files.
+
 Passwords are stored as PBKDF2-SHA256 hashes with a random salt; sessions are
 random tokens sent back in an HttpOnly cookie (or an Authorization: Bearer
 header). Everything lives in <data_dir>/accounts.sqlite3. Python 3.8
@@ -15,6 +19,7 @@ compatible, standard library only.
 
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import sqlite3
@@ -82,7 +87,39 @@ def _public(row):
         "active": bool(row["active"]),
         "created_at": row["created_at"],
         "last_login": row["last_login"],
+        "folders": _folders(row),
     }
+
+
+def _folders(row):
+    try:
+        folders = json.loads(row["folders"] or "[]")
+    except (IndexError, KeyError, ValueError):
+        return []
+    return [str(f) for f in folders] if isinstance(folders, list) else []
+
+
+def clean_folders(folders):
+    """Absolute, de-duplicated folder paths, or AccountError."""
+    if not isinstance(folders, list):
+        raise AccountError("Folders must be a list of paths", 422)
+    out = []
+    for folder in folders:
+        folder = str(folder or "").strip()
+        if not folder:
+            continue
+        path = Path(folder).expanduser()
+        if not path.is_absolute():
+            raise AccountError(f"'{folder}' is not a full folder path", 422)
+        try:
+            folder = str(path.resolve())
+        except (OSError, RuntimeError):
+            raise AccountError(f"'{folder}' is not a valid folder path", 422) from None
+        if folder not in out:
+            out.append(folder)
+    if len(out) > 100:
+        raise AccountError("Allow at most 100 folders per user", 422)
+    return out
 
 
 class Accounts:
@@ -95,6 +132,9 @@ class Accounts:
         self.conn.row_factory = sqlite3.Row
         with self.lock:
             self.conn.executescript(SCHEMA)
+            columns = [r["name"] for r in self.conn.execute("PRAGMA table_info(users)")]
+            if "folders" not in columns:  # stations made before per-user folders
+                self.conn.execute("ALTER TABLE users ADD COLUMN folders TEXT")
             self.conn.commit()
         self._any = None
 
@@ -190,7 +230,9 @@ class Accounts:
             raise AccountError("Registration is closed; ask an administrator", 403)
         return self.create(name, password, display, active=(mode == "open"))
 
-    def update(self, name, role=None, active=None, password=None, display=None):
+    def update(
+        self, name, role=None, active=None, password=None, display=None, folders=None
+    ):
         row = self.get(name)
         if row is None:
             raise AccountError(f"No user '{name}'", 404)
@@ -211,6 +253,9 @@ class Accounts:
         if display is not None:
             sets.append("display = ?")
             values.append(display.strip()[:80] or None)
+        if folders is not None:
+            sets.append("folders = ?")
+            values.append(json.dumps(clean_folders(folders)))
         if password is not None:
             self.check_password(password)
             salt = secrets.token_hex(16)

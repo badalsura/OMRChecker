@@ -101,3 +101,57 @@ def test_api_key_still_works_and_corrections_carry_the_signed_in_name(tmp_path):
         assert bearer.get(
             "/capabilities", headers={"Authorization": f"Bearer {token}"}
         ).status_code == 200
+
+
+def test_server_folders_are_per_user(tmp_path):
+    shared = tmp_path / "scans" / "class10"
+    (shared / "batch1").mkdir(parents=True)
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "a.png").write_bytes(png_bytes(make_sheet(default_spec(questions=5), 1)[0]))
+    app = create_app(tmp_path / "data", workers=1)
+    with TestClient(app) as admin:
+        admin.post("/auth/register", json={"username": "badal", "password": "secret123"})
+        admin.post("/auth/users", json={"username": "teacher", "password": "secret123"})
+        template_id = upload_template(admin, default_spec(questions=5))
+
+        # Administrators browse every folder
+        assert admin.get("/fs/roots").json()["restricted"] is False
+        assert admin.get("/fs/browse", params={"path": str(private)}).status_code == 200
+
+        teacher = TestClient(app)
+        login(teacher, "teacher")
+        # No folders allowed yet: upload only
+        roots = teacher.get("/fs/roots").json()
+        assert roots["restricted"] and roots["per_user"] and roots["roots"] == []
+        assert teacher.get("/fs/browse", params={"path": str(tmp_path)}).status_code == 403
+        assert teacher.get("/fs/check", params={"path": str(private)}).json()["ok"] is False
+        job = teacher.post("/jobs", data={"template_id": template_id, "folder": str(private)})
+        assert job.status_code == 403
+
+        # Only an administrator sets them
+        assert teacher.patch(
+            "/auth/users/teacher", json={"folders": [str(tmp_path)]}
+        ).status_code == 403
+        assert admin.patch(
+            "/auth/users/teacher", json={"folders": ["relative/path"]}
+        ).status_code == 422
+        user = admin.patch(
+            "/auth/users/teacher", json={"folders": [str(tmp_path / "scans")]}
+        ).json()
+        assert user["folders"] == [str((tmp_path / "scans").resolve())]
+
+        roots = teacher.get("/fs/roots").json()
+        assert [r["path"] for r in roots["roots"]] == user["folders"]
+        listing = teacher.get("/fs/browse", params={"path": str(shared)}).json()
+        assert [f["name"] for f in listing["folders"]] == ["batch1"]
+        assert teacher.get("/fs/browse", params={"path": str(private)}).status_code == 403
+        sneaky = str(tmp_path / "scans" / ".." / "private")
+        assert teacher.get("/fs/browse", params={"path": sneaky}).status_code == 403
+        job = teacher.post("/jobs", data={"template_id": template_id, "folder": str(private)})
+        assert job.status_code == 403
+
+        # Folders an admin scanned don't show in a reviewer's recent list
+        admin.post("/jobs", data={"template_id": template_id, "folder": str(private)})
+        assert str(private.resolve()) in admin.get("/fs/recent").json()["folders"]
+        assert teacher.get("/fs/recent").json()["folders"] == []

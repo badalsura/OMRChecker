@@ -479,8 +479,11 @@ Open `http://host:8000/` for the GUI and `/docs` for the OpenAPI reference.
 | Results | browse graded sheets with their overlay, toggle bubbles, edit values, verify, regrade, measure accuracy ([below](#results-screen)) |
 | Exports | CSV, XLSX, PDF, SQLite or any SQL database, with export profiles ([below](#exports)) |
 
-Set `OMR_API_KEY` to require an `X-API-Key` header. Set `OMR_ALLOWED_DIRS`
-before exposing folder jobs beyond localhost. Send `X-User: <name>` to record
+Set `OMR_API_KEY` to require an `X-API-Key` header. Server folders: once
+accounts exist, administrators can browse and scan any folder; every other
+user only the folders an administrator allows for that account (**Users >
+Server folders**; none means upload only). `OMR_ALLOWED_DIRS` limits everyone,
+administrators included. Send `X-User: <name>` to record
 who made a correction; the GUI sets it from **User** in the header, and
 otherwise corrections are recorded as `local`.
 

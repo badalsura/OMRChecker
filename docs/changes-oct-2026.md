@@ -299,6 +299,15 @@ this station.
   buttons for both addresses, and Quit. See
   [packaging/README.md](../packaging/README.md#the-launcher-window).
 
+## Server folders per user
+
+- Administrators browse and scan every folder on the server. Other users see
+  and scan only the folders an administrator allowed for their account
+  (**Users > Server folders**, typed or picked with Browse); with none they
+  can only upload files. Recent folders are filtered the same way.
+- `PATCH /auth/users/{name}` takes `folders` (a list of full paths);
+  `/fs/roots` reports `per_user`. `OMR_ALLOWED_DIRS` still limits everyone.
+
 ## Fixes
 
 - Jobs: a pause could race a job's start (409 on resume); a queued job is now

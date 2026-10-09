@@ -3,6 +3,7 @@
 // then on the GUI asks everyone to sign in. Sessions are an HttpOnly cookie,
 // so images, downloads and the live camera page are signed in too.
 import { api, el, modal, state, toast } from "./api.js";
+import { openBrowser } from "./folders.js";
 
 let overlay = null;
 let onSignedIn = null;
@@ -221,6 +222,13 @@ async function manageUsers() {
         el("td", { class: "muted small" }, u.last_login ? new Date(u.last_login * 1000).toLocaleString() : "never"),
         el(
           "td",
+          { class: "small" },
+          u.role === "admin"
+            ? el("span", { class: "muted" }, "all")
+            : el("button", { class: "small", title: (u.folders || []).join("\n") || "Upload only", onclick: () => editFolders(u, render) }, (u.folders || []).length ? `${u.folders.length} folder${u.folders.length > 1 ? "s" : ""}` : "none")
+        ),
+        el(
+          "td",
           {},
           el("div", { class: "row gap" },
           u.active ? (self ? null : el("button", { class: "small", onclick: () => patch(u.name, { active: false }, `${u.name} can no longer sign in`) }, "Disable")) : el("button", { class: "small primary", onclick: () => patch(u.name, { active: true }, `${u.name} approved`) }, "Approve"),
@@ -264,12 +272,60 @@ async function manageUsers() {
     body.innerHTML = "";
     body.append(
       el("label", { class: "field" }, "Registration", reg),
-      el("table", { class: "table auth-users" }, el("thead", {}, el("tr", {}, el("th", {}, "User"), el("th", {}, "Role"), el("th", {}, "Status"), el("th", {}, "Last sign-in"), el("th", {}, ""))), el("tbody", {}, rows)),
+      el("table", { class: "table auth-users" }, el("thead", {}, el("tr", {}, el("th", {}, "User"), el("th", {}, "Role"), el("th", {}, "Status"), el("th", {}, "Last sign-in"), el("th", {}, "Server folders"), el("th", {}, ""))), el("tbody", {}, rows)),
       el("h3", {}, "Add a user"),
       el("div", { class: "row gap wrap" }, newName, newPw, newRole, addBtn),
-      el("p", { class: "muted small" }, "Admins manage users; everyone signed in can scan, review and export. Corrections are recorded under the signed-in name.")
+      el("p", { class: "muted small" }, "Admins manage users and can scan any server folder; other users can scan only the server folders allowed for them, or upload files. Everyone signed in can review and export. Corrections are recorded under the signed-in name.")
     );
   };
   render();
   return dialog;
+}
+
+// The server folders a non-admin may browse and scan (none: upload only)
+function editFolders(user, done) {
+  let folders = [...(user.folders || [])];
+  const list = el("ul", { class: "fs-list" });
+  const typed = el("input", { placeholder: "Paste a folder path", class: "grow" });
+  const add = (path) => {
+    path = (path || "").trim();
+    if (path && !folders.includes(path)) folders.push(path);
+    draw();
+  };
+  const draw = () => {
+    list.innerHTML = "";
+    if (!folders.length) list.append(el("li", { class: "muted small fs-sep" }, "No folders: this user can only upload files."));
+    for (const folder of folders) {
+      list.append(
+        el("li", {}, el("span", { class: "fs-icon" }, "📁"), el("span", { class: "fs-name mono" }, folder),
+          el("button", { class: "small ghost", title: "Remove", onclick: () => { folders = folders.filter((f) => f !== folder); draw(); } }, "✕"))
+      );
+    }
+  };
+  const save = el("button", {
+    class: "primary",
+    onclick: async () => {
+      try {
+        await api(`/auth/users/${encodeURIComponent(user.name)}`, { method: "PATCH", json: { folders } });
+        toast(`Server folders saved for ${user.name}`, "ok");
+        dialog.close();
+        done();
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    },
+  }, "Save");
+  const dialog = modal(
+    `Server folders for ${user.name}`,
+    el("div", {},
+      el("p", { class: "small muted" }, "This user can browse and scan these folders and everything inside them, and nothing else on the server."),
+      list,
+      el("div", { class: "row gap" }, typed,
+        el("button", { class: "small", onclick: () => { add(typed.value); typed.value = ""; } }, "Add"),
+        el("button", { class: "small", onclick: () => openBrowser("", add) }, "Browse…"))
+    ),
+    [save],
+    { wide: true }
+  );
+  draw();
 }

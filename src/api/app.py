@@ -273,12 +273,10 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     def with_links(result):
         return {**result, "links": scan_links(result)}
 
-    def resolve_folder(folder):
+    def resolve_folder(folder, request):
         path = Path(folder).expanduser().resolve()
-        if settings.allowed_dirs and not any(
-            path == root or root in path.parents for root in settings.allowed_dirs
-        ):
-            raise HTTPException(403, f"Folder '{folder}' is outside OMR_ALLOWED_DIRS")
+        if not fs_routes.is_allowed(fs_routes.folder_scope(settings, request), path):
+            raise HTTPException(403, f"Folder '{folder}' is outside the allowed folders")
         if not path.is_dir():
             raise HTTPException(400, f"Folder '{folder}' does not exist")
         return path
@@ -970,6 +968,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     # ------------------------------------------------------------------
     @app.post("/jobs", tags=["jobs"], dependencies=secured, status_code=201)
     def create_job(
+        request: Request,
         template_id: str = Form(...),
         files: Optional[List[UploadFile]] = File(None),
         folder: Optional[str] = Form(None, description="Server-side folder to read"),
@@ -994,7 +993,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(400, "Upload files or give a server-side folder")
         folder_files = []
         if folder:
-            folder_files = jobs_module.collect_folder(resolve_folder(folder), recursive)
+            folder_files = jobs_module.collect_folder(resolve_folder(folder, request), recursive)
             if not folder_files and not files:
                 raise HTTPException(400, "No images or PDFs found in that folder")
         job = ctx.jobs.create(

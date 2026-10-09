@@ -6,7 +6,7 @@ require_access is the dependency every protected endpoint uses: the API key
 """
 
 import secrets
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -30,6 +30,9 @@ class UserUpdate(BaseModel):
     active: Optional[bool] = Field(None, description="false = can't log in")
     password: Optional[str] = Field(None, max_length=200, description="New password")
     display: Optional[str] = Field(None, max_length=80)
+    folders: Optional[List[str]] = Field(
+        None, description="Server folders a non-admin may browse and scan ([] = none)"
+    )
 
 
 class NewUser(Credentials):
@@ -169,10 +172,11 @@ def register(app, ctx):
 
     @app.patch("/auth/users/{name}", tags=["auth"])
     def auth_update_user(name: str, body: UserUpdate, _: dict = Depends(admin)):
-        """Approve or disable an account, change its role or reset its password."""
+        """Approve or disable an account, change its role, reset its password or
+        set the server folders it may use."""
         try:
             return accounts.update(
-                name, body.role, body.active, body.password, body.display
+                name, body.role, body.active, body.password, body.display, body.folders
             )
         except AccountError as error:
             fail(error)
