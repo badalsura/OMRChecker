@@ -197,6 +197,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             expose_headers=["Content-Disposition"],
         )
 
+    @app.middleware("http")
+    async def revalidate_gui_files(request, call_next):
+        # Phones otherwise keep running an old GUI after an update
+        response = await call_next(request)
+        if request.url.path.startswith(("/static/", "/browser/")):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     # The API key (programs), or a signed-in user once accounts exist
     secured = [Depends(auth_routes.make_access(settings, ctx.accounts))]
     auth_routes.register(app, ctx)
