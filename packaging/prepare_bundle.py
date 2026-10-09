@@ -109,8 +109,11 @@ def models_complete():
     )
 
 
+# Version 3.9-3.12, and on Windows a python.org-style build (MSVC, not MSYS2 /
+# MinGW, whose venvs have no Scripts\python.exe and no matching wheels)
 PROBE = (
-    "import os, sys; print(sys.version_info[:2] >= (3, 9) and sys.version_info[:2] <= (3, 12), "
+    "import os, sys; print(sys.version_info[:2] >= (3, 9) and sys.version_info[:2] <= (3, 12) "
+    "and (os.name != 'nt' or 'MSC' in sys.version), "
     "os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')))"
 )
 
@@ -120,7 +123,8 @@ def newer_python():
     A python.org Python 3.9-3.12 to run paddle2onnx (the py launcher, else
     python3 / python on PATH). Anaconda Pythons are skipped: their own older
     Visual C++ runtime DLLs make paddle2onnx fail with "DLL load failed ...
-    The specified procedure could not be found".
+    The specified procedure could not be found". MSYS2 / MinGW Pythons are
+    skipped too.
     """
     candidates = []
     if shutil.which("py"):
@@ -158,7 +162,7 @@ def ocr_models():
     if python is None:
         fail(
             "Converting the PaddleOCR models needs a python.org Python 3.9-3.12 next to 3.8 "
-            "(paddle2onnx has no 3.8 wheels, and it does not load under Anaconda). "
+            "(paddle2onnx has no 3.8 wheels, and Anaconda / MSYS2 Pythons don't work). "
             "Install Python 3.11 from https://www.python.org/downloads/ (tick 'py launcher'), "
             "or copy packaging\\tessdata, packaging\\models and packaging\\ocr_build.json "
             "from a GitHub Actions build (artifact 'ocr-models')."
@@ -166,7 +170,7 @@ def ocr_models():
     venv = ROOT / "build" / "venv_models"
     exe = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if venv.is_dir() and (venv_base_is_conda(venv) or not exe.is_file()):
-        print(f"  recreating {venv} (it was made from Anaconda)")
+        print(f"  recreating {venv} (it was made from another Python)")
         shutil.rmtree(str(venv))
     if not exe.is_file():
         subprocess.check_call(python + ["-m", "venv", str(venv)])
