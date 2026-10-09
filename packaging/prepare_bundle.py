@@ -213,7 +213,7 @@ def ocr_models():
     subprocess.check_call([str(exe), "-m", "pip", "install", "-q", "paddlepaddle", "paddle2onnx", "packaging"])
     if subprocess.call([str(exe), "-c", "import paddle, paddle2onnx"]) != 0:
         fail(
-            "paddle2onnx does not load in build\\venv_models (see the error above). Install the "
+            f"paddle2onnx does not load in {exe.parent} (see the error above). Install the "
             "latest Visual C++ x64 redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) "
             "and run the build again."
         )
