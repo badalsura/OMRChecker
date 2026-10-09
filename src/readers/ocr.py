@@ -123,7 +123,24 @@ def installed_languages(variant=None):
 def tesseract_available():
     if tesserocr is not None and find_tessdata():
         return True
+    if _capi_tessdata() is not None:
+        return True
     return pytesseract is not None and shutil.which("tesseract") is not None
+
+
+def _capi_tessdata(tessdata=None):
+    """tessdata for the ctypes engine, or None when that engine can't load."""
+    from src.readers import tess_capi
+
+    if tess_capi.library() is None:
+        return None
+    path = tessdata or find_tessdata()
+    if path is None:
+        # A Windows Tesseract install keeps tessdata next to the DLL
+        exe = shutil.which("tesseract")
+        if exe and os.path.isdir(os.path.join(os.path.dirname(exe), "tessdata")):
+            path = os.path.join(os.path.dirname(exe), "tessdata")
+    return path
 
 
 def _tesserocr_api(lang, psm, path=None, patterns_file=None):
@@ -325,6 +342,21 @@ def recognize_text_detailed(
             if "tesserocr" not in _WARNED:
                 _WARNED.add("tesserocr")
                 logger.warning(f"tesserocr failed ({error}); using pytesseract")
+    elif ("capi", lang, tessdata) not in _WARNED:
+        capi_path = _capi_tessdata(tessdata)
+        if capi_path is not None:
+            from src.readers import tess_capi
+
+            try:
+                return tess_capi.recognize(
+                    image, psm, whitelist, lang, capi_path, patterns_file
+                )
+            except Exception as error:  # e.g. a language missing from tessdata
+                if pytesseract is None:
+                    raise
+                # Only this language and data folder fall back to the executable
+                _WARNED.add(("capi", lang, tessdata))
+                logger.warning(f"in-process Tesseract failed ({error}); using pytesseract")
     data = pytesseract.image_to_data(
         image,
         lang=lang,

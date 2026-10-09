@@ -21,6 +21,9 @@ CONFIG_DEFAULTS = DotMap(
             "mode": "adaptive",
             "fixed_threshold": 120,
             "fixed_min_fill_ratio": 0.12,
+            # Divide the page by a smooth background estimate before measuring
+            # bubbles, so shadows and uneven light don't shift the threshold
+            "flatten_background": True,
         },
         "alignment_params": {
             # Note: 'auto_align' enables automatic template alignment, use if the scans show slight misalignments.
@@ -30,7 +33,11 @@ CONFIG_DEFAULTS = DotMap(
             "stride": 1,
             "thickness": 3,
             # Search radius (px) for snapping each field block onto its printed
-            # bubbles in both directions after registration; 0 disables it
+            # bubbles in both directions after registration; 0 disables it,
+            # -1 = automatic (0.3 x the block's bubble pitch). A block is never
+            # moved by 0.4 pitch or more (that would be a neighbouring bubble).
+            # Off by default: it fixes curl on synthetic sheets but changed
+            # answers on some of the bundled real samples
             "block_snap_radius": 0,
             # Fit each field block onto its printed rectangular border after page
             # alignment (a block's "rectifyOnBorder" overrides this)
@@ -48,6 +55,17 @@ CONFIG_DEFAULTS = DotMap(
             "verify_bubble_fit": True,
         },
         "review_params": {
+            # Registration check: a sheet whose blocks' printed bubbles correlate
+            # below this with where the template puts them is flagged
+            # registration_suspect (0 disables; forms without printed bubble
+            # outlines should disable it). Off by default: 0.05 separated
+            # misregistered synthetic sheets but also flagged 5 good real samples
+            "min_grid_fit": 0,
+            # Image quality gate (src/quality.py): poor_image when under these;
+            # 0 turns a measure off. Conservative: only truly unreadable photos
+            "min_sharpness": 10,
+            "min_contrast": 40,
+            "min_bubble_px": 5,
             # Intensity distance from the threshold that counts as fully confident
             "confidence_margin": 20,
             # Fields whose weakest bubble is below this confidence get flagged
@@ -67,11 +85,16 @@ CONFIG_DEFAULTS = DotMap(
                 "weak_mark",
                 "possible_missed_mark",
                 "model_disagrees",
+                # A printed border would have moved the block by 0.4+ pitch
+                "border_slide",
             ],
         },
         "ml_params": {
             # ONNX crop classifiers (see src/ml); relative paths resolve from the template folder
             "bubble_model_path": None,
+            # "second_opinion": the threshold read decides and a disagreeing
+            # model sends the bubble to review; "decide": the model decides
+            "bubble_model_role": "second_opinion",
             "icr_model_path": None,
         },
         "pdf_params": {

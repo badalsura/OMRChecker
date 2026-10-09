@@ -37,6 +37,9 @@ MAX_CORNER_ANGLE_DEVIATION = 6.0  # degrees from 90
 MAX_SIDE_RATIO_DEVIATION = 0.08
 # Corrected positions must fit the printed bubbles at least this well (relative)
 MIN_FIT_RATIO = 0.97
+# A border may move a bubble at most this share of the bubble pitch away from
+# where the page alignment put it: a whole-field slide is never accepted
+MAX_PITCH_MOVE = 0.4
 
 
 class RectifyResult:
@@ -58,6 +61,8 @@ class RectifyResult:
         self.expected = expected
         # "border" (printed box) or "bubbles" (fitted to the bubble outlines)
         self.method = method
+        # Rejected because the border would slide the block (review flag)
+        self.slide = False
         # Two-level search: "outer" frame or "inner" box used; None: one level
         self.level = level
         self._status = status
@@ -82,6 +87,8 @@ class RectifyResult:
             "method": self.method,
             "level": self.level,
         }
+        if self.slide:
+            out["slide"] = True
         if self.max_shift is not None:
             out["max_corner_shift"] = round(self.max_shift, 2)
         if self.corners is not None:
@@ -295,6 +302,16 @@ def _finish(img, field_block, result, homography, verify):
     ).reshape(-1, 1, 2)
     moved = cv2.perspectiveTransform(centres, homography).reshape(-1, 2)
     offsets = np.rint(moved - centres.reshape(-1, 2)).astype(int)
+    pitch = _pitch(field_block)
+    if pitch and len(offsets):
+        largest = float(np.max(np.linalg.norm(moved - centres.reshape(-1, 2), axis=1)))
+        if largest > MAX_PITCH_MOVE * pitch:
+            result.reason = (
+                f"would move bubbles {largest:.0f}px, more than "
+                f"{MAX_PITCH_MOVE:g} of the {pitch:.0f}px bubble pitch"
+            )
+            result.slide = True
+            return result
 
     # Never make things worse silently: the printed bubbles must fit at least as
     # well at the corrected positions as at the page-aligned ones
@@ -424,6 +441,15 @@ def reset_offsets(field_block):
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+def _pitch(field_block):
+    """Distance between neighbouring bubbles of the block (0 when unknown)."""
+    gap = float(getattr(field_block, "bubbles_gap", 0) or 0)
+    if gap > 0:
+        return gap
+    dims = getattr(field_block, "bubble_dimensions", None)
+    return 1.5 * float(max(dims)) if dims else 0.0
 
 
 def _parabola(values):

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import cv2
 
-from src.api.storage import new_id, scan_dir_for, write_json_atomic
+from src.api.storage import new_id, primary_key_of, scan_dir_for, write_json_atomic
 from src.readers.image_zone import save_zone_images
 
 # Image persistence policies
@@ -33,6 +33,9 @@ _ENGINES = {}
 
 
 def worker_init():
+    from src.utils.cpu import prepare_worker_environment
+
+    prepare_worker_environment()
     # Processes, not OpenCV threads, provide the parallelism
     cv2.setNumThreads(1)
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -167,17 +170,26 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
     """
     file_path = Path(file_path)
     started = time.time()
+    # Bytes read ahead by the job (prefetch); otherwise the file is read here
+    file_bytes = meta.get("file_bytes")
     try:
         results = engine.scan_path(
             file_path,
             keep_images=save_images != SAVE_NONE,
             pdf_params=meta.get("pdf_params"),
+            data=file_bytes,
         )
     except Exception as error:  # pragma: no cover - scan_path already guards pages
         from src.pipeline import STATUS_ERROR, ScanResult
 
         results = [ScanResult(file_path.name, STATUS_ERROR, error=str(error))]
     stored = []
+    # Fingerprint of the original; re-renders refuse a different file
+    source_sha256 = (
+        hashlib.sha256(file_bytes).hexdigest()
+        if file_bytes is not None
+        else file_sha256(file_path)
+    )
     for page, result in enumerate(results):
         scan_id = new_id()
         scan_dir = scan_dir_for(scans_root, scan_id)
@@ -212,6 +224,7 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
                 "input_path": input_path,
                 # Absolute path of the original file; re-rendering reads it again
                 "source_path": source_path,
+                "source_sha256": source_sha256,
                 "template_version": meta.get("template_version"),
                 # PDF rendering chosen on the Scan / New Job screen; re-renders reuse it
                 **({"pdf_params": meta["pdf_params"]} if meta.get("pdf_params") else {}),
@@ -221,6 +234,10 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
                 "created_at": started,
             }
         )
+        key_fields = primary_key_fields(engine)
+        if key_fields:
+            data["key_fields"] = key_fields
+            data["primary_key"] = primary_key_of(data)
         if len(results) > 1:
             data["file_id"] = f"{data['file_name']}#page{page + 1}"
         else:
@@ -228,6 +245,31 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
         write_json_atomic(scan_dir / "result.json", data)
         stored.append(data)
     return stored
+
+
+def primary_key_fields(engine):
+    """Template primaryKey columns and the field labels they are built from."""
+    template = getattr(engine, "template", None)
+    columns = list(getattr(template, "primary_key", None) or [])
+    if not columns:
+        return None
+    labels = []
+    for column in columns:
+        labels.append(column)
+        labels.extend(template.custom_labels.get(column) or [])
+    return {"columns": columns, "labels": labels}
+
+
+def file_sha256(path):
+    """SHA-256 of a file, read in chunks; None when it cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def _link_or_copy(source, target):
@@ -266,8 +308,11 @@ def summarize(record):
         "error",
         "created_at",
         "template_version",
+        "primary_key",
     )
     summary = {key: record.get(key) for key in keys}
+    if record.get("key_fields"):
+        summary["primary_key"] = primary_key_of(record)
     # Only the names and flags of failed checks travel to the index
     check_flags = {
         name: check.get("flags")

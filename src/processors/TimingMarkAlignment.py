@@ -33,10 +33,13 @@ DEFAULT_MAX_RESIDUAL = 3.0
 MIN_PAGE_AREA_FRACTION = 0.3
 # A fit matching this share of marks with none past the track ends is final
 GOOD_FIT_FRACTION = 0.95
+# Starting guesses tried for another orientation once one fits cleanly
+CHECK_GUESSES = 3
 # Smaller measured tilts are left to the shifted guesses and the fit itself
 MIN_TILT_DEGREES = 0.3
 # Thin-plate-spline displacement field is evaluated on this grid step (px)
 TPS_GRID_STEP = 16
+TRACK_GRID_STEP = 48
 # One found index point outweighs this many timing marks when choosing the
 # orientation (index points are placed asymmetrically on purpose)
 INDEX_POINT_WEIGHT = 4
@@ -100,6 +103,11 @@ class TimingMarkAlignment(ImagePreprocessor):
         self.max_residual = options.get("maxResidual", DEFAULT_MAX_RESIDUAL)
         self.non_rigid = options.get("nonRigid", False)
         self.detect_orientation = options.get("detectOrientation", True)
+        # Stop trying orientations once one fits cleanly (the 180 degree
+        # look-alike is always tried first, unless index points decided)
+        self.early_stop = options.get("earlyStop", True)
+        # Start the track search from the index points' own fit as well
+        self.index_seed = options.get("indexSeed", False)
         self.last_registration = {}
 
     def __str__(self):
@@ -117,24 +125,45 @@ class TimingMarkAlignment(ImagePreprocessor):
         page_w, page_h = self.page_dimensions
         page_corners = self.find_page_corners(image)
         rotations = (0, 1, 2, 3) if self.detect_orientation else (0,)
+        if self.early_stop and self.detect_orientation:
+            rotations = (0, 2, 1, 3)
         best = None
         if len(self.expected):
             candidates = self.blob_centres(image, page_corners)
+            self._candidates = candidates
             if len(candidates) < self.min_matched:
                 logger.error(
                     f"Timing marks not found in '{file_path}': {len(candidates)} candidate blobs"
                 )
                 return None
+            orientation_fits = []
             for rotation in rotations:
-                fit = self.fit_orientation(page_corners, candidates, rotation)
+                # Once a clean fit exists, another orientation only needs the
+                # unshifted guesses: a look-alike layout fits from those too
+                limit = (
+                    CHECK_GUESSES
+                    if self.early_stop and best is not None and self._is_clean(best)
+                    else None
+                )
+                fit = self.fit_orientation(
+                    page_corners, candidates, rotation, image, max_guesses=limit
+                )
                 if fit is None:
                     continue
                 if self.index_points:
                     self.locate_index_points(image, fit)
+                orientation_fits.append(fit)
                 if best is None or self._orientation_key(fit) > self._orientation_key(
                     best
                 ):
                     best = fit
+                if self._clean_stop(best, len(orientation_fits)):
+                    break
+            self._runner_up = max(
+                (f for f in orientation_fits if f is not best),
+                key=self._orientation_key,
+                default=None,
+            )
             if best is None or best["matched"] < self.min_matched:
                 matched = 0 if best is None else best["matched"]
                 logger.error(
@@ -142,6 +171,7 @@ class TimingMarkAlignment(ImagePreprocessor):
                 )
                 return None
         else:
+            self._runner_up = None
             for rotation in rotations:
                 fit = self.fit_index_points_only(image, page_corners, rotation)
                 if fit is not None and (
@@ -186,7 +216,9 @@ class TimingMarkAlignment(ImagePreprocessor):
             },
         )
         tps = None
-        if self._use_non_rigid(best):
+        if self.non_rigid == "tracks":
+            warped, tps = self.track_grid_correction(warped, best)
+        elif self._use_non_rigid(best):
             warped, tps = self.thin_plate_correction(warped, best)
 
         self.last_registration = {
@@ -202,6 +234,89 @@ class TimingMarkAlignment(ImagePreprocessor):
         logger.info(f"Timing marks: {self.last_registration}")
         return warped
 
+    def ambiguity_review(self, best):
+        """
+        Sheet review items for a registration that a different fit explains
+        almost as well: another orientation (tracks that look the same turned
+        round) or the same orientation slid one mark pitch along a track.
+        """
+        review = []
+        runner = getattr(self, "_runner_up", None)
+        if runner is not None and self._orientations_tie(best, runner):
+            review.append(
+                {
+                    "kind": "sheet",
+                    "name": "orientation",
+                    "flags": ["orientation_ambiguous"],
+                    "orientations": [int(best["rotation"] * 90), int(runner["rotation"] * 90)],
+                }
+            )
+        slid = self._slide_ties(best)
+        if slid:
+            review.append(
+                {
+                    "kind": "sheet",
+                    "name": "registration_slide",
+                    "flags": ["registration_suspect"],
+                    "tracks": slid,
+                }
+            )
+        return review
+
+    def _orientations_tie(self, best, runner):
+        if self.index_points and best.get("index_found", 0) > runner.get(
+            "index_found", 0
+        ):
+            # Index points are asymmetric on purpose: they decided it
+            return False
+        if runner["matched"] < 0.75 * best["matched"]:
+            return False
+        return runner["residual"] <= max(2.0 * best["residual"], best["residual"] + 1.0)
+
+    def _slide_ties(self, best):
+        """Tracks along which a fit shifted by one pitch scores about as well."""
+        candidates = getattr(self, "_candidates", None)
+        if candidates is None or not len(candidates) or not len(self.expected):
+            return []
+        homography = best["homography"]
+        radius = self.search_radius * self._pixels_per_unit(homography) * 0.5
+        best_key = self._slide_key(homography, candidates, radius)
+        tied = []
+        for name, marks in self.tracks.items():
+            if len(marks) < 3:
+                continue
+            step = np.median(np.diff(marks, axis=0), axis=0)
+            for sign in (-1.0, 1.0):
+                shift = np.float64(
+                    [[1, 0, sign * step[0]], [0, 1, sign * step[1]], [0, 0, 1]]
+                )
+                if self._slide_key(homography @ shift, candidates, radius) >= best_key - 2:
+                    tied.append(name)
+                    break
+        return tied
+
+    def _slide_key(self, homography, candidates, radius):
+        matched = len(self.match(homography, candidates, radius))
+        beyond = self._marks_beyond_track_ends(homography, candidates, radius)
+        return matched - 2 * beyond
+
+    def _clean_stop(self, best, tried):
+        """True when the remaining orientations need not be tried."""
+        if not self.early_stop or best is None or not self._is_clean(best):
+            return False
+        required = sum(1 for p in self.index_points if p["required"])
+        if required and best.get("index_found", 0) >= required:
+            return True
+        # Tracks alone can look the same upside down: 0 and 180 both tried
+        return tried >= 2 and best["rotation"] in (0, 2)
+
+    def _is_clean(self, fit):
+        return (
+            fit["beyond_ends"] == 0
+            and fit["matched"] >= GOOD_FIT_FRACTION * len(self.expected)
+            and fit["residual"] <= 0.5 * self.max_residual
+        )
+
     def _orientation_key(self, fit):
         # Index points are asymmetric: they decide between look-alike orientations
         return (
@@ -210,6 +325,8 @@ class TimingMarkAlignment(ImagePreprocessor):
         )
 
     def _use_non_rigid(self, fit):
+        if self.non_rigid == "tracks":
+            return False
         points = len(fit["template_pts"])
         if self.non_rigid == "auto":
             return points >= 6 and self._spread_cells(fit["template_pts"]) >= 7
@@ -294,15 +411,22 @@ class TimingMarkAlignment(ImagePreprocessor):
         binary = cv2.adaptiveThreshold(
             image, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block, 15
         )
-        count, _, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
+        count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
         areas = stats[1:, cv2.CC_STAT_AREA]
         widths = stats[1:, cv2.CC_STAT_WIDTH].astype(np.float32)
         heights = stats[1:, cv2.CC_STAT_HEIGHT].astype(np.float32)
         solidity = areas / np.maximum(widths * heights, 1)
+        sized = (areas >= low) & (areas <= high)
+        # A mark turned by tens of degrees fills less of its upright bounding
+        # box; judge those by the box its own second moments describe
+        turned = sized & (solidity <= 0.6)
+        if turned.any():
+            solidity = solidity.copy()
+            for index in np.flatnonzero(turned):
+                solidity[index] = _moment_solidity(labels, stats, centroids, index + 1)
         long_side = max(self.mark_w, self.mark_h) * scale
         keep = (
-            (areas >= low)
-            & (areas <= high)
+            sized
             & (solidity > 0.6)
             & (
                 np.maximum(widths, heights)
@@ -313,7 +437,9 @@ class TimingMarkAlignment(ImagePreprocessor):
 
     # --- fitting ---------------------------------------------------------
 
-    def fit_orientation(self, page_corners, candidates, rotation):
+    def fit_orientation(
+        self, page_corners, candidates, rotation, image=None, max_guesses=None
+    ):
         """Best fit for one orientation over a few shifted starting guesses.
 
         Tracks are periodic, so a coarse guess that is off by about one mark
@@ -326,7 +452,16 @@ class TimingMarkAlignment(ImagePreprocessor):
         radius = self.search_radius * self._pixels_per_unit(coarse)
         best = None
         seen = []
-        for start in self._starting_guesses(coarse, candidates):
+        guesses = self._starting_guesses(coarse, candidates)
+        if self.index_seed and image is not None and len(self.index_points) >= 4:
+            # The index points' own fit (found by size and shape, not as
+            # track-like blobs) as one more starting guess, tried first
+            seed = self.fit_index_points_only(image, page_corners, rotation)
+            if seed is not None and _well_conditioned(seed["homography"]):
+                guesses = [np.asarray(seed["homography"], np.float64)] + list(guesses)
+        if max_guesses is not None:
+            guesses = list(guesses)[:max_guesses]
+        for start in guesses:
             fit = self._refine(start, candidates, radius)
             if fit is None:
                 continue
@@ -424,9 +559,15 @@ class TimingMarkAlignment(ImagePreprocessor):
         template_pts = self.expected[pairs[:, 0]]
         image_pts = candidates[pairs[:, 1]]
         homography, inliers = cv2.findHomography(template_pts, image_pts, 0)
-        if homography is None:
+        if homography is None or not _well_conditioned(homography):
             return None
-        residual = self.residual_in_template_units(homography, template_pts, image_pts)
+        try:
+            residual = self.residual_in_template_units(
+                homography, template_pts, image_pts
+            )
+        except np.linalg.LinAlgError:
+            # A degenerate guess: this start failed, the next one may not
+            return None
         return {
             "homography": homography,
             "matched": int(len(pairs)),
@@ -505,6 +646,71 @@ class TimingMarkAlignment(ImagePreprocessor):
 
         self.record_geometry(remap, dict(tps, op="tps"))
         return remap(warped), tps
+
+    def track_grid_correction(self, warped, fit):
+        """
+        Local correction from the timing marks used as row and column rulers
+        (nonRigid: "tracks"). A vertical track measures each row's offset, a
+        horizontal track each column's; with tracks on both sides the offset
+        is interpolated across the page. Offsets are held, never extrapolated,
+        past a track's ends; a direction without a track keeps the homography.
+        """
+        page_w, page_h = int(self.page_dimensions[0]), int(self.page_dimensions[1])
+        template_pts = np.asarray(fit.get("template_pts", []), np.float64)
+        if not len(template_pts):
+            return warped, None
+        inverse = np.linalg.inv(fit["homography"])
+        observed = cv2.perspectiveTransform(
+            np.asarray(fit["image_pts"], np.float64)[None], inverse
+        )[0]
+        shift = observed - template_pts
+        # Coarse grid: kept in result.json for replay, offsets vary slowly
+        step = TRACK_GRID_STEP
+        gx = np.arange(0, page_w + step, step, dtype=np.float64)
+        gy = np.arange(0, page_h + step, step, dtype=np.float64)
+        rows, cols = [], []  # (position across, coords along, offsets along)
+        for marks in self.tracks.values():
+            if len(marks) < 2:
+                continue
+            d = np.linalg.norm(template_pts[:, None] - marks[None].astype(np.float64), axis=2)
+            hit = d.min(axis=1) < 0.5
+            if hit.sum() < 2:
+                continue
+            pts, offs = template_pts[hit], shift[hit]
+            vertical = np.ptp(marks[:, 1]) >= np.ptp(marks[:, 0])
+            if vertical:
+                order = np.argsort(pts[:, 1])
+                rows.append((float(np.median(pts[:, 0])), pts[order, 1], offs[order, 1]))
+            else:
+                order = np.argsort(pts[:, 0])
+                cols.append((float(np.median(pts[:, 1])), pts[order, 0], offs[order, 0]))
+
+        def blend(rulers, along, across):
+            """Offsets on the grid: each ruler interpolated along itself, then
+            across between the outermost two rulers (clamped, no extrapolation)."""
+            rulers = sorted(rulers, key=lambda r: r[0])
+            first, last = rulers[0], rulers[-1]
+            a = np.interp(along, first[1], first[2])
+            if len(rulers) == 1 or last[0] - first[0] < 1:
+                return np.repeat(a[:, None], len(across), axis=1)
+            b = np.interp(along, last[1], last[2])
+            t = np.clip((across - first[0]) / (last[0] - first[0]), 0.0, 1.0)
+            return a[:, None] * (1 - t[None]) + b[:, None] * t[None]
+
+        dy = blend(rows, gy, gx) if rows else np.zeros((len(gy), len(gx)))
+        dx = blend(cols, gx, gy).T if cols else np.zeros((len(gy), len(gx)))
+        grid = {
+            "grid": {"dx": np.round(dx, 2).tolist(), "dy": np.round(dy, 2).tolist()},
+            "grid_step": step,
+            "size": [page_w, page_h],
+        }
+        map_x, map_y = tps_maps(grid)
+
+        def remap(im):
+            return cv2.remap(im, map_x, map_y, cv2.INTER_LINEAR, borderValue=255)
+
+        self.record_geometry(remap, dict(grid, op="tps"))
+        return remap(warped), grid
 
     # --- index points ------------------------------------------------------
 
@@ -765,6 +971,8 @@ class TimingMarkAlignment(ImagePreprocessor):
                         "missing": missing,
                     }
                 )
+        if len(self.expected):
+            review.extend(self.ambiguity_review(fit))
         if self.trim_margins:
             info["margin_trim"] = self.margin_trim(image, homography)
         if review:
@@ -785,6 +993,34 @@ class TimingMarkAlignment(ImagePreprocessor):
         }
 
 
+def _well_conditioned(homography, max_condition=1e8):
+    """False for a singular or nearly singular homography (a collapsed guess)."""
+    if not np.all(np.isfinite(homography)):
+        return False
+    try:
+        return bool(np.linalg.cond(homography) < max_condition)
+    except np.linalg.LinAlgError:
+        return False
+
+
+def _moment_solidity(labels, stats, centroids, label):
+    """Area over the area of the rectangle with the same second moments, for one
+    component (about 1 for a solid rectangle at any angle, lower for rings).
+    Only the component's bounding box is scanned."""
+    x, y, w, h, area = stats[label]
+    ys, xs = np.nonzero(labels[y : y + h, x : x + w] == label)
+    dx = (xs + x) - centroids[label, 0]
+    dy = (ys + y) - centroids[label, 1]
+    # bincount sums in pixel order, as the whole-page version did
+    bins = np.zeros(len(xs), dtype=np.intp)
+    n = max(float(len(xs)), 1.0)
+    sxx = np.bincount(bins, dx * dx, minlength=1)[0] / n
+    syy = np.bincount(bins, dy * dy, minlength=1)[0] / n
+    sxy = np.bincount(bins, dx * dy, minlength=1)[0] / n
+    det = max(sxx * syy - sxy * sxy, 1e-9)
+    return np.float32(area / max(12.0 * np.sqrt(det), 1.0))
+
+
 def _size_matches(found, expected, tolerance):
     a = sorted(float(v) for v in found)
     b = sorted(float(v) for v in expected)
@@ -795,11 +1031,11 @@ def _size_matches(found, expected, tolerance):
 
 def _squared_distances(a, b):
     """All squared distances between two point sets, without an n*m*2 temporary."""
-    a = a.astype(np.float32)
-    b = b.astype(np.float32)
-    return np.maximum(
-        (a * a).sum(axis=1)[:, None] + (b * b).sum(axis=1)[None, :] - 2 * a @ b.T, 0
-    )
+    a = a.astype(np.float32, copy=False)
+    b = b.astype(np.float32, copy=False)
+    out = (a * a).sum(axis=1)[:, None] + (b * b).sum(axis=1)[None, :]
+    out -= 2 * a @ b.T
+    return np.maximum(out, 0, out=out)
 
 
 def _angle_mod_90(steps):

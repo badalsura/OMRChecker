@@ -290,8 +290,8 @@ export function renderAlignment(ed) {
       num("Search radius", "searchRadius", "default"),
       num("Minimum matched marks", "minMatchedMarks", "default", "1"),
       num("Max leftover error", "maxResidual", "default"),
-      tick("Bend to fit the marks (nonRigid)", "nonRigid"),
-      tick("Detect sheets fed upside down", "detectOrientation")
+      // upside-down detection: the "Detect upside-down sheets" switch with the tracks below
+      tick("Bend to fit the marks (nonRigid)", "nonRigid")
     );
   } else if (proc?.name === "CropOnMarkers") {
     body.push(text("Marker image", "relativePath", "omr_marker.jpg"), num("Marker width share", "sheetToMarkerWidthRatio", "17"), num("Min match score", "min_matching_threshold", "default"));

@@ -229,3 +229,26 @@ def test_template_schema_accepts_new_block_keys(tmp_path, bordered_spec):
     template["fieldBlocks"]["MCQ_1"]["rectifyOnBorder"] = "yes"
     with pytest.raises(Exception):
         OMREngine(write_template(tmp_path, template))
+
+
+def test_border_never_slides_a_block_by_a_pitch(tmp_path, bordered_spec):
+    # A padding off by one bubble pitch would stretch the block over its
+    # neighbours: refused and sent to review, page alignment kept
+    image, truth = bordered_sheet(bordered_spec, 7)
+    template = rectify_template(bordered_spec)
+    block = template["fieldBlocks"]["MCQ_1"]
+    pitch = block.get("bubblesGap") or 40
+    block.update({"rectifyOnBorder": True, "borderPadding": 8 + pitch})
+    engine = OMREngine(
+        write_template(tmp_path, template),
+        config_overrides={
+            "alignment_params": {"rectify_search_px": 2 * pitch, "verify_bubble_fit": False}
+        },
+    )
+    result = engine.scan(image)
+    info = block_of(engine, "MCQ_1").last_rectification
+    assert not info["ok"] and info.get("slide"), info
+    label = bordered_spec.blocks[1].field_labels[0]
+    assert "border_slide" in result.fields[label]["flags"]
+    assert result.fields[label]["needs_review"]
+    assert not wrong_answers(result, truth)

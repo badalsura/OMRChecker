@@ -17,6 +17,7 @@ const r = {
   view: { scale: 1, x: 0, y: 0 },
   overlay: true,
   selected: null, // field/zone name
+  scan: null, // {name, box} while a barcode/QR box is being drawn
   hover: null,
   busy: false,
   autoAdvance: safeStorage("get", "omr_res_advance") !== "0",
@@ -195,9 +196,9 @@ function renderList() {
         "li",
         { class: selected ? "selected" : "", onclick: () => openAt(index), title: item.file_name },
         el("span", { class: "name" }, item.file_name || item.id.slice(0, 8)),
-        item.flag_count ? el("span", { class: "chip flag", title: "fields flagged when read" }, `⚑${item.flag_count}`) : null,
+        item.flag_count && !item.verified ? el("span", { class: "chip flag", title: "fields flagged when read" }, `⚑${item.flag_count}`) : null,
         item.corrected ? el("span", { class: "chip corrected", title: "corrected" }, "✎") : null,
-        item.verified ? el("span", { class: "chip ok", title: "verified" }, "✓") : null,
+        item.verified ? el("span", { class: "chip ok", title: item.flag_count ? `verified (${item.flag_count} field(s) were flagged when read)` : "verified" }, "✓") : null,
         item.status === "error" ? chip("error", "error") : null,
         !item.verified && item.status === "needs_review" ? el("span", { class: "dot-flag", title: "needs review" }) : null
       )
@@ -244,17 +245,26 @@ function loadImage(src) {
 }
 
 async function open(scanId, { keepView = false, quiet = false } = {}) {
+  if (r.align && r.align.scanId !== scanId) r.align = null;
   r.busy = true;
   if (!quiet) statusLine.textContent = "Rendering…";
   r.preview = null;
   if (!keepView) r.views = {};
+  r.opening = scanId;
   try {
     const data = await api(`/scans/${scanId}/render`);
     const image = await loadImage(fresh(data.image_url));
+    // Stepped on before this sheet arrived: the newer sheet wins
+    if (r.opening !== scanId) return;
     const sameSize = r.image && r.image.naturalWidth === image.naturalWidth && r.image.naturalHeight === image.naturalHeight;
+    const sheetChanged = !r.data || r.data.scan_id !== data.scan_id;
     r.data = data;
     r.image = image;
-    if (!r.selected || !findItem(r.selected)) r.selected = null;
+    // On another sheet the selection carries over only to a field that needs a
+    // look there too; otherwise the last sheet's highlight would follow along
+    const kept = r.selected && findItem(r.selected);
+    if (!kept || (sheetChanged && !kept.flagged && !kept.pending)) r.selected = null;
+    if (sheetChanged) r.scan = null;
     if (!keepView && !sameSize) fit();
     renderList();
     renderSide();
@@ -262,11 +272,18 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
     loadViews();
     prefetch();
   } catch (error) {
+    if (r.opening !== scanId) return;
     // Show the values even when no image can be produced
     try {
       r.data = await api(`/scans/${scanId}/overlay`);
       r.data.warnings = [error.message];
       r.image = null;
+      if (r.data.status === "error" && r.mode === "aligned" && !r.side) {
+        // Nothing aligned to show: the original is what can be completed
+        r.mode = "original";
+        syncViewControls();
+        loadViews();
+      }
       renderList();
       renderSide();
       draw();
@@ -274,8 +291,10 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
       toast(error.message, "error", 6000);
     }
   } finally {
-    r.busy = false;
-    updateStatus();
+    if (r.opening === scanId) {
+      r.busy = false;
+      updateStatus();
+    }
   }
 }
 
@@ -294,14 +313,23 @@ function findItem(name) {
 }
 
 function applyPayload(data) {
-  const keep = { image_url: r.data.image_url, width: r.data.width, height: r.data.height, image_source: r.data.image_source, warnings: r.data.warnings, drift: r.data.drift, resolved_path: r.data.resolved_path };
-  r.data = Object.assign(data, keep);
   const item = r.items.find((i) => i.id === data.scan_id);
   if (item) {
     item.verified = data.verified ? 1 : 0;
     item.corrected = data.corrected ? 1 : 0;
     item.status = data.status;
   }
+  // The answer to a correction made on a sheet the user has since left: only
+  // its list row is updated, never the sheet now on screen
+  if (!r.data || r.data.scan_id !== data.scan_id) {
+    renderList();
+    return;
+  }
+  const keep = { image_url: r.data.image_url, width: r.data.width, height: r.data.height, image_source: r.data.image_source, warnings: r.data.warnings, drift: r.data.drift, resolved_path: r.data.resolved_path };
+  r.data = Object.assign(data, keep);
+  // An accepted item is done: drop its highlight
+  const selected = r.selected && findItem(r.selected);
+  if (selected && !selected.flagged && !selected.pending) r.selected = null;
   renderList();
   renderSide();
   draw();
@@ -310,7 +338,8 @@ function applyPayload(data) {
 async function correct(body) {
   if (!r.data || r.preview) return;
   try {
-    const data = await api(`/scans/${r.data.scan_id}/corrections`, { method: "POST", json: body });
+    const scanId = r.data.scan_id;
+    const data = await api(`/scans/${scanId}/corrections`, { method: "POST", json: body });
     applyPayload(data);
     emit("review-changed");
     return true;
@@ -543,9 +572,23 @@ function hitTest(p) {
 function bindCanvas() {
   let drag = null;
   canvas.addEventListener("mousedown", (e) => {
+    if (r.scan) {
+      // Scanning a code: the drag draws the box instead of panning
+      const p = toImage(e.clientX, e.clientY);
+      drag = { scan: true, pane: p.pane };
+      r.scan.box = { kind: p.pane.kind, x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+      return;
+    }
     drag = { x: e.clientX, y: e.clientY, vx: r.view.x, vy: r.view.y, moved: false };
   });
   window.addEventListener("mousemove", (e) => {
+    if (drag && drag.scan) {
+      const p = toImage(e.clientX, e.clientY, drag.pane);
+      r.scan.box.x1 = p.x;
+      r.scan.box.y1 = p.y;
+      draw();
+      return;
+    }
     if (drag) {
       const dx = e.clientX - drag.x;
       const dy = e.clientY - drag.y;
@@ -560,7 +603,7 @@ function bindCanvas() {
     if (e.target !== canvas) return;
     const hit = hitTest(toImage(e.clientX, e.clientY));
     const key = hit ? (hit.bubble ? `${hit.field.name}/${hit.bubble.value}` : (hit.field || hit.zone).name) : null;
-    canvas.style.cursor = hit ? "pointer" : "grab";
+    canvas.style.cursor = r.scan ? "crosshair" : hit ? "pointer" : "grab";
     // The same key highlights the spot on every pane
     if (key !== r.hover) {
       r.hover = key;
@@ -572,7 +615,9 @@ function bindCanvas() {
   window.addEventListener("mouseup", (e) => {
     const was = drag;
     drag = null;
+    if (was && was.scan) return decodeBox();
     if (!was || was.moved || e.target !== canvas) return;
+    if (r.align) return alignClick(toImage(e.clientX, e.clientY));
     const hit = hitTest(toImage(e.clientX, e.clientY));
     if (!hit) return;
     if (hit.kind === "bubble") {
@@ -661,6 +706,9 @@ function drawPane(pane, dpr) {
     ctx2d.fillText(text, 20 * px, 30 * px, w - 40 * px);
     return;
   }
+  if (r.align && pane.kind === "original") drawAlignClicks(px);
+  if (pane.kind === "original" && r.borders) drawPageOutline(px);
+  if (r.scan && r.scan.box && r.scan.box.kind === pane.kind) drawScanBox(r.scan.box, px);
   if (!r.data) return;
   const geo = geometryFor(pane.kind);
   if (!geo) return;
@@ -768,6 +816,7 @@ function updateStatus() {
     if (flags && flags.length) parts.push(flags.join("; "));
   }
   if (r.preview) parts.push("REGRADE PREVIEW (not saved)");
+  if (r.scan) parts.push(`SCAN ${r.scan.name}: drag a box around the code (Esc cancels)`);
   statusLine.textContent = parts.join("  ·  ");
 }
 
@@ -844,7 +893,7 @@ function valueInput(item) {
 }
 
 function acceptButton(item) {
-  if (!item.pending || r.preview) return null;
+  if (!(item.pending || (item.acceptAlso || []).length) || r.preview) return null;
   return el(
     "button",
     {
@@ -853,11 +902,90 @@ function acceptButton(item) {
       onclick: (e) => {
         e.preventDefault();
         e.stopPropagation();
-        correct({ accept: [item.check || item.name] });
+        // A grouped value settles its columns too
+        correct({ accept: [item.check || item.name, ...(item.acceptAlso || [])] });
       },
     },
     "Accept"
   );
+}
+
+// Drag to scan: barcodes and QR codes can't be read by eye, so the reviewer
+// draws a box around the code and the server decodes the original there
+function scanButton(item) {
+  if (!["barcode", "qrcode"].includes(item.type) || r.preview) return null;
+  const active = r.scan && r.scan.name === item.name;
+  return el(
+    "button",
+    {
+      class: `small${active ? " primary" : ""}`,
+      title: "Drag a box around the code on the sheet to decode it",
+      onclick: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (active) return stopScan();
+        r.scan = { name: item.name, box: null };
+        canvas.style.cursor = "crosshair";
+        renderSide();
+        updateStatus();
+      },
+    },
+    active ? "Cancel scan" : "Scan"
+  );
+}
+
+function stopScan() {
+  r.scan = null;
+  canvas.style.cursor = "grab";
+  renderSide();
+  draw();
+  updateStatus();
+}
+
+function drawScanBox(box, px) {
+  ctx2d.save();
+  ctx2d.strokeStyle = "#e0218a";
+  ctx2d.lineWidth = 2 * px;
+  ctx2d.setLineDash([6 * px, 4 * px]);
+  ctx2d.strokeRect(Math.min(box.x0, box.x1), Math.min(box.y0, box.y1), Math.abs(box.x1 - box.x0), Math.abs(box.y1 - box.y0));
+  ctx2d.restore();
+}
+
+async function decodeBox() {
+  const scan = r.scan;
+  const box = scan && scan.box;
+  if (!box || !r.data) return;
+  const x = Math.min(box.x0, box.x1);
+  const y = Math.min(box.y0, box.y1);
+  const w = Math.abs(box.x1 - box.x0);
+  const h = Math.abs(box.y1 - box.y0);
+  if (w < 4 || h < 4) {
+    scan.box = null;
+    return draw();
+  }
+  const scanId = r.data.scan_id;
+  statusLine.textContent = "Decoding…";
+  try {
+    const found = await api(`/scans/${scanId}/decode`, { method: "POST", json: { box: [x, y, w, h], view: box.kind === "original" ? "original" : "aligned", zone: scan.name } });
+    if (!r.data || r.data.scan_id !== scanId || r.scan !== scan) return;
+    if (!found.value) {
+      scan.box = null;
+      draw();
+      updateStatus();
+      return toast("No code found in that box. Try a box with a little white around the code.", "error", 5000);
+    }
+    const others = (found.symbols || []).length - 1;
+    stopScan();
+    r.selected = scan.name;
+    if (await correct({ changes: { [scan.name]: found.value } })) {
+      toast(`${scan.name}: ${found.value}${found.format ? ` (${found.format})` : ""}${others > 0 ? ` · ${others} more code(s) in the box` : ""}`, "ok", 5000);
+    }
+  } catch (error) {
+    scan.box = null;
+    draw();
+    updateStatus();
+    toast(error.message, "error", 6000);
+  }
 }
 
 function itemRow(item, indent) {
@@ -872,6 +1000,7 @@ function itemRow(item, indent) {
       "div",
       { class: "res-flags" },
       acceptButton(item),
+      scanButton(item),
       item.corrected ? el("span", { class: "chip corrected" }, `was ${item.original_value === "" || item.original_value === undefined ? "∅" : item.original_value}`) : null,
       (item.flags || []).map((f) => chip(f, "flag")),
       (item.group_flags || []).map((f) => el("span", { class: "chip group-flag", title: "Column of a grouped value that needs a look" }, f)),
@@ -892,12 +1021,22 @@ function renderSide() {
   side.append(
     el("div", { class: "res-head" }, el("strong", { class: "res-file", title: d.source_path || "" }, d.file_id || d.scan_id), el("div", { class: "row gap wrap" }, chip(d.status, d.status), d.corrected ? el("span", { class: "chip corrected" }, "corrected") : null, verified ? el("span", { class: "chip ok" }, `verified by ${verified.by}`) : el("span", { class: "chip" }, "not verified"), d.score !== null && d.score !== undefined ? el("span", { class: "chip" }, `score ${d.score}`) : null)),
     el("div", { class: "muted small res-path" }, d.resolved_path || d.source_path || ""),
+    registrationSummary(d),
+    (d.duplicates || []).length
+      ? el(
+          "div",
+          { class: "chip error", title: "Another sheet of this job has the same primary key" },
+          "Duplicate key: also on ",
+          ...d.duplicates.map((dup) => el("button", { class: "small ghost", onclick: () => open(dup.scan_id) }, dup.file_name || dup.scan_id))
+        )
+      : "",
     scoreSummary(d.scoring) || ""
   );
   for (const warning of r.data.warnings || []) side.append(el("div", { class: "res-warning" }, warning));
   side.append(el("div", { id: "res-view-notes" }));
   if (r.data.drift && r.data.drift.length) side.append(el("div", { class: "res-warning" }, `Re-reading now gives different values for: ${r.data.drift.join(", ")}`));
   if (d.error) side.append(el("div", { class: "res-warning error" }, d.error));
+  if (d.status === "error" && !r.preview) side.append(failedSheetBox(d));
   if (r.preview) side.append(previewBox());
   for (const item of d.sheet_review || []) {
     const detail = item.marked_bubbles !== undefined ? ` (${item.marked_bubbles} marked, minimum ${item.min_marked_bubbles})` : "";
@@ -918,7 +1057,7 @@ function renderSide() {
       joined.addEventListener("keyup", (e) => {
         if (e.key === " ") e.preventDefault();
       });
-      const head = el("summary", { class: `res-row group${output.flagged ? " flagged" : ""}${output.corrected ? " corrected" : ""}`, "data-names": [output.name, ...output.parts].join("\n") }, el("span", { class: "res-name" }, output.name), joined, el("span", { class: "conf", style: { background: confidenceColor(output.confidence) } }, confText(output.confidence)), el("div", { class: "res-flags" }, acceptButton(output), (output.flags || []).map((f) => chip(f, "flag")), (output.reasons || []).length ? el("span", { class: "muted small res-reasons" }, output.reasons.join("; ")) : null));
+      const head = el("summary", { class: `res-row group${output.flagged ? " flagged" : ""}${output.corrected ? " corrected" : ""}`, "data-names": [output.name, ...output.parts].join("\n") }, el("span", { class: "res-name" }, output.name), joined, el("span", { class: "conf", style: { background: confidenceColor(output.confidence) } }, confText(output.confidence)), el("div", { class: "res-flags" }, acceptButton({ ...output, acceptAlso: parts.filter((p) => p.pending || p.flagged).map((p) => p.name) }), (output.flags || []).map((f) => chip(f, "flag")), (output.reasons || []).length ? el("span", { class: "muted small res-reasons" }, output.reasons.join("; ")) : null));
       const details = el("details", { class: "res-group" }, head, parts.map((p) => itemRow(p, true)));
       if (parts.some((p) => (p.group_flags || []).length)) head.classList.add("group-flagged");
       if (output.flagged || output.corrected || head.classList.contains("group-flagged")) details.open = true;
@@ -994,6 +1133,7 @@ function onKey(e) {
     return;
   }
   const k = e.key;
+  if (k === "Escape" && r.scan) return stopScan();
   if (k === "j" || k === "ArrowDown" || k === "ArrowRight") step(1);
   else if (k === "k" || k === "ArrowUp" || k === "ArrowLeft") step(-1);
   else if (k === "v" || (k === "Enter" && !e.target.matches("button"))) verify();
@@ -1079,6 +1219,165 @@ function setViewOption(name, value) {
   draw();
 }
 
+// ---- failed sheets (item 25): align by clicking, or type the values
+const CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"];
+
+function failedSheetBox(d) {
+  const box = el(
+    "div",
+    { class: "res-failed" },
+    el("strong", {}, "This sheet could not be aligned."),
+    el("p", { class: "muted small" }, "Click its page corners (or the template's index points) on the original image and it is read again, or type its values by hand.")
+  );
+  const startAlign = async (kind) => {
+    try {
+      const targets = await api(`/scans/${d.scan_id}/manual-align`);
+      const names = kind === "corners" ? CORNER_NAMES : targets.index_points.map((p) => p.name);
+      if (kind === "index" && names.length < 4) return toast("This template has fewer than 4 index points; click the page corners instead", "error", 5000);
+      r.align = { kind, names, points: [], scanId: d.scan_id };
+      if (r.mode !== "original") setViewOption("mode", "original");
+      alignPrompt();
+      draw();
+    } catch (error) {
+      toast(error.message, "error", 5000);
+    }
+  };
+  box.append(
+    el(
+      "div",
+      { class: "row gap wrap" },
+      el("button", { class: "small primary", onclick: () => startAlign("corners") }, "Align by page corners"),
+      el("button", { class: "small", onclick: () => startAlign("index") }, "Align by index points"),
+      el("button", { class: "small", onclick: () => typeValues(d) }, "Type values…"),
+      r.align ? el("button", { class: "small ghost", onclick: () => { r.align = null; draw(); renderSide(); } }, "Cancel clicking") : null
+    )
+  );
+  if (r.align) box.append(el("div", { class: "chip" }, alignPromptText()));
+  return box;
+}
+
+function alignPromptText() {
+  const a = r.align;
+  const next = a.names[a.points.length];
+  return next ? `Click ${next} (${a.points.length + 1} of ${a.names.length}) on the original` : "Reading…";
+}
+
+function alignPrompt() {
+  statusLine.textContent = alignPromptText();
+  renderSide();
+}
+
+async function alignClick(p) {
+  const a = r.align;
+  if (!a || !r.data || r.data.scan_id !== a.scanId) return (r.align = null);
+  if (p.pane.kind !== "original") return toast("Click on the Original view");
+  // Clicks while the alignment is being sent are ignored
+  if (a.points.length >= a.names.length) return;
+  a.points.push([Math.round(p.x), Math.round(p.y)]);
+  draw();
+  if (a.points.length < a.names.length) return alignPrompt();
+  alignPrompt();
+  try {
+    await api(`/scans/${a.scanId}/manual-align`, { method: "POST", json: { points: a.points, kind: a.kind, names: a.kind === "index" ? a.names : null } });
+    toast("Aligned by hand and read again", "ok");
+    r.align = null;
+    await open(a.scanId);
+    load(r.offset, true);
+  } catch (error) {
+    r.align = null;
+    toast(error.message, "error", 6000);
+    renderSide();
+    draw();
+  }
+}
+
+// Registration view: the aligned page's outline on the original scan
+function drawPageOutline(px) {
+  const entry = viewEntry("original");
+  const q = entry && entry.meta && entry.meta.map && entry.meta.map.page;
+  if (!q) return;
+  ctx2d.strokeStyle = "#1478dc";
+  ctx2d.lineWidth = 2 * px;
+  ctx2d.setLineDash([10 * px, 6 * px]);
+  path(q);
+  ctx2d.stroke();
+  ctx2d.setLineDash([]);
+  // The page's top-left corner, so a sheet read upside down is obvious
+  ctx2d.fillStyle = "#1478dc";
+  ctx2d.beginPath();
+  ctx2d.arc(q[0][0], q[0][1], 7 * px, 0, Math.PI * 2);
+  ctx2d.fill();
+  label("top-left", q[0][0] + 10 * px, q[0][1] + 16 * px, px, "#1478dc");
+}
+
+function registrationSummary(d) {
+  const g = d.geometry;
+  if (!g && !d.manual_alignment) return "";
+  const parts = [];
+  const method = (g && g.alignment_method) || "";
+  if (d.manual_alignment) parts.push(`aligned by hand (${d.manual_alignment.kind === "index" ? "index points" : "page corners"})`);
+  else if (method) parts.push(String(method).replace(/_/g, " "));
+  if (g && g.rotation) parts.push(`turned ${g.rotation}°`);
+  const residual = g && g.residual && typeof g.residual === "object" ? g.residual.page : g && g.residual;
+  if (residual !== null && residual !== undefined && Number.isFinite(Number(residual))) parts.push(`residual ${Number(residual).toFixed(2)} px`);
+  const points = (g && g.index_points) || [];
+  if (points.length) parts.push(`index points ${points.filter((p) => p.found).length}/${points.length} found`);
+  if (!parts.length) return "";
+  return el("div", { class: "muted small", title: "How the page was registered. Turn on block borders and the Original view to see the page outline on the scan." }, `Registration: ${parts.join(" · ")}`);
+}
+
+function drawAlignClicks(px) {
+  ctx2d.lineWidth = 2 * px;
+  r.align.points.forEach(([x, y], i) => {
+    ctx2d.strokeStyle = COLORS.selected;
+    ctx2d.beginPath();
+    ctx2d.arc(x, y, 8 * px, 0, Math.PI * 2);
+    ctx2d.stroke();
+    label(r.align.names[i], x + 10 * px, y - 10 * px, px, COLORS.selected);
+  });
+}
+
+async function typeValues(d) {
+  let targets;
+  try {
+    targets = await api(`/scans/${d.scan_id}/manual-align`);
+  } catch (error) {
+    return toast(error.message, "error", 5000);
+  }
+  const inputs = {};
+  const rows = (targets.output_columns || []).map((name) => {
+    inputs[name] = el("input", { value: (d.responses || d.outputs || {})[name] || "", style: "width:10em" });
+    return el("label", { class: "field inline" }, el("span", { class: "mono" }, name), inputs[name]);
+  });
+  const dialog = modal(
+    "Type this sheet's values",
+    el("div", { class: "res-manual" }, el("p", { class: "muted small" }, "Saved values are marked as typed by hand, and the sheet counts as reviewed."), ...rows),
+    [
+      el("button", { class: "ghost", onclick: () => dialog.close() }, "Cancel"),
+      el(
+        "button",
+        {
+          class: "primary",
+          onclick: async () => {
+            const values = Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.value]));
+            try {
+              await api(`/scans/${d.scan_id}/manual-values`, { method: "POST", json: { values } });
+              dialog.close();
+              toast("Values saved", "ok");
+              await open(d.scan_id);
+              load(r.offset, true);
+            } catch (error) {
+              toast(error.message, "error", 5000);
+            }
+          },
+        },
+        "Save"
+      ),
+    ],
+    { wide: true }
+  );
+}
+
 // Item 31: delete one sheet's result after a confirmation (audited)
 function deleteScan() {
   if (!r.data || r.preview) return;
@@ -1126,11 +1425,88 @@ function deleteScan() {
 
 const REGRADE_EXAMPLE = '{"colorDropout": {"enabled": false}}';
 
+// The main settings a sheet is usually re-read with; anything else goes in
+// the JSON boxes under Advanced. "t": template override, "c": config override
+const ON_OFF = [[true, "On"], [false, "Off"]];
+const REGRADE_OPTIONS = [
+  { label: "Turn the sheet", where: "t", path: ["alignment", "rotate"], choices: [[90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]], unset: "As scanned" },
+  { label: "Colour removal", where: "t", path: ["colorDropout"], choices: [["grey", "Plain grey"], ["red", "Red channel (removes red print)"], ["green", "Green channel"], ["blue", "Blue channel"], ["max", "Brightest channel (removes any colour)"]] },
+  { label: "Bubble threshold", where: "c", path: ["threshold_params", "mode"], choices: [["adaptive", "Adaptive (per sheet)"], ["fixed", "Fixed level"]] },
+  { label: "Fixed level (0–255)", where: "c", path: ["threshold_params", "fixed_threshold"], number: { min: 1, max: 254, placeholder: "120" } },
+  { label: "Mark sensitivity (lower counts fainter marks)", where: "c", path: ["threshold_params", "MIN_JUMP"], number: { min: 1, max: 255, placeholder: "25" } },
+  { label: "Even out shadows", where: "c", path: ["threshold_params", "flatten_background"], choices: ON_OFF },
+  { label: "Find the page outline (phone photos)", where: "t", path: ["alignment", "page_outline"], choices: ON_OFF },
+  { label: "Fit blocks to their printed borders", where: "t", path: ["alignment", "rectify_on_border"], choices: ON_OFF },
+  { label: "Per-block perspective", where: "t", path: ["alignment", "block_perspective"], choices: ON_OFF },
+];
+
+function pathGet(obj, path) {
+  return path.reduce((o, k) => (o && typeof o === "object" ? o[k] : undefined), obj);
+}
+
+function pathSet(obj, path, value) {
+  let o = obj;
+  path.slice(0, -1).forEach((k) => {
+    if (!o[k] || typeof o[k] !== "object") o[k] = {};
+    o = o[k];
+  });
+  o[path[path.length - 1]] = value;
+}
+
+function pathDelete(obj, path) {
+  const parents = [obj];
+  for (const k of path.slice(0, -1)) {
+    const next = parents[parents.length - 1][k];
+    if (!next || typeof next !== "object") return;
+    parents.push(next);
+  }
+  delete parents[parents.length - 1][path[path.length - 1]];
+  // Drop the objects the removal left empty
+  for (let i = parents.length - 1; i > 0; i--) {
+    if (Object.keys(parents[i]).length) break;
+    delete parents[i - 1][path[i - 1]];
+  }
+}
+
+function deepMerge(base, extra) {
+  const out = { ...base };
+  Object.entries(extra || {}).forEach(([k, v]) => {
+    out[k] = v && typeof v === "object" && !Array.isArray(v) && out[k] && typeof out[k] === "object" ? deepMerge(out[k], v) : v;
+  });
+  return out;
+}
+
 function showRegrade() {
   if (!r.data) return;
   const last = r.data.regrade || {};
-  const templateBox = el("textarea", { rows: 5, placeholder: REGRADE_EXAMPLE }, Object.keys(last.template_overrides || {}).length ? JSON.stringify(last.template_overrides, null, 1) : "");
-  const configBox = el("textarea", { rows: 3, placeholder: '{"threshold_params": {"MIN_JUMP": 30}}' }, Object.keys(last.config_overrides || {}).length ? JSON.stringify(last.config_overrides, null, 1) : "");
+  // Settings the controls show come out of the JSON boxes
+  const rest = { t: JSON.parse(JSON.stringify(last.template_overrides || {})), c: JSON.parse(JSON.stringify(last.config_overrides || {})) };
+  const controls = REGRADE_OPTIONS.map((option) => {
+    const value = pathGet(rest[option.where], option.path);
+    const known = option.number ? typeof value === "number" : option.choices.some(([v]) => v === value);
+    if (value !== undefined && known) pathDelete(rest[option.where], option.path);
+    const current = known ? value : undefined;
+    let input;
+    if (option.number) {
+      input = el("input", { type: "number", min: option.number.min, max: option.number.max, placeholder: `template setting (${option.number.placeholder})`, value: current === undefined ? "" : String(current) });
+    } else {
+      input = el("select", {}, el("option", { value: "" }, option.unset || "Template setting"), option.choices.map(([v, text]) => el("option", { value: JSON.stringify(v) }, text)));
+      input.value = current === undefined ? "" : JSON.stringify(current);
+    }
+    return { option, input };
+  });
+  const read = () => {
+    const out = { t: {}, c: {} };
+    controls.forEach(({ option, input }) => {
+      const text = input.value.trim();
+      if (text === "") return;
+      pathSet(out[option.where], option.path, option.number ? Number(text) : JSON.parse(text));
+    });
+    return out;
+  };
+  const jsonText = (obj) => (Object.keys(obj).length ? JSON.stringify(obj, null, 1) : "");
+  const templateBox = el("textarea", { rows: 5, placeholder: REGRADE_EXAMPLE }, jsonText(rest.t));
+  const configBox = el("textarea", { rows: 3, placeholder: '{"review_params": {"min_confidence": 0.3}}' }, jsonText(rest.c));
   const keep = el("input", { type: "checkbox", checked: true });
   const current = el("input", { type: "checkbox" });
   const result = el("div", { class: "small" });
@@ -1142,7 +1518,9 @@ function showRegrade() {
   const run = async (apply) => {
     let body;
     try {
-      body = { template_overrides: parse(templateBox), config_overrides: parse(configBox), apply, keep_corrections: keep.checked, use_current_template: current.checked };
+      const chosen = read();
+      // Advanced JSON wins over the controls where both set a value
+      body = { template_overrides: deepMerge(chosen.t, parse(templateBox)), config_overrides: deepMerge(chosen.c, parse(configBox)), apply, keep_corrections: keep.checked, use_current_template: current.checked };
     } catch (e) {
       toast(`Invalid JSON: ${e.message}`, "error");
       return;
@@ -1169,14 +1547,23 @@ function showRegrade() {
       toast(error.message, "error", 6000);
     }
   };
+  const advanced = el(
+    "details",
+    { class: "regrade-advanced" },
+    el("summary", {}, "Advanced (JSON overrides)"),
+    el("p", { class: "muted small" }, "Deep-merged into the template or the config; a value here wins over the controls above."),
+    el("label", { class: "field" }, "Template overrides (JSON)", templateBox),
+    el("label", { class: "field" }, "Config overrides (JSON)", configBox)
+  );
+  if (Object.keys(rest.t).length || Object.keys(rest.c).length) advanced.open = true;
   const dialog = modal(
     "Regrade this sheet",
     el(
       "div",
       {},
-      el("p", { class: "muted small" }, "Re-reads the original file with overrides deep-merged into the template (e.g. colour removal) or the config. Preview first; Apply replaces the stored read (the old one is kept in the history) and re-applies your corrections."),
-      el("label", { class: "field" }, "Template overrides (JSON)", templateBox),
-      el("label", { class: "field" }, "Config overrides (JSON)", configBox),
+      el("p", { class: "muted small" }, "Re-reads the original file with these settings. Preview first; Apply replaces the stored read (the old one is kept in the history) and re-applies your corrections."),
+      el("div", { class: "regrade-grid" }, controls.map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
+      advanced,
       el("label", { class: "small" }, keep, " keep my corrections"),
       " ",
       el("label", { class: "small" }, current, " use the current template version"),

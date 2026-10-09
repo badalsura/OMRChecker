@@ -58,7 +58,12 @@ def replay(geometry, image, engine):
 
 
 def assert_sampled_where_drawn(result, image):
-    """Every bubble's recorded mean is the mean of the image at its box."""
+    """Every bubble's recorded mean is the mean of the image at its box
+    (after the background flattening the reader applies by default)."""
+    from src.core import ImageInstanceOps
+
+    sizes = [max(b["w"], b["h"]) for f in result.fields.values() for b in f["bubbles"]]
+    image = ImageInstanceOps.flatten_background(image, float(np.median(sizes)))
     for field in result.fields.values():
         for bubble in field["bubbles"]:
             x, y, w, h = bubble["x"], bubble["y"], bubble["w"], bubble["h"]
@@ -112,7 +117,7 @@ def test_empty_geometry_and_point_mapping():
 # --------------------------------------------------------------------------- engine
 
 
-@pytest.mark.parametrize("non_rigid", [False, True])
+@pytest.mark.parametrize("non_rigid", [False, True, "tracks"])
 def test_engine_records_geometry_and_replay_is_pixel_identical(
     tmp_path, spec, non_rigid
 ):
@@ -127,7 +132,7 @@ def test_engine_records_geometry_and_replay_is_pixel_identical(
     geometry = result.geometry
     assert geometry["source_size"] == [image.shape[1], image.shape[0]]
     assert geometry["aligned_size"] == spec.page
-    assert (geometry["tps"] is not None) == non_rigid
+    assert (geometry["tps"] is not None) == bool(non_rigid)
     assert geometry["residual"]["page"] < 1.0
     assert set(geometry["margin_trim"]) == {"top", "bottom", "left", "right"}
     assert json.loads(json.dumps(result.to_dict()))["geometry"] == geometry
@@ -197,10 +202,12 @@ def index_sheet(spec, seed, flip=False, mid=True, extra_top=0, background=True):
     return image, truth
 
 
-def test_asymmetric_index_points_decide_orientation(tmp_path):
+@pytest.mark.parametrize("seed_guess", [False, True])
+def test_asymmetric_index_points_decide_orientation(tmp_path, seed_guess):
     spec = symmetric_spec()
     template = spec.to_template()
     template["preProcessors"][0]["options"]["indexPoints"] = index_points()
+    template["preProcessors"][0]["options"]["indexSeed"] = seed_guess
     engine = OMREngine(write(tmp_path, template))
     processor = engine.template.pre_processors[0]
     for flip in (False, True):
@@ -462,6 +469,19 @@ def test_results_preview_replays_geometry_in_both_views(tmp_path, spec):
             picture = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
             assert np.array_equal(picture, expected), view
         assert_sampled_where_drawn(direct, direct.aligned_image)
+
+        # A different file at the recorded path is refused, not replayed
+        ctx = client.app.state.ctx
+        assert stored["source_sha256"]
+        source = Path(stored["source_path"])
+        original = source.read_bytes()
+        source.write_bytes(original + b"changed")
+        ctx.results.renders.items.clear()
+        changed = client.get(f"/scans/{scan_id}/render").json()
+        assert changed["image_source"] == "stored"
+        assert any("not the file that was read" in w for w in changed["warnings"])
+        source.write_bytes(original)
+        ctx.results.renders.items.clear()
 
         # Old results without geometry still render (by re-reading)
         ctx = client.app.state.ctx

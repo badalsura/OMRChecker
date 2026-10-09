@@ -59,6 +59,9 @@ from src.api.review import (
     crop_box,
     item_box,
     recompute,
+    sheet_entry,
+    sheet_overview,
+    template_index_points,
     write_training_records,
 )
 from src.api.settings import Settings
@@ -125,21 +128,39 @@ class Context:
                 self.scan_locks.clear()
             return self.scan_locks.setdefault(scan_id, threading.Lock())
 
-    def aligned_image(self, scan_id):
+    def aligned_image(self, scan_id, result=None):
+        """
+        The aligned page: the stored aligned.png, or, when the job kept no
+        images, the page rebuilt from the original file with the geometry
+        recorded at scan time (nothing is detected again).
+        """
         path = self.data.scan_dir(scan_id) / "aligned.png"
         key = str(path)
         with self.image_cache_guard:
             if key in self.image_cache:
                 self.image_cache.move_to_end(key)
                 return self.image_cache[key]
-        if not path.exists():
+        if path.exists():
+            image = cv2.imread(key, cv2.IMREAD_UNCHANGED)
+        elif result is not None and result.get("geometry"):
+            from src.api.results import ResultsError
+
+            try:
+                image = self.results.replay(result)[0]
+            except ResultsError:
+                return None
+        else:
             return None
-        image = cv2.imread(key, cv2.IMREAD_UNCHANGED)
         with self.image_cache_guard:
             self.image_cache[key] = image
             while len(self.image_cache) > 32:
                 self.image_cache.popitem(last=False)
         return image
+
+
+def has_crops(result):
+    """Crops come from the stored aligned image or from the original + geometry."""
+    return bool(result.get("has_images") or result.get("geometry"))
 
 
 def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
@@ -243,7 +264,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "self": f"/scans/{scan_id}",
             "aligned": f"/scans/{scan_id}/image?kind=aligned" if has_images else None,
             "marked": f"/scans/{scan_id}/image?kind=marked" if has_images else None,
-            "crop": f"/scans/{scan_id}/crop" if has_images else None,
+            "crop": f"/scans/{scan_id}/crop" if has_crops(result) else None,
         }
 
     def with_links(result):
@@ -509,7 +530,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         try:
             result = generate_template(images, label_list, parsed_options)
         except Exception as error:
-            raise HTTPException(422, f"Template generation failed: {error}") from None
+            # Never dead-end: open an empty draft on the first real sheet
+            result = generator_routes.fallback_draft(images[0], error)
 
         template = getattr(result, "template", None) or {}
         report = getattr(result, "report", None) or {}
@@ -567,6 +589,19 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         pdf_page: Optional[str] = Form(
             None, description="PDF pages: '1', '2-4', '3-' or 'all'"
         ),
+        batch: Optional[str] = Form(
+            None,
+            max_length=120,
+            description="Exam or olympiad name: sheets sent with the same name "
+            "and template are collected in one job (review, results and export "
+            "per exam)",
+        ),
+        batch_label: Optional[str] = Form(
+            None,
+            max_length=60,
+            description="How the exam's source is shown in the Jobs tab "
+            "(default 'camera / single uploads')",
+        ),
     ):
         """Read sheets synchronously. Use /jobs for large batches."""
         require_template(template_id)
@@ -580,17 +615,21 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(400, "save_images must be all, review or none")
         upload_dir = ctx.data.uploads / new_id()
         stored = []
+        job_id, first_seq = None, 0
+        if batch and batch.strip():
+            job_id = ctx.jobs.batch_job(template_id, batch, batch_label)["id"]
+            first_seq = ctx.jobs.reserve_batch(job_id, len(files))
         version = archive_template_version(
             ctx.templates.path(template_id), ctx.data.template_versions, template_id
         )
         try:
             paths = [save_upload(upload, upload_dir) for upload in files]
             with ctx.engines.engine(template_id) as engine:
-                for path, upload in zip(paths, files):
+                for index, (path, upload) in enumerate(zip(paths, files)):
                     meta = {
                         "template_id": template_id,
-                        "job_id": None,
-                        "seq": 0,
+                        "job_id": job_id,
+                        "seq": first_seq + index if job_id else 0,
                         "file_name": safe_filename(upload.filename, path.name),
                         "template_version": version,
                         "pdf_params": pdf_params,
@@ -608,7 +647,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
         ctx.index.add_scans(stored)
-        return {"scans": [with_links(result) for result in stored]}
+        if job_id:
+            ctx.jobs.finish_batch(job_id, len(files))
+        return {
+            "scans": [with_links(result) for result in stored],
+            "job_id": job_id,
+        }
 
     @app.get("/scans", tags=["scans"], dependencies=secured)
     def list_scans(
@@ -658,11 +702,21 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         if not target:
             raise HTTPException(400, "Pass field=<label> or zone=<name>")
         kind, box = item_box(result, target)
-        if kind is None or box is None:
+        entry = sheet_entry(result, target) if box is None else None
+        if entry is None and (kind is None or box is None):
             raise HTTPException(404, f"'{target}' is not a field or zone of this scan")
-        image = ctx.aligned_image(scan_id)
+        image = ctx.aligned_image(scan_id, result)
         if image is None:
-            raise HTTPException(404, "No aligned image stored for this scan")
+            raise HTTPException(
+                404,
+                "No aligned image stored for this scan, and the original file "
+                "could not be read again (moved or changed)",
+            )
+        if entry is not None:
+            # A whole-sheet item: the sheet with every field and index point
+            overview = sheet_overview(image, result, entry, sheet_index_points(result))
+            ok, buffer = cv2.imencode(".jpg", overview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            return Response(content=buffer.tobytes(), media_type="image/jpeg")
         crop = crop_box(image, box, pad)
         if crop is None:
             raise HTTPException(404, "Crop is outside the image")
@@ -708,7 +762,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             ctx.index.sync_review_items(result)
             ctx.index.add_corrections(audit)
         records = write_training_records(
-            ctx.data.training, result, events, ctx.aligned_image(scan_id)
+            ctx.data.training, result, events, ctx.aligned_image(scan_id, result)
         )
         response = with_links(result)
         response["training_records"] = len(records)
@@ -731,6 +785,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         created_after: Optional[float] = Query(
             None, description="Only items queued after this server time ('now')"
         ),
+        order: str = Query(
+            "oldest",
+            pattern="^(oldest|risk)$",
+            description="risk: whole-sheet and check items before single fields",
+        ),
+        flag: Optional[str] = Query(
+            None, description="Only items read with this flag (e.g. weak_mark)"
+        ),
     ):
         # A little before the query, so an item committed meanwhile is not missed
         now = time.time() - 2
@@ -743,6 +805,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             limit=limit,
             offset=offset,
             created_after=created_after,
+            order=order,
+            flag=flag,
         )
         results, items = {}, []
         for row in rows:
@@ -776,7 +840,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "confidence": target.get("confidence"),
             "flags": target.get("flags", []),
             "crop_url": (
-                f"/scans/{scan_id}/crop?name={quote(name)}" if has_images else None
+                f"/scans/{scan_id}/crop?name={quote(name)}" if has_crops(result) else None
             ),
             "options": None,
         }
@@ -794,6 +858,13 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             item["details"] = zone.get("details")
         return item
 
+    def sheet_index_points(result):
+        try:
+            path = ctx.templates.path(result.get("template_id") or "") / "template.json"
+            return template_index_points(read_json(path) or {})
+        except KeyError:
+            return []
+
     def sheet_reasons(entry):
         if not entry or entry.get("kind") != "sheet":
             return []
@@ -802,6 +873,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 f"{entry['marked_bubbles']} marked bubbles, fewer than "
                 f"{entry.get('min_marked_bubbles')}: blank or misread sheet? "
                 "Accept to dismiss"
+            ]
+        if entry.get("missing"):
+            names = ", ".join(entry["missing"])
+            return [
+                f"Index point {names} not found (red circle): check it is printed "
+                "and the sheet sits right. Accept to dismiss"
             ]
         return ["Sheet-level check; accept to dismiss"]
 
@@ -851,7 +928,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "candidates": candidates,
             "crop_url": (
                 f"/scans/{scan_id}/crop?name={quote(name)}"
-                if result.get("has_images") and box
+                if has_crops(result) and (box or kind == "sheet")
                 else None
             ),
             "options": None,
@@ -860,7 +937,29 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     @app.get("/review/summary", tags=["review"], dependencies=secured)
     def review_summary(template_id: Optional[str] = None, job_id: Optional[str] = None):
         names = ctx.index.pending_review_names(template_id=template_id, job_id=job_id)
-        return {"by_name": names, "total": sum(row["n"] for row in names)}
+        return {
+            "by_name": names,
+            "by_flag": ctx.index.pending_review_flags(template_id, job_id),
+            "by_job": review_jobs(template_id),
+            "total": sum(row["n"] for row in names),
+        }
+
+    def review_jobs(template_id=None):
+        """Jobs with pending items, newest first, with their name and date."""
+        rows = ctx.index.pending_review_jobs(template_id)
+        out = []
+        for row in rows:
+            job = ctx.jobs.get(row["job_id"]) if row["job_id"] else None
+            out.append(
+                {
+                    "job_id": row["job_id"],
+                    "n": row["n"],
+                    "name": (job or {}).get("name") or "",
+                    "created_at": (job or {}).get("created_at"),
+                }
+            )
+        out.sort(key=lambda r: r["created_at"] or 0, reverse=True)
+        return out
 
     # ------------------------------------------------------------------
     # jobs
@@ -873,6 +972,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         recursive: bool = Form(True),
         save_images: str = Form(SAVE_REVIEW),
         workers: Optional[int] = Form(None),
+        prefetch: Optional[int] = Form(
+            None, ge=0, le=10000, description="Files read into memory ahead of the workers (0 = off)"
+        ),
         name: Optional[str] = Form(None),
         start: bool = Form(True, description="false: add more files, then /start"),
         pdf_dpi: Optional[str] = Form(None, description="PDF render DPI or 'auto'"),
@@ -898,6 +1000,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             options={
                 "save_images": save_images,
                 "workers": workers,
+                "prefetch": prefetch,
                 "name": name,
                 "pdf_params": pdf_params,
             },
@@ -949,6 +1052,24 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         if not job.get("total_files"):
             raise HTTPException(400, "The job has no files")
         ctx.jobs.enqueue(job)
+        return ctx.jobs.get(job_id)
+
+    @app.post("/jobs/{job_id}/pause", tags=["jobs"], dependencies=secured)
+    def pause_job(job_id: str):
+        if ctx.jobs.pause(job_id) is None:
+            job = ctx.jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404, f"Job '{job_id}' not found")
+            raise HTTPException(409, f"Job is {job['state']}; only a queued or running job can be paused")
+        return ctx.jobs.get(job_id)
+
+    @app.post("/jobs/{job_id}/resume", tags=["jobs"], dependencies=secured)
+    def resume_job(job_id: str):
+        if ctx.jobs.resume(job_id) is None:
+            job = ctx.jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404, f"Job '{job_id}' not found")
+            raise HTTPException(409, f"Job is {job['state']}; only a paused or interrupted job can be resumed")
         return ctx.jobs.get(job_id)
 
     @app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=secured)

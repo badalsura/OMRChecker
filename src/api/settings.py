@@ -73,7 +73,9 @@ class Settings:
 
     @property
     def effective_workers(self):
-        return self.workers if self.workers > 0 else (os.cpu_count() or 1)
+        from src.utils.cpu import default_workers
+
+        return self.workers if self.workers > 0 else default_workers()
 
 
 def parse_path_remap(text):

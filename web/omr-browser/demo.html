@@ -57,7 +57,9 @@
   .muted { color: var(--muted); font-size: 13px; }
   .hidden { display: none !important; }
   details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 8px; }
-  video { width: 100%; border-radius: 8px; background: #000; margin-top: 10px; max-height: 60vh; object-fit: contain; }
+  video { width: 100%; border-radius: 8px; background: #000; max-height: 60vh; object-fit: contain; }
+  .live-view { position: relative; margin-top: 10px; line-height: 0; }
+  #liveOverlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
   .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .badge { border-radius: 999px; padding: 4px 12px; font-weight: 650; font-size: 13px; }
   .badge.ok { color: var(--ok); background: var(--ok-bg); }
@@ -120,7 +122,9 @@
         <label class="btn" style="margin-top:8px">Choose template.json<input type="file" id="templateFile" accept=".json,application/json"></label>
       </div>
       <div id="srcServer" class="hidden">
-        <p class="muted" style="margin:8px 0 0">Uses the server settings below and <code>GET /templates/{id}</code>.</p>
+        <label for="templatePick">Template on the server</label>
+        <div class="row"><select id="templatePick" style="flex:1"><option value="">(set the server below)</option></select> <button id="templateRefresh" title="Fetch the template list again">↻</button></div>
+        <p class="muted" style="margin:8px 0 0">Uses the server settings below.</p>
       </div>
       <div class="row" style="margin-top:10px"><button class="primary" id="loadTemplate">Load template</button></div>
       <dl class="kv" id="templateInfo"></dl>
@@ -138,8 +142,11 @@
         <button id="sampleBtn">Try sample photo</button>
       </div>
       <div id="liveWrap" class="hidden">
-        <video id="video" playsinline muted></video>
-        <div class="row" style="margin-top:8px"><button class="primary" id="grabBtn">Capture frame</button><button id="stopBtn">Stop camera</button></div>
+        <div class="live-view"><video id="video" playsinline muted></video><canvas id="liveOverlay"></canvas></div>
+        <div class="row" style="margin-top:8px"><button class="primary" id="grabBtn">Capture</button><button id="stopBtn">Close camera</button>
+          <label><input type="checkbox" id="autoCapture" checked> Auto-capture when steady</label>
+          <label><input type="checkbox" id="showTemplate" checked> Show template</label></div>
+        <div id="liveHint" class="muted" style="margin-top:4px">Point the camera at a sheet.</div>
       </div>
       <label class="check"><input type="checkbox" id="useWorker" checked> Read in a background worker</label>
       <label class="check"><input type="checkbox" id="useBarcodes" checked> Read barcodes / QR codes (zxing-wasm)</label>
@@ -162,7 +169,11 @@
       <input type="password" id="apiKey" placeholder="X-API-Key (if the server requires one)" autocomplete="off">
       <label for="templateId">Template id on the server</label>
       <input type="text" id="templateId" placeholder="exam-2024">
-      <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue.</p>
+      <label for="batchName">Exam / olympiad</label>
+      <input type="text" id="batchName" placeholder="e.g. Science Olympiad 2026 (optional)" maxlength="120">
+      <label for="batchLabel">Source label for the exam</label>
+      <input type="text" id="batchLabel" placeholder="camera / single uploads" maxlength="60">
+      <p class="muted">Sheets the browser can't read confidently can be sent to the server, which stores them in its review queue. Sheets sent with the same exam name are grouped together there, as one job.</p>
     </section>
   </div>
 
@@ -174,11 +185,13 @@
         <span class="badge" id="statusBadge"></span>
         <span id="fileLabel" class="muted"></span>
         <span id="timing" class="muted"></span>
+        <button id="retakeBtn" class="primary hidden">📷 Retake</button>
       </div>
       <div id="errorMsg"></div>
       <ul class="review" id="reviewList"></ul>
       <div class="stage" id="stage" title="Tap to zoom"><canvas id="canvas"></canvas></div>
       <div class="toolbar">
+        <input type="text" id="sheetName" placeholder="Sheet name" maxlength="120" title="Name of this sheet on the server (e.g. the student's roll number); empty keeps the file name">
         <button class="primary" id="sendBtn" disabled>Send to server for review</button>
         <button id="jsonBtn">Download JSON</button>
       </div>
@@ -203,7 +216,7 @@
 
   function store(key, value) { try { localStorage.setItem("omr-demo:" + key, value); } catch (e) { /* storage blocked */ } }
   function recall(key) { try { return localStorage.getItem("omr-demo:" + key); } catch (e) { return null; } }
-  ["apiBase", "apiKey", "templateId", "templateUrl", "assetsUrl"].forEach(function (id) {
+  ["apiBase", "apiKey", "templateId", "templateUrl", "assetsUrl", "batchName", "batchLabel"].forEach(function (id) {
     var saved = params.get(id) || recall(id);
     if (saved) $(id).value = saved;
     $(id).addEventListener("change", function () { store(id, $(id).value.trim()); });
@@ -237,6 +250,45 @@
     $("srcFile").classList.toggle("hidden", v !== "file");
     $("srcServer").classList.toggle("hidden", v !== "server");
   });
+  // Opened from OMR Station: ?source=server&apiBase=...&templateId=...; the
+  // station's API key (same origin) is reused when none was entered here
+  if (params.get("source")) {
+    $("source").value = params.get("source");
+    $("source").dispatchEvent(new Event("change"));
+  }
+  // Served by OMR Station itself (/browser/...): the API is this same address
+  if (!$("apiBase").value && location.pathname.indexOf("/browser/") === 0) $("apiBase").value = location.origin;
+  if (!$("apiKey").value) {
+    try { $("apiKey").value = localStorage.getItem("omr_api_key") || ""; } catch (e) { /* storage blocked */ }
+  }
+
+  // Template list from the server, for the "On the OMR server" source
+  function loadTemplateList() {
+    var pick = $("templatePick"), base = apiBase(), current = $("templateId").value.trim();
+    if (!base) return;
+    pick.innerHTML = "<option value=''>Loading…</option>";
+    fetchJson(base + "/templates", apiHeaders()).then(function (data) {
+      pick.innerHTML = "";
+      var list = data.templates || [];
+      pick.appendChild(new Option(list.length ? "Choose a template" : "No templates on the server", ""));
+      list.forEach(function (t) { pick.appendChild(new Option(t.name && t.name !== t.id ? t.name + " (" + t.id + ")" : t.id, t.id)); });
+      if (current && !list.some(function (t) { return t.id === current; })) pick.appendChild(new Option(current, current));
+      pick.value = current;
+    }).catch(function (e) {
+      pick.innerHTML = "";
+      pick.appendChild(new Option(/HTTP 401|HTTP 403/.test(e.message) ? "Enter the API key below" : "Could not reach the server", ""));
+    });
+  }
+  $("templatePick").addEventListener("change", function () {
+    var id = $("templatePick").value;
+    if (!id) return;
+    $("templateId").value = id;
+    store("templateId", id);
+    $("loadTemplate").click();
+  });
+  $("templateRefresh").addEventListener("click", loadTemplateList);
+  ["apiBase", "apiKey"].forEach(function (id) { $(id).addEventListener("change", loadTemplateList); });
+  $("templateId").addEventListener("change", function () { $("templatePick").value = $("templateId").value.trim(); });
 
   function fetchJson(url, headers) {
     return fetch(url, { headers: headers || {} }).then(function (r) {
@@ -369,45 +421,204 @@
   }
   function onFile(input) {
     var f = input.files && input.files[0];
+    state.fromCamera = false;
     if (f) scanBlob(f, f.name || "photo.jpg");
     input.value = "";
   }
   $("photo").addEventListener("change", function () { onFile($("photo")); });
   $("pick").addEventListener("change", function () { onFile($("pick")); });
   $("sampleBtn").addEventListener("click", function () {
+    state.fromCamera = false;
     fetch("examples/sample-phone.jpg").then(function (r) { return r.blob(); }).then(function (b) { scanBlob(b, "sample-phone.jpg"); });
   });
 
+  // Both buttons open the in-page camera with the template overlay: "Take
+  // photo" captures on a tap, "Live camera" also captures by itself when the
+  // sheet is steady. The camera closes after the shot. Without camera access
+  // (plain http), "Take photo" falls back to the phone's own camera app.
+  function cameraAvailable() {
+    return !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  }
+  $("photo").addEventListener("click", function (e) {
+    if (!cameraAvailable()) return;
+    e.preventDefault();
+    openCamera(false);
+  });
   $("liveBtn").addEventListener("click", function () {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (!cameraAvailable()) {
       alert("Live camera needs HTTPS and a browser with camera access; use “Take photo” instead.");
       return;
     }
+    openCamera(true);
+  });
+  $("retakeBtn").addEventListener("click", function () { openCamera(state.cameraAuto); });
+  function openCamera(auto) {
+    $("autoCapture").checked = auto;
+    state.cameraAuto = auto;
+    if (state.stream) { $("liveWrap").scrollIntoView({ block: "center" }); return; }
     navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false }).then(function (stream) {
       state.stream = stream;
       $("video").srcObject = stream;
       $("video").play();
       $("liveWrap").classList.remove("hidden");
+      $("liveWrap").scrollIntoView({ block: "center" });
+      startPreview();
     }).catch(function (e) { alert("Camera unavailable: " + e.message); });
-  });
+  }
   function stopCamera() {
     if (state.stream) state.stream.getTracks().forEach(function (t) { t.stop(); });
     state.stream = null;
+    clearTimeout(state.previewTimer);
     $("liveWrap").classList.add("hidden");
   }
   $("stopBtn").addEventListener("click", stopCamera);
-  $("grabBtn").addEventListener("click", function () {
+  function grabFrame() {
     var v = $("video");
     if (!v.videoWidth) return;
     var c = document.createElement("canvas");
     c.width = v.videoWidth; c.height = v.videoHeight;
     c.getContext("2d").drawImage(v, 0, 0);
+    stopCamera();
+    state.fromCamera = true;
     c.toBlob(function (blob) { scanBlob(blob, "camera-" + new Date().toISOString().replace(/[:.]/g, "-") + ".jpg"); }, "image/jpeg", 0.92);
-  });
+    $("resultCard").scrollIntoView({ block: "start" });
+  }
+  $("grabBtn").addEventListener("click", grabFrame);
+
+  // ---- live preview: page outline and timing marks over the video ----------
+  var PREVIEW_SIZE = 800, PREVIEW_EVERY_MS = 200, MIN_SHARPNESS = 40, STEADY_FRAMES = 3, STEADY_MOVE = 0.015;
+  function startPreview() {
+    state.previewFrames = [];
+    state.waitForNewSheet = false;
+    clearTimeout(state.previewTimer);
+    previewTick();
+  }
+  function previewFrame(v) {
+    var k = Math.min(1, PREVIEW_SIZE / Math.max(v.videoWidth, v.videoHeight));
+    var w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
+    var c = state.previewCanvas || (state.previewCanvas = document.createElement("canvas"));
+    c.width = w; c.height = h;
+    var g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(v, 0, 0, w, h);
+    var rgba = g.getImageData(0, 0, w, h).data, gray = new Uint8Array(w * h);
+    for (var i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = (rgba[j] * 77 + rgba[j + 1] * 150 + rgba[j + 2] * 29) >> 8;
+    return { width: w, height: h, data: gray };
+  }
+  function previewTick() {
+    if (!state.stream) return;
+    var v = $("video");
+    var next = function () { state.previewTimer = setTimeout(previewTick, PREVIEW_EVERY_MS); };
+    if (!v.videoWidth || state.busy) return next();
+    var frame = previewFrame(v);
+    buildEngine().then(function (engine) {
+      return engine.preview ? engine.preview(frame) : null;
+    }).then(function (p) {
+      if (p) onPreview(p, frame);
+    }).catch(function () {}).then(next);
+  }
+  function steady(frames) {
+    if (frames.length < STEADY_FRAMES) return false;
+    var last = frames.slice(-STEADY_FRAMES), diag = Math.hypot(last[0].w, last[0].h);
+    for (var f = 1; f < last.length; f++) {
+      for (var c = 0; c < 4; c++) {
+        var a = last[f].quad[c], b = last[f - 1].quad[c];
+        if (Math.hypot(a[0] - b[0], a[1] - b[1]) > STEADY_MOVE * diag) return false;
+      }
+    }
+    return true;
+  }
+  function onPreview(p, frame) {
+    // Ready needs the page fitted and every index point seen; timing marks are
+    // left to the full-size read (small marks are easily lost at preview size)
+    var allMarks = p.indexTotal === null || p.indexFound === p.indexTotal;
+    var sharp = p.sharpness >= MIN_SHARPNESS;
+    if (p.ok && p.quad) state.previewFrames.push({ quad: p.quad, w: frame.width, h: frame.height });
+    else state.previewFrames = [];
+    if (state.previewFrames.length > STEADY_FRAMES) state.previewFrames.shift();
+    if (!p.ok) state.waitForNewSheet = false;
+    var ready = p.ok && allMarks && sharp && steady(state.previewFrames);
+    drawPreview(p, frame, ready);
+    var hint;
+    if (!p.ok) hint = p.quad ? "Sheet found, but " + (p.error || "it could not be aligned") + ". Line it up with the white guide." : "Line the sheet up with the white guide.";
+    else if (!allMarks) hint = "Found " + p.indexFound + " of " + p.indexTotal + " index points; fit the whole sheet in view.";
+    else if (!sharp) hint = "Too blurry (sharpness " + p.sharpness + "); hold still or move closer.";
+    else if (!ready) hint = "Hold steady…";
+    else if (state.waitForNewSheet) hint = "Captured. Move to the next sheet.";
+    else hint = "Ready.";
+    $("liveHint").textContent = hint;
+    if (ready && $("autoCapture").checked && !state.waitForNewSheet && !state.busy) {
+      state.waitForNewSheet = true;
+      grabFrame();
+    }
+  }
+  function drawPreview(p, frame, ready) {
+    var c = $("liveOverlay");
+    c.width = frame.width; c.height = frame.height;
+    var g = c.getContext("2d");
+    g.clearRect(0, 0, c.width, c.height);
+    var o = p.overlay;
+    if (o && $("showTemplate").checked) {
+      drawOverlay(g, o, o.aligned ? (ready ? "#16a34a" : p.ok ? "#f59e0b" : "#dc2626") : "#ffffff");
+    } else if (p.quad) {
+      // template overlay off: page outline and found marks only
+      var colour = ready ? "#16a34a" : p.ok ? "#f59e0b" : "#dc2626";
+      g.lineWidth = 3;
+      g.strokeStyle = colour;
+      polygon(g, p.quad);
+      g.stroke();
+      g.fillStyle = colour;
+      (p.marks || []).forEach(function (m) { g.fillRect(m[0] - 3, m[1] - 3, 6, 6); });
+    }
+  }
+  function polygon(g, points, closed) {
+    g.beginPath();
+    points.forEach(function (q, i) { if (i) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
+    if (closed !== false) g.closePath();
+  }
+  // The template over the video: before a sheet is found, a fixed white guide
+  // to line the sheet up with; once found, the template where the sheet is
+  function drawOverlay(g, o, colour) {
+    var guide = !o.aligned;
+    g.save();
+    if (guide) {
+      g.setLineDash([8, 6]);
+      g.shadowColor = "rgba(0, 0, 0, 0.8)";
+      g.shadowBlur = 3;
+    }
+    g.strokeStyle = colour;
+    g.lineWidth = 3;
+    polygon(g, o.page);
+    g.stroke();
+    g.setLineDash([]);
+    // index points: ringed; once aligned, green when seen and red when not
+    g.lineWidth = 2;
+    o.indexPoints.forEach(function (ip) {
+      var r = Math.max(4, ip.radius);
+      if (!guide && ip.found !== undefined) g.strokeStyle = ip.found ? "#16a34a" : "#dc2626";
+      g.beginPath();
+      g.arc(ip.center[0], ip.center[1], r, 0, 2 * Math.PI);
+      g.stroke();
+      g.beginPath();
+      g.arc(ip.center[0], ip.center[1], r + 4, 0, 2 * Math.PI);
+      g.stroke();
+    });
+    g.strokeStyle = colour;
+    var blockColour = guide ? "rgba(255, 255, 255, 0.85)" : "rgba(37, 99, 235, 0.9)";
+    g.strokeStyle = blockColour;
+    g.lineWidth = 1.5;
+    o.blocks.forEach(function (quad) {
+      polygon(g, quad);
+      g.stroke();
+    });
+    g.restore();
+  }
 
   // ---- result ------------------------------------------------------------
   function showResult(result) {
     state.lastResult = result;
+    // A new sheet: its name starts empty (the photo's name is the default)
+    $("sheetName").value = "";
+    $("sheetName").placeholder = "Sheet name (default " + (state.lastName || "sheet.jpg") + ")";
     var badge = $("statusBadge");
     badge.className = "badge " + result.status;
     badge.textContent = result.status === "ok" ? "OK" : result.status === "needs_review" ? "Needs review" : "Error";
@@ -417,6 +628,8 @@
     var ms = (t.total || 0) + (state.engineKind === "worker" ? t.decode || 0 : 0);
     $("timing").textContent = t.total !== undefined ? Math.round(ms) + " ms" + (result.registration && result.registration.orientation ? " · rotated " + result.registration.orientation + "°" : "") : "";
     message($("errorMsg"), result.error || "", "err");
+    // A camera shot that could not be aligned: one tap to try again
+    $("retakeBtn").classList.toggle("hidden", !(result.status === "error" && state.fromCamera));
     var list = $("reviewList");
     list.innerHTML = "";
     (result.review || []).forEach(function (r) {
@@ -470,12 +683,25 @@
   });
 
   // POST /scans (multipart: template_id + files) on the Python API
+  // The name typed for this sheet (an extension is added from the photo's), or
+  // the photo's own file name
+  function sheetFileName() {
+    var typed = $("sheetName").value.trim().replace(/[\\/:*?"<>|]+/g, "-");
+    var own = state.lastName || "sheet.jpg";
+    if (!typed) return own;
+    var ext = (own.match(/\.[a-z0-9]{2,4}$/i) || [".jpg"])[0];
+    return /\.[a-z0-9]{2,4}$/i.test(typed) ? typed : typed + ext;
+  }
   $("sendBtn").addEventListener("click", function () {
     var base = apiBase(), id = $("templateId").value.trim();
     if (!base || !id || !state.lastBlob) return;
     var form = new FormData();
     form.append("template_id", id);
-    form.append("files", state.lastBlob, state.lastName || "sheet.jpg");
+    form.append("files", state.lastBlob, sheetFileName());
+    var batch = $("batchName").value.trim();
+    if (batch) form.append("batch", batch);
+    var label = $("batchLabel").value.trim();
+    if (batch && label) form.append("batch_label", label);
     message($("sendMsg"), "Uploading…");
     $("sendBtn").disabled = true;
     fetch(base + "/scans", { method: "POST", body: form, headers: apiHeaders() }).then(function (r) {
@@ -485,12 +711,13 @@
       });
     }).then(function (body) {
       var scan = body.scans && body.scans[0];
-      message($("sendMsg"), scan ? "Stored on the server as " + (scan.scan_id || scan.file_id) + " (server status: " + scan.status + ")" : "Uploaded.", "ok");
+      message($("sendMsg"), scan ? "Stored on the server as " + (scan.scan_id || scan.file_id) + (batch ? " in “" + batch + "”" : "") + " (server status: " + scan.status + ")" : "Uploaded.", "ok");
     }).catch(function (e) {
       message($("sendMsg"), "Upload failed: " + e.message, "err");
     }).then(function () { $("sendBtn").disabled = false; });
   });
 
+  loadTemplateList();
   if (params.get("autoload") !== "0") $("loadTemplate").click();
 })();
 </script>

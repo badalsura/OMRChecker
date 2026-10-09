@@ -103,8 +103,33 @@ def _tps_kernel(r):
     return np.nan_to_num(k)
 
 
+def _grid_displacement(step, points):
+    """Bilinear displacement from a stored coarse grid ("grid" steps)."""
+    dx = np.asarray(step["grid"]["dx"], dtype=np.float64)
+    dy = np.asarray(step["grid"]["dy"], dtype=np.float64)
+    size = int(step.get("grid_step", TPS_GRID_STEP))
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    gx = np.clip(points[:, 0] / size, 0, dx.shape[1] - 1)
+    gy = np.clip(points[:, 1] / size, 0, dx.shape[0] - 1)
+    x0 = np.minimum(np.floor(gx).astype(int), dx.shape[1] - 2) if dx.shape[1] > 1 else np.zeros(len(gx), int)
+    y0 = np.minimum(np.floor(gy).astype(int), dx.shape[0] - 2) if dx.shape[0] > 1 else np.zeros(len(gy), int)
+    x1 = np.minimum(x0 + 1, dx.shape[1] - 1)
+    y1 = np.minimum(y0 + 1, dx.shape[0] - 1)
+    tx, ty = gx - x0, gy - y0
+
+    def sample(grid):
+        top = grid[y0, x0] * (1 - tx) + grid[y0, x1] * tx
+        bottom = grid[y1, x0] * (1 - tx) + grid[y1, x1] * tx
+        return top * (1 - ty) + bottom * ty
+
+    return np.stack([sample(dx), sample(dy)], axis=1)
+
+
 def tps_displacement(tps, points):
-    """Displacement (N x 2) of the spline at points (aligned px)."""
+    """Displacement (N x 2) of the spline at points (aligned px). A step with
+    a "grid" (the track-grid correction) is sampled from that grid instead."""
+    if "grid" in tps:
+        return _grid_displacement(tps, points)
     control = np.asarray(tps["points"], dtype=np.float32)
     weights = np.asarray(tps["weights"], dtype=np.float64)
     points = np.asarray(points, dtype=np.float32).reshape(-1, 2)
@@ -380,4 +405,9 @@ def print_kept_image(image, mode="auto"):
         return image
     if mode == "grey":
         return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return np.min(image, axis=2)
+    # cv2.min is bit-identical to np.min(image, axis=2) and about 16x faster
+    channels = cv2.split(image)
+    darkest = channels[0]
+    for channel in channels[1:]:
+        darkest = cv2.min(darkest, channel)
+    return darkest

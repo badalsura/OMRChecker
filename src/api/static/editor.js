@@ -1,5 +1,6 @@
 // Template editor: draws the template over a reference image and lets the user
 // move / resize / add / delete field blocks and zones with snapping, undo and zoom.
+import { openColumnsDialog } from "./editor_columns.js";
 import { add, api, displayName, el, errorList, state, toast, url } from "./api.js";
 import { ColourPanel } from "./colors.js";
 import { alignmentSection, blockAlignmentFields } from "./editor_align.js";
@@ -9,6 +10,7 @@ import { openScoring } from "./scoring.js";
 import { renameTemplate } from "./template_ops.js";
 import { alignmentPick, drawAlignment, renderAlignmentPanel } from "./editor_tracks.js";
 import { renderWarnings } from "./generator_warnings.js";
+import { drawBorders, pickBorder, startBorderPick } from "./editor_borders.js";
 import { patternControl, renderChecks, renderValidation } from "./editor_checks.js";
 import * as groups from "./editor_groups.js";
 import { help } from "./editor_help.js";
@@ -36,6 +38,9 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const FULL = "\u0000files:"; // undo entry covering template + config + evaluation
 const round1 = (v) => Math.round(v * 10) / 10;
 
+// Page-panel groups open until the user closes them
+const SIDE_GROUPS_OPEN = new Set(["options"]);
+
 export class TemplateEditor {
   constructor(root, { onClose }) {
     this.root = root;
@@ -52,9 +57,10 @@ export class TemplateEditor {
     this.testResult = null;
     this.errors = [];
     this.keyHandler = (e) => this.onKey(e);
-    this.resolved = new Set();
+    this.resolved = new Set(); // keys of verified "Needs verification" items
     this.multi = []; // Shift+click selection of several blocks
     this.openSections = new Set(); // <details> sections kept open across re-renders
+    this.closedSections = new Set(); // page-panel groups the user closed
     this.afterEditHooks = []; // open dialogs refreshing themselves after an edit
   }
 
@@ -76,8 +82,14 @@ export class TemplateEditor {
     this.multi = [];
     this.dirty = false;
     this.testResult = null;
+    // Per-template caches and modes must not carry over from the last template
+    this.printedBoxes = null;
+    this.calibration = null;
+    this.borderBlock = null;
+    this.mode = null;
     this.errors = detail.validation_errors || [];
     this.report = detail.report_confirmed ? null : this.parseReport(detail.report);
+    this.resolved = new Set(((detail.report || {}).verified_items || []).filter((k) => typeof k === "string"));
     this.build();
     this.bgMode = detail.has_reference ? "reference" : "blank";
     await this.loadBackground();
@@ -143,10 +155,12 @@ export class TemplateEditor {
       el("label", { class: "small muted", title: "Snap to other blocks' edges" }, edgeChk, " edges"),
       el("span", { class: "sep" }),
       this.bgSel,
+      btn("Columns…", "Output columns and groups: reorder, combine, split", () => openColumnsDialog(this)),
       btn("Colours…", "Sheet colours and colour removal (colorDropout)", () => new ColourPanel(this).open()),
       btn("Edit JSON", "Edit template.json, config.json and evaluation.json directly", () => openJsonEditor(this)),
       btn("Scoring…", "Answer key and marking scheme (evaluation.json)", () => openScoring(this)),
       btn("Test read…", "Save, read a sample sheet with this template and overlay the result", () => this.testInput.click()),
+      btn("?", "Keyboard and mouse shortcuts", () => this.toggleShortcuts(), "small ghost"),
       this.testInput,
       this.bgInput
     );
@@ -184,6 +198,19 @@ export class TemplateEditor {
     const w = horizontal ? bg * (nV - 1) + bw : lg * (nF - 1) + bw;
     const h = horizontal ? lg * (nF - 1) + bh : bg * (nV - 1) + bh;
     return { kind: "block", name, x, y, w, h, bw, bh, values, labels, horizontal, bg, lg, nV, nF, raw };
+  }
+
+  // Digit blocks whose value order differs from the page's usual one
+  // (e.g. 0-9 on most blocks, 1-9,0 on one): drawn amber
+  oddDigitOrders() {
+    const digits = Object.keys(this.doc.fieldBlocks)
+      .map((n) => this.blockInfo(n))
+      .filter((o) => o.values.length >= 9 && o.values.every((v) => /^\d$/.test(String(v))));
+    const counts = new Map();
+    for (const o of digits) counts.set(o.values.join(""), (counts.get(o.values.join("")) || 0) + 1);
+    if (counts.size < 2) return new Set();
+    const usual = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    return new Set(digits.filter((o) => o.values.join("") !== usual).map((o) => o.name));
   }
 
   zoneInfo(name) {
@@ -288,6 +315,7 @@ export class TemplateEditor {
     try {
       this.detail = { ...this.detail, ...(await api(`/templates/${this.id}/reference`, { method: "POST", form })) };
       this.bgMode = "reference";
+      this.printedBoxes = null;
       await this.loadBackground();
       toast("Background saved as the template reference image", "ok");
     } catch (error) {
@@ -329,6 +357,8 @@ export class TemplateEditor {
     const testFields = (overlay && this.testResult.fields) || {};
     const testZones = (overlay && this.testResult.zones) || {};
 
+    const oddOrder = this.oddDigitOrders();
+    const columnPos = new Map((Array.isArray(this.doc.outputColumns) ? this.expandLabels(this.doc.outputColumns) : []).map((c, i) => [c, i + 1]));
     for (const o of this.objects()) {
       const isSel = (this.selected && this.selected.kind === o.kind && this.selected.name === o.name) || this.multi.some((m) => m.kind === o.kind && m.name === o.name);
       const hl = highlighted.has(o.name);
@@ -347,6 +377,27 @@ export class TemplateEditor {
             }
             ctx.strokeStyle = tf?.needs_review ? "#d0342c" : "rgba(31,157,85,0.95)";
             ctx.strokeRect(X(bx) + 0.5, Y(by) + 0.5, S(o.bw), S(o.bh));
+            // What each bubble means, once it is big enough to read
+            if (!tf && S(o.bh) >= 10 && o.values[v] !== undefined) {
+              ctx.fillStyle = "rgba(47,111,223,0.75)";
+              ctx.font = `${Math.min(S(o.bh) * 0.6, 16)}px system-ui, sans-serif`;
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(String(o.values[v]), X(bx + o.bw / 2), Y(by + o.bh / 2));
+              ctx.textAlign = "start";
+              ctx.textBaseline = "alphabetic";
+            }
+          }
+          // Field names along the reading direction
+          if (!tf && label && S(o.lg || o.bw) >= 18 && o.nF > 1) {
+            ctx.fillStyle = "rgba(47,111,223,0.9)";
+            ctx.font = "10px system-ui, sans-serif";
+            const tx = o.horizontal ? o.x - 4 : o.x + f * o.lg;
+            const ty = o.horizontal ? o.y + f * o.lg + o.bh * 0.7 : o.y + o.h + 12 / scale;
+            if (o.horizontal) ctx.textAlign = "end";
+            const pos = columnPos.get(label);
+            ctx.fillText(pos ? `${label} #${pos}` : label, X(tx), Y(ty));
+            ctx.textAlign = "start";
           }
           if (tf && scale > 0.35) {
             ctx.fillStyle = tf.needs_review ? "#d0342c" : "#1f6f3f";
@@ -356,8 +407,9 @@ export class TemplateEditor {
             ctx.fillText(tf.value === "" || tf.value === null || tf.value === undefined ? "·" : String(tf.value), X(lx), Y(ly));
           }
         }
-        this.strokeBox(o, isSel ? BLOCK_COLOR : hl ? HIGHLIGHT : "rgba(47,111,223,0.8)", isSel ? 2 : hl ? 2.5 : 1.25, hl && !isSel);
-        this.label(o, `${o.name}${o.labels.length ? " · " + o.labels[0] : ""}${o.nF > 1 && o.labels[o.nF - 1] ? "…" + o.labels[o.nF - 1] : ""}`, hl ? HIGHLIGHT : BLOCK_COLOR);
+        const odd = oddOrder.has(o.name);
+        this.strokeBox(o, isSel ? BLOCK_COLOR : hl || odd ? HIGHLIGHT : "rgba(47,111,223,0.8)", isSel ? 2 : hl || odd ? 2.5 : 1.25, (hl || odd) && !isSel);
+        this.label(o, `${odd ? "⚠ " : ""}${o.name}${o.labels.length ? " · " + o.labels[0] : ""}${o.nF > 1 && o.labels[o.nF - 1] ? "…" + o.labels[o.nF - 1] : ""}${odd ? ` (values ${o.values.join("")})` : ""}`, hl || odd ? HIGHLIGHT : BLOCK_COLOR);
       } else {
         const color = ZONE_COLORS[o.raw.type] || "#333";
         ctx.fillStyle = color + "18";
@@ -369,6 +421,7 @@ export class TemplateEditor {
       if (isSel) this.drawHandles(o);
     }
     drawAlignment(this); // timing tracks and index points (editor_tracks.js)
+    drawBorders(this); // printed boxes while picking a block border
     // alignment guides
     ctx.strokeStyle = "#ff2d95";
     ctx.lineWidth = 1;
@@ -570,6 +623,10 @@ export class TemplateEditor {
       const b = this.rubber;
       this.rubber = null;
       const rect = { x: Math.round(Math.min(b.x0, b.x1)), y: Math.round(Math.min(b.y0, b.y1)), w: Math.round(Math.abs(b.x1 - b.x0)), h: Math.round(Math.abs(b.y1 - b.y0)) };
+      if (this.mode === "pick-border") {
+        pickBorder(this, [rect.x + rect.w / 2, rect.y + rect.h / 2]);
+        return;
+      }
       if (this.mode && this.mode.startsWith("align")) {
         alignmentPick(this, rect); // Alignment panel tools (editor_tracks.js)
         this.draw();
@@ -1040,16 +1097,58 @@ export class TemplateEditor {
     if (this.testResult) add(side, this.renderTest());
     if (this.report) add(side, this.renderReport());
     if (!o && this.multi.length < 2) add(side, this.renderPage());
-    add(side, 
+  }
+
+  // Keyboard and mouse shortcuts, opened from the toolbar's "?" button
+  toggleShortcuts() {
+    if (this.shortcutsEl) {
+      this.shortcutsEl.remove();
+      this.shortcutsEl = null;
+      return;
+    }
+    this.shortcutsEl = el(
+      "div",
+      { class: "ed-shortcuts ed-help", title: "Click to close", onclick: () => this.toggleShortcuts() },
+      el("h3", {}, "Shortcuts"),
       el(
-        "div",
-        { class: "ed-help" },
-        el("h3", {}, "Shortcuts"),
-        "Drag to move · handles resize (blocks stretch their bubble spacing) · arrows nudge (Shift ×10) · Shift+click blocks to group them · ",
-        "Del delete · Ctrl+D duplicate · Ctrl+Z / Ctrl+Shift+Z undo / redo · Ctrl+S save · B / Z draw block / zone · ",
-        "wheel zoom · drag empty space, right-drag or Space+drag to pan · Tab cycles selection · F fit"
+        "ul",
+        {},
+        [
+          "Drag to move · handles resize (blocks stretch their bubble spacing)",
+          "Arrows nudge (Shift ×10) · Shift+click blocks to group them",
+          "Del delete · Ctrl+D duplicate",
+          "Ctrl+Z / Ctrl+Shift+Z undo / redo · Ctrl+S save",
+          "B / Z draw block / zone",
+          "Wheel zoom · drag empty space, right-drag or Space+drag to pan",
+          "Tab cycles selection · F fit",
+        ].map((t) => el("li", {}, t))
       )
     );
+    this.wrap.append(this.shortcutsEl);
+  }
+
+  // A collapsible group of the page panel; open state survives re-renders
+  sideGroup(key, title, count, ...children) {
+    return this.group(key, title, count, SIDE_GROUPS_OPEN.has(key), ...children);
+  }
+
+  group(key, title, count, openByDefault, ...children) {
+    const id = `group-${key}`;
+    const open = this.openSections.has(id) || (!this.closedSections.has(id) && openByDefault);
+    const box = el("details", { class: "ed-fold", open: open || undefined });
+    box.addEventListener("toggle", () => {
+      if (box.open) {
+        this.openSections.add(id);
+        this.closedSections.delete(id);
+      } else {
+        this.openSections.delete(id);
+        this.closedSections.add(id);
+      }
+    });
+    const summary = el("summary", {}, title);
+    if (count) summary.append(el("span", { class: "count" }, String(count)));
+    add(box, summary, ...children);
+    return box;
   }
 
   input(label, value, onchange, attrs = {}) {
@@ -1119,32 +1218,50 @@ export class TemplateEditor {
       custom
         ? this.dropdown("Direction (how values are laid out)", raw.direction || "vertical", [["horizontal", "horizontal: values left→right, fields stacked"], ["vertical", "vertical: values top→bottom, fields side by side"]], (v) => set(() => (raw.direction = v)))
         : null,
-      this.input("Field labels (e.g. q1..20 or roll1..6, comma separated)", (raw.fieldLabels || []).join(", "), (v) =>
+      this.input("Field labels", (raw.fieldLabels || []).join(", "), (v) =>
         this.setFieldLabels(o, v.split(",").map((s) => s.trim()).filter(Boolean))
-      ),
+      , { placeholder: "e.g. q1..20 or roll1..6", help: "Field labels (e.g. q1..20 or roll1..6, comma separated)" }),
       el("div", { class: "muted small", style: { marginBottom: "8px" } }, `${o.nF} field(s): ${o.labels.slice(0, 4).join(", ")}${o.nF > 4 ? " … " + o.labels[o.nF - 1] : ""}`),
-      el(
-        "div",
-        { class: "two" },
-        this.num("Origin x", raw.origin?.[0], (v) => set(() => (raw.origin = [Math.round(v), raw.origin[1]]))),
-        this.num("Origin y", raw.origin?.[1], (v) => set(() => (raw.origin = [raw.origin[0], Math.round(v)]))),
-        this.num("Bubbles gap", raw.bubblesGap, (v) => set(() => (raw.bubblesGap = v)), { step: "0.1" }),
-        this.num("Labels gap", raw.labelsGap, (v) => set(() => (raw.labelsGap = v)), { step: "0.1" }),
-        this.num("Bubble width", raw.bubbleDimensions?.[0], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [v, raw.bubbleDimensions?.[1] ?? o.bh]))), { optional: true, placeholder: `page: ${o.bw}` }),
-        this.num("Bubble height", raw.bubbleDimensions?.[1], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [raw.bubbleDimensions?.[0] ?? o.bw, v]))), { optional: true, placeholder: `page: ${o.bh}` })
+      this.group(
+        "block-position",
+        "Position and spacing",
+        null,
+        true,
+        el(
+          "div",
+          { class: "two" },
+          this.num("Origin x", raw.origin?.[0], (v) => set(() => (raw.origin = [Math.round(v), raw.origin[1]]))),
+          this.num("Origin y", raw.origin?.[1], (v) => set(() => (raw.origin = [raw.origin[0], Math.round(v)]))),
+          this.num("Bubbles gap", raw.bubblesGap, (v) => set(() => (raw.bubblesGap = v)), { step: "0.1" }),
+          this.num("Labels gap", raw.labelsGap, (v) => set(() => (raw.labelsGap = v)), { step: "0.1" }),
+          this.num("Bubble width", raw.bubbleDimensions?.[0], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [v, raw.bubbleDimensions?.[1] ?? o.bh]))), { optional: true, placeholder: `page: ${o.bw}` }),
+          this.num("Bubble height", raw.bubbleDimensions?.[1], (v) => set(() => (v === null ? delete raw.bubbleDimensions : (raw.bubbleDimensions = [raw.bubbleDimensions?.[0] ?? o.bw, v]))), { optional: true, placeholder: `page: ${o.bh}` })
+        ),
+        this.input("Empty value", raw.emptyValue ?? "", (v) => set(() => (v === "" ? delete raw.emptyValue : (raw.emptyValue = v))), { placeholder: "inherit" }),
+        el("div", { class: "muted small" }, `Size ${Math.round(o.w)} × ${Math.round(o.h)} px`)
       ),
-      this.input("Empty value", raw.emptyValue ?? "", (v) => set(() => (v === "" ? delete raw.emptyValue : (raw.emptyValue = v))), { placeholder: "inherit" }),
-      el("div", { class: "muted small" }, `Size ${Math.round(o.w)} × ${Math.round(o.h)} px`),
-      this.dropdown(
-        "Fit to printed border (rectifyOnBorder)",
-        raw.rectifyOnBorder === undefined ? "" : String(raw.rectifyOnBorder),
-        [["", "config default (alignment_params.rectify_on_border)"], ["true", "on: snap bubbles onto the box printed around the block"], ["false", "off"]],
-        (v) => set(() => (v === "" ? delete raw.rectifyOnBorder : (raw.rectifyOnBorder = v === "true")))
-      ),
-      raw.rectifyOnBorder
-        ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })
-        : null,
-      blockAlignmentFields(this, raw)
+      this.group(
+        "block-alignment",
+        "Alignment",
+        alignmentCount(raw),
+        alignmentCount(raw) > 0,
+        this.dropdown(
+          "Fit to printed border",
+          raw.rectifyOnBorder === undefined ? "" : String(raw.rectifyOnBorder),
+          [["", "page default"], ["true", "on: snap onto the printed box"], ["false", "off"]],
+          (v) => set(() => (v === "" ? delete raw.rectifyOnBorder : (raw.rectifyOnBorder = v === "true"))),
+          { help: "Fit to printed border (rectifyOnBorder)" }
+        ),
+        el(
+          "button",
+          { class: "small", title: "Show the rectangles printed on the reference sheet and click the one around this block: the gap is measured for you", onclick: () => startBorderPick(this) },
+          "Pick printed border…"
+        ),
+        raw.rectifyOnBorder
+          ? this.num("Border gap (px from bubbles to the box)", typeof raw.borderPadding === "number" ? raw.borderPadding : raw.borderPadding?.[0], (v) => set(() => (v === null ? delete raw.borderPadding : (raw.borderPadding = v))), { optional: true, placeholder: "estimate per sheet" })
+          : null,
+        blockAlignmentFields(this, raw)
+      )
     );
     // Grouping (one output field) and validation of the block's columns
     const grouped = groups.blockGroup(this.doc, o.labels);
@@ -1292,20 +1409,22 @@ export class TemplateEditor {
         )
       ),
       this.renderThreshold(),
-      alignmentSection(this),
-      el("div", { class: "muted small" }, `${Object.keys(doc.fieldBlocks).length} blocks · ${this.allLabels().size} fields · ${Object.keys(doc.zones).length} zones`),
-      el("h3", {}, "Grouped fields"),
-      groups.renderGroupList(this),
-      el("h3", {}, "Cross-field checks"),
-      renderChecks(this),
-      el("h3", {}, "Options"),
-      options.renderOutputColumns(this),
-      options.renderAlignment(this),
-      options.renderReviewParams(this),
-      options.renderModels(this),
-      options.renderPdfParams(this),
-      options.renderBarcodeDefaults(this),
-      this.renderRawJson(raw, jsonSetter, doc)
+      el("div", { class: "muted small ed-counts" }, `${Object.keys(doc.fieldBlocks).length} blocks · ${this.allLabels().size} fields · ${Object.keys(doc.zones).length} zones`),
+      this.sideGroup("alignment", "Block alignment", null, alignmentSection(this)),
+      this.sideGroup("groups", "Grouped fields", Object.keys(doc.customLabels || {}).length, groups.renderGroupList(this)),
+      this.sideGroup("checks", "Cross-field checks", (doc.checks || []).length, renderChecks(this)),
+      this.sideGroup(
+        "options",
+        "Options",
+        null,
+        options.renderOutputColumns(this),
+        options.renderAlignment(this),
+        options.renderReviewParams(this),
+        options.renderModels(this),
+        options.renderPdfParams(this),
+        options.renderBarcodeDefaults(this),
+        this.renderRawJson(raw, jsonSetter, doc)
+      )
     );
   }
 
@@ -1391,7 +1510,8 @@ export class TemplateEditor {
       const name = x.name || x.block || x.zone || x.field || x.label || x.target || x.id;
       const names = [name, ...(Array.isArray(x.fields) ? x.fields : [])].filter((n) => typeof n === "string");
       const text = x.reason || x.message || x.issue || x.note || x.description || x.detail || "";
-      return { text: text || JSON.stringify(x), names, title: name };
+      const shown = text || JSON.stringify(x);
+      return { text: shown, names, title: name, key: `${name || ""}: ${shown}` };
     };
     for (const k of REPORT_KEYS) {
       if (Array.isArray(report[k])) items.push(...report[k].map(describe));
@@ -1413,8 +1533,8 @@ export class TemplateEditor {
   highlightNames() {
     const names = new Set();
     if (!this.report) return names;
-    this.report.items.forEach((item, i) => {
-      if (this.resolved.has(i)) return;
+    this.report.items.forEach((item) => {
+      if (this.resolved.has(item.key)) return;
       for (const n of item.names) {
         const target = this.resolveName(n);
         if (target) names.add(target.name);
@@ -1423,41 +1543,131 @@ export class TemplateEditor {
     return names;
   }
 
+  async verifyItems(keys, undo = false) {
+    try {
+      const data = await api(`/templates/${this.id}/generator/verify`, { method: "POST", json: { items: keys, undo } });
+      this.detail.report = { ...(this.detail.report || {}), verified_items: data.verified_items };
+      this.resolved = new Set(data.verified_items);
+      this.renderSide();
+      this.draw();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
   renderReport() {
     const r = this.report;
-    const box = el("div", { class: "ed-report" }, el("h3", {}, `Needs verification (${r.items.length - [...this.resolved].length})`));
+    const open = r.items.filter((item) => !this.resolved.has(item.key));
+    const done = r.items.filter((item) => this.resolved.has(item.key));
+    const select = (item) => {
+      const target = item.names.map((n) => this.resolveName(n)).find(Boolean);
+      if (target) {
+        this.selected = target;
+        this.renderSide();
+        this.centerOn(this.info(target));
+      }
+    };
+    const label = (item) => [displayName(item.title) ? el("strong", {}, displayName(item.title) + ": ") : null, item.text];
+    const box = el(
+      "div",
+      { class: "ed-report" },
+      el(
+        "div",
+        { class: "row gap" },
+        el("h3", {}, `Needs verification (${open.length})`),
+        el("span", { class: "spacer" }),
+        open.length ? el("button", { class: "small", title: "Mark every item as checked", onclick: () => this.verifyItems(open.map((i) => i.key)) }, "Verify all") : null
+      )
+    );
     if (r.summary.length) add(box, el("div", { class: "muted small" }, r.summary.map(([k, v]) => `${k}: ${v}`).join(" · ")));
-    add(box, 
+    add(
+      box,
       el(
         "ul",
         {},
-        r.items.map((item, i) =>
+        open.map((item) =>
           el(
             "li",
-            {
-              class: this.resolved.has(i) ? "resolved" : "",
-              title: "Click to select · double-click to mark verified",
-              onclick: () => {
-                const target = item.names.map((n) => this.resolveName(n)).find(Boolean);
-                if (target) {
-                  this.selected = target;
-                  this.renderSide();
-                  this.centerOn(this.info(target));
-                }
+            { title: "Click to select", onclick: () => select(item) },
+            ...label(item),
+            " ",
+            el(
+              "button",
+              {
+                class: "small ghost",
+                title: "I have checked this: remove it from the list",
+                onclick: (event) => {
+                  event.stopPropagation();
+                  this.verifyItems([item.key]);
+                },
               },
-              ondblclick: () => {
-                this.resolved.has(i) ? this.resolved.delete(i) : this.resolved.add(i);
-                this.renderSide();
-                this.draw();
-              },
-            },
-            displayName(item.title) ? el("strong", {}, displayName(item.title) + ": ") : null,
-            item.text
+              "Verified"
+            )
           )
         )
       )
     );
+    if (done.length) {
+      add(
+        box,
+        el(
+          "details",
+          { class: "muted small" },
+          el("summary", {}, `Show verified (${done.length})`),
+          el(
+            "ul",
+            {},
+            done.map((item) =>
+              el(
+                "li",
+                { class: "resolved", onclick: () => select(item) },
+                ...label(item),
+                " ",
+                el("button", { class: "small ghost", onclick: (event) => { event.stopPropagation(); this.verifyItems([item.key], true); } }, "Undo")
+              )
+            )
+          ),
+          el("button", { class: "small ghost", onclick: () => this.verifyItems(done.map((i) => i.key), true) }, "Undo all")
+        )
+      );
+    }
     box.append(renderWarnings(this, r.warnings)); // confirm-to-clear (generator_warnings.js)
+    // Weak detections the generator held back (irregular grid, no labels)
+    const held = ((this.detail && this.detail.report && this.detail.report.suggested_blocks) || []).filter((b) => !this.doc.fieldBlocks[b.name]);
+    if (held.length) {
+      add(
+        box,
+        el("h3", {}, `Suggested blocks (${held.length})`),
+        el("p", { class: "muted small" }, "Found with weak evidence, so left out of the template. Add the real ones."),
+        el(
+          "ul",
+          {},
+          held.map((b) =>
+            el(
+              "li",
+              { onclick: () => this.centerOn({ x: b.bbox[0], y: b.bbox[1], w: b.bbox[2], h: b.bbox[3] }) },
+              el("strong", {}, b.name + ": "),
+              b.reason,
+              " ",
+              el(
+                "button",
+                {
+                  class: "small",
+                  onclick: (event) => {
+                    event.stopPropagation();
+                    this.edit(() => (this.doc.fieldBlocks[b.name] = JSON.parse(JSON.stringify(b.block))));
+                    this.selected = { kind: "block", name: b.name };
+                    this.renderSide();
+                    this.draw();
+                  },
+                },
+                "Add as block"
+              )
+            )
+          )
+        )
+      );
+    }
     return box;
   }
 
@@ -1558,4 +1768,9 @@ export class TemplateEditor {
       toast(error.message, "error", 6000);
     }
   }
+}
+
+// Per-block alignment settings that differ from the page defaults
+function alignmentCount(raw) {
+  return ["rectifyOnBorder", "blockPerspective", "borderPadding", "outerBorderPadding"].filter((k) => raw[k] !== undefined).length;
 }

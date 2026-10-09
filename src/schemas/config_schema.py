@@ -37,6 +37,7 @@ CONFIG_SCHEMA = {
                     "minimum": 0,
                     "maximum": 1,
                 },
+                "flatten_background": {"type": "boolean"},
             },
         },
         "alignment_params": {
@@ -48,7 +49,7 @@ CONFIG_SCHEMA = {
                 "max_steps": {"type": "integer", "minimum": 1, "maximum": 100},
                 "stride": {"type": "integer", "minimum": 1, "maximum": 10},
                 "thickness": {"type": "integer", "minimum": 1, "maximum": 10},
-                "block_snap_radius": {"type": "integer", "minimum": 0, "maximum": 50},
+                "block_snap_radius": {"type": "integer", "minimum": -1, "maximum": 50},
                 "rectify_on_border": {"type": "boolean"},
                 "rectify_search_px": {"type": "integer", "minimum": 2, "maximum": 100},
                 "rectify_print_image": {
@@ -65,6 +66,10 @@ CONFIG_SCHEMA = {
             "additionalProperties": False,
             "properties": {
                 "confidence_margin": {"type": "number", "exclusiveMinimum": 0},
+                "min_grid_fit": {"type": "number", "minimum": -1, "maximum": 1},
+                "min_sharpness": {"type": "number", "minimum": 0},
+                "min_contrast": {"type": "number", "minimum": 0, "maximum": 255},
+                "min_bubble_px": {"type": "number", "minimum": 0},
                 "min_confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "min_marked_fill_ratio": {"type": "number", "minimum": 0, "maximum": 1},
                 "max_unmarked_fill_ratio": {
@@ -87,6 +92,7 @@ CONFIG_SCHEMA = {
                             "possible_missed_mark",
                             "model_disagrees",
                             "rectify_failed",
+                            "border_slide",
                         ],
                     },
                 },
@@ -97,6 +103,7 @@ CONFIG_SCHEMA = {
             "additionalProperties": False,
             "properties": {
                 "bubble_model_path": {"type": ["string", "null"]},
+                "bubble_model_role": {"enum": ["second_opinion", "decide"]},
                 "icr_model_path": {"type": ["string", "null"]},
             },
         },

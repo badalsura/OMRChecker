@@ -11,7 +11,13 @@ import multiprocessing
 import queue
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from collections import deque
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 from pathlib import Path
 
 from src.api.storage import new_id, read_json, write_json_atomic
@@ -30,13 +36,63 @@ from src.logger import logger
 INPUT_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".pdf"}
 
 QUEUED, UPLOADING, RUNNING = "queued", "uploading", "running"
+# Source of a job that collects single uploads (phone photos) by exam name
+BATCH = "batch"
 COMPLETED, FAILED, CANCELLED, INTERRUPTED = (
     "completed",
     "failed",
     "cancelled",
     "interrupted",
 )
+# Stopped on request; sheets read so far are kept and Resume reads the rest
+PAUSED = "paused"
+# Files read ahead of the workers by default (a few MB of scans in memory)
+DEFAULT_PREFETCH = 64
+PREFETCH_READERS = 4
 ACTIVE_STATES = {QUEUED, RUNNING}
+
+
+def _read_bytes(path):
+    try:
+        return Path(path).read_bytes()
+    except OSError:
+        return None  # the worker reads the path itself and reports the error
+
+
+def read_ahead(tasks, reader, depth):
+    """
+    Yield the tasks with each file's bytes attached, reading up to depth
+    files ahead on background threads so the workers never wait on the disk.
+    """
+    pending = deque()
+    tasks = iter(tasks)
+    try:
+        while True:
+            while len(pending) < depth:
+                task = next(tasks, None)
+                if task is None:
+                    break
+                pending.append((task, reader.submit(_read_bytes, task["file_path"])))
+            if not pending:
+                return
+            task, future = pending.popleft()
+            data = future.result()
+            yield {**task, "file_bytes": data} if data is not None else task
+    finally:
+        # Closed early (job paused or cancelled): drop the reads not started
+        for _, future in pending:
+            future.cancel()
+
+
+def shutdown_now(executor):
+    """shutdown(wait=False) that also drops queued work. cancel_futures needs
+    Python 3.9; on 3.8 (the Windows 7 build) the few sheets already handed to
+    the workers finish first, since a 3.8 process pool left running without
+    waiting can hang the interpreter at exit."""
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        executor.shutdown(wait=True)
 
 
 def collect_folder(folder, recursive=True):
@@ -59,6 +115,9 @@ class JobManager:
         self.lock = threading.Lock()
         self.live = {}  # job_id -> job dict while queued/running
         self.cancelled = set()
+        self.paused = set()
+        self.batch_ids = {}
+        self.resume_after = set()
         self.pool = None
         self.pool_workers = None
         self.thread = None
@@ -87,7 +146,7 @@ class JobManager:
         self.stopping.set()
         self.queue.put(None)
         if self.pool is not None:
-            self.pool.shutdown(wait=False, cancel_futures=True)
+            shutdown_now(self.pool)
             self.pool = None
         if self.thread is not None:
             self.thread.join(timeout=10)
@@ -100,6 +159,11 @@ class JobManager:
             self.pool = None
         if self.pool is None:
             self.pool_workers = workers
+            from src.utils.cpu import prepare_worker_environment
+
+            # Spawned workers copy the parent's environment before any
+            # initializer runs: thread limits must be set here first
+            prepare_worker_environment()
             context = multiprocessing.get_context(self.settings.mp_start_method)
             self.pool = ProcessPoolExecutor(
                 max_workers=workers, mp_context=context, initializer=worker_init
@@ -118,6 +182,10 @@ class JobManager:
             "options": {
                 "save_images": options.get("save_images") or SAVE_REVIEW,
                 "workers": options.get("workers"),
+                # Files read into memory ahead of the workers (0 = off)
+                "prefetch": DEFAULT_PREFETCH
+                if options.get("prefetch") is None
+                else max(0, int(options["prefetch"])),
                 # Per-job PDF rendering {"pdf_dpi", "pdf_page"}; None = config.json
                 "pdf_params": options.get("pdf_params"),
             },
@@ -141,6 +209,76 @@ class JobManager:
         else:
             self.live[job_id] = job
         return job
+
+    # ---- batches: single uploads (phone photos) grouped by exam ----------
+    def batch_job(self, template_id, name, label=None):
+        """The job collecting single uploads called name for this template (an
+        exam or olympiad), created on first use. It is never run: sheets are
+        read as they arrive and recorded with reserve_batch / finish_batch.
+        label: how the job's source is shown (default "camera / single uploads");
+        a new label given later replaces the old one."""
+        label = " ".join((label or "").split()) or None
+        name = " ".join(name.split())
+        key = (template_id, name.lower())
+        with self.lock:
+            job_id = self.batch_ids.get(key)
+            job = read_json(self.data.job_file(job_id)) if job_id else None
+            if job is None:
+                for job_file in self.data.jobs.glob("*.json"):
+                    found = read_json(job_file)
+                    if (
+                        found
+                        and found.get("source") == BATCH
+                        and found.get("template_id") == template_id
+                        and " ".join((found.get("name") or "").split()).lower() == key[1]
+                    ):
+                        job = found
+                        break
+            if job is None:
+                now = time.time()
+                job = {
+                    "id": new_id(),
+                    "template_id": template_id,
+                    "source": BATCH,
+                    "state": COMPLETED,
+                    "options": {"save_images": SAVE_REVIEW},
+                    "name": name,
+                    "path_remap": [],
+                    "total_files": 0,
+                    "processed_files": 0,
+                    "pages": 0,
+                    "counts": {},
+                    "errors": [],
+                    "created_at": now,
+                    "started_at": now,
+                    "finished_at": now,
+                    "throughput_per_s": None,
+                    "label": label,
+                }
+                self._save(job)
+            elif label and job.get("label") != label:
+                job["label"] = label
+                self._save(job)
+            self.batch_ids[key] = job["id"]
+            return job
+
+    def reserve_batch(self, job_id, count):
+        """Sequence numbers for count new sheets of a batch job (first one)."""
+        with self.lock:
+            job = read_json(self.data.job_file(job_id))
+            first = job.get("total_files", 0) + 1
+            job["total_files"] = first - 1 + count
+            self._save(job)
+            return first
+
+    def finish_batch(self, job_id, count):
+        with self.lock:
+            job = read_json(self.data.job_file(job_id))
+            job["processed_files"] = job.get("processed_files", 0) + count
+            job["finished_at"] = time.time()
+            self._refresh_counts(job)
+            self._save(job)
+            return job
 
     def inputs_dir(self, job_id):
         path = self.data.jobs / job_id / "inputs"
@@ -185,10 +323,51 @@ class JobManager:
                 jobs.append(job)
         return jobs
 
+    def pause(self, job_id):
+        """Stop handing out files; sheets being read finish, then the job pauses."""
+        with self.lock:
+            job = self.live.get(job_id)
+            if job is None or job["state"] not in (QUEUED, RUNNING):
+                return None
+            self.paused.add(job_id)
+            if job["state"] == QUEUED:
+                job["state"] = PAUSED
+                self._save(job)
+                self.live.pop(job_id, None)
+                self.paused.discard(job_id)
+            return job
+
+    def resume(self, job_id):
+        """Queue a paused or interrupted job again; it skips sheets already read."""
+        live = self.live.get(job_id)
+        if live is not None:
+            if live["state"] != PAUSED:
+                return None
+            # Still winding down: queue it again once the runner lets go
+            self.resume_after.add(job_id)
+            return live
+        job = self.get(job_id)
+        if job is None or job.get("state") not in (PAUSED, INTERRUPTED):
+            return None
+        self.enqueue(job)
+        return job
+
     def cancel(self, job_id):
         job = self.live.get(job_id)
+        if job is not None and job["state"] == PAUSED:
+            # Paused but the runner has not let go yet
+            self.resume_after.discard(job_id)
+            job["state"] = CANCELLED
+            job["finished_at"] = time.time()
+            self._save(job)
+            return job
         if job is None:
-            return self.get(job_id)
+            job = self.get(job_id)
+            if job is not None and job.get("state") in (PAUSED, INTERRUPTED):
+                job["state"] = CANCELLED
+                job["finished_at"] = time.time()
+                self._save(job)
+            return job
         self.cancelled.add(job_id)
         if job["state"] in (QUEUED, UPLOADING):
             job["state"] = CANCELLED
@@ -218,9 +397,13 @@ class JobManager:
             job_id = self.queue.get()
             if job_id is None:
                 return
-            job = self.live.get(job_id)
-            if job is None or job["state"] != QUEUED:
-                continue
+            with self.lock:
+                # Claimed under the lock, so a pause of the queued job cannot
+                # interleave with the start of its run
+                job = self.live.get(job_id)
+                if job is None or job["state"] != QUEUED:
+                    continue
+                job["state"] = RUNNING
             try:
                 self._run(job)
             except Exception as error:  # keep the runner alive
@@ -235,6 +418,18 @@ class JobManager:
                 self._save(job)
                 self.live.pop(job_id, None)
                 self.cancelled.discard(job_id)
+                self.paused.discard(job_id)
+                if job_id in self.resume_after:
+                    self.resume_after.discard(job_id)
+                    if job["state"] == PAUSED:
+                        self.enqueue(job)
+
+    def _halted(self, job):
+        return (
+            job["id"] in self.cancelled
+            or job["id"] in self.paused
+            or self.stopping.is_set()
+        )
 
     def _refresh_counts(self, job):
         job["counts"] = self.index.status_counts(job_id=job["id"])
@@ -307,7 +502,7 @@ class JobManager:
         if workers <= 1:
             engine = get_process_engine(base["template_dir"], version)
             for task in tasks:
-                if job["id"] in self.cancelled or self.stopping.is_set():
+                if self._halted(job):
                     break
                 try:
                     stored = scan_and_store(
@@ -327,10 +522,17 @@ class JobManager:
             pool = self._get_pool(workers)
             in_flight = {}
             max_in_flight = workers * 4
+            prefetch = int(job["options"].get("prefetch") or 0)
+            reader = None
+            if prefetch:
+                reader = ThreadPoolExecutor(
+                    max_workers=PREFETCH_READERS, thread_name_prefix="omr-prefetch"
+                )
+                tasks = read_ahead(tasks, reader, prefetch)
             tasks_iter = iter(tasks)
             exhausted = False
             while True:
-                stop = job["id"] in self.cancelled or self.stopping.is_set()
+                stop = self._halted(job)
                 while not stop and not exhausted and len(in_flight) < max_in_flight:
                     task = next(tasks_iter, None)
                     if task is None:
@@ -354,6 +556,11 @@ class JobManager:
                     for future in list(in_flight):
                         if future.cancel():
                             in_flight.pop(future)
+            if reader is not None:
+                tasks.close()
+                reader.shutdown(wait=False)
         flush(force=True)
         if job["id"] in self.cancelled:
             job["state"] = CANCELLED
+        elif job["id"] in self.paused and job["processed_files"] < job["total_files"]:
+            job["state"] = PAUSED

@@ -362,6 +362,10 @@ def test_original_view_outlines_land_where_the_engine_read(tmp_path, spec):
             borderValue=(255, 255, 255),
         )
         cv2.imwrite(stored["source_path"], source)
+        # The test replaces the original on purpose: record its new fingerprint
+        from src.api.worker import file_sha256
+
+        stored["source_sha256"] = file_sha256(stored["source_path"])
         q1 = stored["fields"]["q1"]["bubbles"][0]
         stored["geometry"] = {
             "source_size": [source.shape[1], source.shape[0]],

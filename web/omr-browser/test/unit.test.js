@@ -193,3 +193,26 @@ test("group placeholders (groupOptions) follow src/utils/parsing.py", async () =
   assert.deepEqual(r.groups.both.columns.map((c) => c.state), ["empty", "empty"]);
   assert.equal(r.groups.both.flagged, false);
 });
+
+test("live preview reports alignment and sharpness without reading", async () => {
+  const engine = await OMR.loadTemplate(SMALL);
+  const flat = { width: 200, height: 120, data: new Uint8Array(200 * 120).fill(200) };
+  const striped = { width: 200, height: 120, data: new Uint8Array(200 * 120).map((_, i) => (i % 4 < 2 ? 0 : 255)) };
+  const p = engine.preview(flat);
+  assert.equal(p.ok, true);
+  assert.equal(p.quad, null);
+  assert.equal(p.sharpness, 0);
+  assert.ok(engine.preview(striped).sharpness > 1000);
+  // template overlay: one outline per field block, one centre per bubble
+  const layout = engine.previewLayout();
+  const blocks = engine.template.fieldBlocks;
+  assert.equal(layout.blocks.length, blocks.length);
+  const bubbles = blocks.reduce((n, b) => n + b.fields.reduce((m, f) => m + f.bubbles.length, 0), 0);
+  assert.equal(layout.bubbles.length, bubbles);
+  assert.ok(layout.radius > 0);
+  // no sheet in view: a fixed guide fitted inside the frame
+  const guide = p.overlay;
+  assert.equal(guide.aligned, false);
+  assert.equal(guide.blocks.length, blocks.length);
+  guide.page.forEach(([x, y]) => assert.ok(x >= 0 && x <= flat.width && y >= 0 && y <= flat.height));
+});

@@ -189,8 +189,11 @@ _MIGRATIONS = {
     "verified": "INTEGER DEFAULT 0",
     "corrected": "INTEGER DEFAULT 0",
     "template_version": "TEXT",
+    "primary_key": "TEXT",
 }
 _LATE_INDEXES = """
+CREATE INDEX IF NOT EXISTS ix_scans_key ON scans(job_id, primary_key);
+CREATE INDEX IF NOT EXISTS ix_scans_template_key ON scans(template_id, primary_key);
 CREATE INDEX IF NOT EXISTS ix_scans_flagged ON scans(template_id, job_id, flag_count);
 CREATE INDEX IF NOT EXISTS ix_scans_verified ON scans(template_id, job_id, verified);
 """
@@ -212,6 +215,7 @@ SCAN_COLUMNS = [
     "verified",
     "corrected",
     "template_version",
+    "primary_key",
 ]
 
 
@@ -234,12 +238,43 @@ def flag_rows(record):
     return sorted(pairs)
 
 
+def primary_key_of(record):
+    """The sheet's joined primary key, or None when it is unset, blank or
+    still flagged (an unreadable key is already in review; counting it would
+    make every blank roll number a duplicate)."""
+    spec = record.get("key_fields") or {}
+    columns = spec.get("columns") or []
+    if not columns or record.get("status") == "error":
+        return None
+    responses = record.get("responses") or {}
+    values = [str(responses.get(column) or "").strip() for column in columns]
+    if not all(values):
+        return None
+    flagged = {item.get("name") for item in record.get("review") or []}
+    flagged |= {
+        name
+        for name, check in (record.get("checks") or {}).items()
+        if isinstance(check, dict) and check.get("flags")
+    }
+    if flagged & set(spec.get("labels") or columns):
+        return None
+    return "\x1f".join(values)
+
+
 def is_corrected(record):
     for group in ("fields", "zones"):
         for item in (record.get(group) or {}).values():
             if "original_value" in item and item["original_value"] != item.get("value"):
                 return True
     return bool(record.get("manual_values"))
+
+
+# Review order by risk: whole-sheet items (registration, orientation) first,
+# then failed checks and joined values, then zones, then single bubble fields
+RISK_ORDER = (
+    "CASE kind WHEN 'sheet' THEN 0 WHEN 'check' THEN 1 WHEN 'custom_label' THEN 2 "
+    "WHEN 'zone' THEN 3 ELSE 4 END, "
+)
 
 
 class ScanIndex:
@@ -301,6 +336,7 @@ class ScanIndex:
                     1 if record.get("verified") else 0,
                     1 if record.get("corrected") or is_corrected(record) else 0,
                     record.get("template_version"),
+                    record.get("primary_key"),
                 )
             )
             for item in record.get("review") or []:
@@ -439,6 +475,8 @@ class ScanIndex:
         offset=0,
         created_after=None,
         created_before=None,
+        order="oldest",
+        flag=None,
     ):
         where, params = self._filters(
             state="pending",
@@ -448,6 +486,13 @@ class ScanIndex:
             name=name,
             kind=kind,
         )
+        if flag:
+            # Items flagged this way when the sheet was read
+            where += (
+                " AND EXISTS (SELECT 1 FROM scan_flags f WHERE f.scan_id ="
+                " review_items.scan_id AND f.name = review_items.name AND f.flag = ?)"
+            )
+            params.append(flag)
         if created_after is not None:
             # Items queued since a client last looked (new sheets of a running job)
             where += " AND created_at > ?"
@@ -456,7 +501,9 @@ class ScanIndex:
             where += " AND created_at <= ?"
             params.append(created_before)
         items = self._query(
-            f"SELECT * FROM review_items {where} ORDER BY created_at, scan_id, name "
+            f"SELECT * FROM review_items {where} ORDER BY "
+            + (RISK_ORDER if order == "risk" else "")
+            + "created_at, scan_id, name "
             "LIMIT ? OFFSET ?",
             (*params, limit, offset),
         )
@@ -464,6 +511,27 @@ class ScanIndex:
             0
         ]["n"]
         return items, total
+
+    def pending_review_flags(self, template_id=None, job_id=None):
+        """Pending items per flag they were read with (an item can count under
+        several flags)."""
+        where, params = self._filters(
+            **{"r.state": "pending", "r.template_id": template_id, "r.job_id": job_id}
+        )
+        return self._query(
+            "SELECT f.flag AS flag, COUNT(*) AS n FROM review_items r JOIN scan_flags f"
+            f" ON f.scan_id = r.scan_id AND f.name = r.name {where}"
+            " GROUP BY f.flag ORDER BY n DESC",
+            params,
+        )
+
+    def pending_review_jobs(self, template_id=None):
+        where, params = self._filters(state="pending", template_id=template_id)
+        return self._query(
+            f"SELECT job_id, COUNT(*) AS n FROM review_items {where} "
+            "GROUP BY job_id ORDER BY n DESC",
+            params,
+        )
 
     def pending_review_names(self, template_id=None, job_id=None):
         where, params = self._filters(
@@ -478,13 +546,22 @@ class ScanIndex:
     # ---- results screen -------------------------------------------------
     RESULT_VIEWS = {
         "all": "",
-        "flagged": "flag_count > 0",
-        "unflagged": "flag_count = 0",
+        # A verified sheet no longer counts as flagged
+        "flagged": "(flag_count > 0 AND verified = 0)",
+        "unflagged": "(flag_count = 0 OR verified = 1)",
         "reviewed": "(verified = 1 OR (flag_count > 0 AND review_count = 0))",
         "not_reviewed": "(verified = 0 AND NOT (flag_count > 0 AND review_count = 0))",
         "verified": "verified = 1",
         "corrected": "corrected = 1",
         "errors": "status = 'error'",
+        # Another sheet of the same job shares this sheet's primary key
+        "duplicates": "primary_key IS NOT NULL AND EXISTS (SELECT 1 FROM scans d "
+        "WHERE d.primary_key = scans.primary_key AND d.job_id IS scans.job_id "
+        "AND d.id != scans.id)",
+        # ... or of any job of the same template
+        "duplicates_template": "primary_key IS NOT NULL AND EXISTS (SELECT 1 FROM "
+        "scans d WHERE d.primary_key = scans.primary_key AND d.template_id = "
+        "scans.template_id AND d.id != scans.id)",
     }
 
     def _result_where(
@@ -620,15 +697,39 @@ class ScanIndex:
         )
         views = {
             view: self.count_results(template_id=template_id, job_id=job_id, view=view)
-            for view in ("all", "flagged", "reviewed", "not_reviewed", "corrected")
+            for view in (
+                "all",
+                "flagged",
+                "unflagged",
+                "reviewed",
+                "not_reviewed",
+                "corrected",
+                "duplicates",
+            )
         }
         return {"names": names, "flags": flags, "views": views}
+
+    def duplicates_of(self, scan_id, across_jobs=False):
+        """Other scans with this scan's primary key (same job, or same template)."""
+        row = self.get(scan_id)
+        if not row or not row.get("primary_key"):
+            return []
+        scope = "template_id = ?" if across_jobs else "job_id IS ?"
+        return self._query(
+            f"SELECT id, job_id, file_name, status FROM scans WHERE primary_key = ? "
+            f"AND {scope} AND id != ? ORDER BY rowid LIMIT 50",
+            (
+                row["primary_key"],
+                row["template_id"] if across_jobs else row["job_id"],
+                scan_id,
+            ),
+        )
 
     def set_scan_state(self, result):
         with self.lock:
             self.conn.execute(
                 "UPDATE scans SET status=?, score=?, review_count=?, verified=?, "
-                "corrected=?, reviewed=? WHERE id=?",
+                "corrected=?, reviewed=?, primary_key=? WHERE id=?",
                 (
                     result.get("status"),
                     result.get("score"),
@@ -636,6 +737,7 @@ class ScanIndex:
                     1 if result.get("verified") else 0,
                     1 if is_corrected(result) else 0,
                     1 if result.get("reviewed") else 0,
+                    primary_key_of(result),
                     result["scan_id"],
                 ),
             )

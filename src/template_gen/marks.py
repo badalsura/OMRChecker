@@ -210,8 +210,94 @@ def tracks_symmetric(tracks, page_size, tolerance=0.3):
     tol = tolerance * (min(pitches) if pitches else 20.0)
     points = np.array(points, dtype=np.float64)
     rotated = np.column_stack([page_size[0] - points[:, 0], page_size[1] - points[:, 1]])
-    distances = np.linalg.norm(rotated[:, None, :] - points[None, :, :], axis=2).min(axis=1)
-    return bool(np.mean(distances <= tol) >= 0.9)
+    pitch = min(pitches) if pitches else 20.0
+    # The reader's search tolerates a shift of up to one pitch, so a turned
+    # page that matches after such a shift is just as ambiguous
+    for shift in _candidate_shifts(rotated, points, pitch):
+        moved = rotated + shift
+        distances = np.linalg.norm(moved[:, None, :] - points[None, :, :], axis=2).min(axis=1)
+        if np.mean(distances <= tol) >= 0.9:
+            return True
+    return False
+
+
+def _candidate_shifts(rotated, points, pitch):
+    """No shift, then the median nearest-mark offset when it is within a pitch."""
+    shifts = [np.zeros(2)]
+    offsets = points[
+        np.linalg.norm(rotated[:, None, :] - points[None, :, :], axis=2).argmin(axis=1)
+    ] - rotated
+    median = np.median(offsets, axis=0)
+    if 0 < np.linalg.norm(median) <= pitch:
+        shifts.append(median)
+    return shifts
+
+
+def collinear(points, min_spread=25.0):
+    """True when the points lie (nearly) on one straight line."""
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) < 3:
+        return True
+    centred = points - points.mean(axis=0)
+    eigenvalues = np.linalg.eigvalsh(np.cov(centred.T))
+    return not (eigenvalues[0] > 1e-3 * eigenvalues[1] and np.sqrt(eigenvalues[0]) > min_spread)
+
+
+def spread_points(candidates, page_size, line_points, max_points=4):
+    """
+    Candidates far from a straight line of registration marks, spread over
+    the page: they give the fit the second dimension a single track lacks.
+    """
+    if not candidates:
+        return []
+    line = np.asarray(line_points, dtype=np.float64)
+    centre = line.mean(axis=0)
+    direction = np.linalg.eigh(np.cov((line - centre).T))[1][:, -1]
+    normal = np.array([-direction[1], direction[0]])
+    scored = sorted(
+        candidates,
+        key=lambda c: -abs(float(np.dot(np.asarray(c["center"]) - centre, normal))),
+    )
+    far = [c for c in scored if abs(float(np.dot(np.asarray(c["center"]) - centre, normal))) > 0.3 * min(page_size)]
+    chosen = []
+    for c in far:
+        if all(np.hypot(c["center"][0] - o["center"][0], c["center"][1] - o["center"][1]) > 0.25 * min(page_size) for o in chosen):
+            chosen.append(c)
+        if len(chosen) == max_points:
+            break
+    return chosen
+
+
+def outer_points(candidates, page_size, max_points=6, band=0.2):
+    """
+    Index point suggestions for a sheet without timing tracks: distinct marks
+    in the outer band of the page, the one nearest each corner first, then
+    others spread out (biggest first among equals).
+    """
+    page_w, page_h = page_size
+    margin = band * min(page_w, page_h)
+
+    def edge_distance(c):
+        x, y = c["center"]
+        return min(x, y, page_w - x, page_h - y)
+
+    outer = [c for c in candidates or [] if edge_distance(c) <= margin]
+    chosen = []
+    for corner in ((0, 0), (page_w, 0), (page_w, page_h), (0, page_h)):
+        if not outer:
+            break
+        best = min(outer, key=lambda c: np.hypot(c["center"][0] - corner[0], c["center"][1] - corner[1]))
+        if best not in chosen and np.hypot(best["center"][0] - corner[0], best["center"][1] - corner[1]) < 0.45 * min(page_w, page_h):
+            chosen.append(best)
+    for c in outer:
+        if len(chosen) >= max_points:
+            break
+        if c not in chosen and all(
+            np.hypot(c["center"][0] - o["center"][0], c["center"][1] - o["center"][1]) > 0.2 * min(page_w, page_h)
+            for o in chosen
+        ):
+            chosen.append(c)
+    return chosen[:max_points]
 
 
 def asymmetric_points(candidates, page_size, max_points=4, gray=None):

@@ -61,6 +61,8 @@ class Template:
         self.setup_field_blocks(field_blocks_object)
         self.setup_zones(zones_object)
         self.parse_custom_labels(custom_labels_object)
+        # Output columns that identify a sheet; equal keys flag duplicates
+        self.primary_key = [str(c) for c in json_object.get("primaryKey") or []]
         # Optional per-group placeholders (src/utils/parsing.py join_group)
         self.group_options = {
             name: dict(options or {})
@@ -371,6 +373,8 @@ class FieldBlock:
         self.block_perspective = field_block_object.get("blockPerspective")
         self.origin = origin
         self.bubble_dimensions = bubble_dimensions
+        self.bubbles_gap = bubbles_gap
+        self.labels_gap = labels_gap
         self.calculate_block_dimensions(
             bubble_dimensions,
             bubble_values,

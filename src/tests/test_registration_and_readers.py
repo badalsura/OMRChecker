@@ -30,14 +30,19 @@ def field_errors(result, answers):
     }
 
 
+@pytest.mark.parametrize("early_stop", [False, True])
 @pytest.mark.parametrize(
     "seed,flip,rotation,perspective",
     [(1, False, 3, 0.03), (2, True, 3, 0.03), (3, False, 8, 0.06)],
 )
 def test_timing_marks_register_skewed_and_flipped_sheets(
-    tmp_path, spec, seed, flip, rotation, perspective
+    tmp_path, spec, seed, flip, rotation, perspective, early_stop
 ):
-    engine = make_engine(tmp_path, spec.to_template())
+    template = spec.to_template()
+    for step in template["preProcessors"]:
+        if step["name"] == "TimingMarkAlignment":
+            step["options"]["earlyStop"] = early_stop
+    engine = make_engine(tmp_path, template)
     rng = random.Random(seed)
     answers = random_answers(spec, rng)
     image, _ = render_sheet(spec, answers, rng=rng, mark_style="mixed", erasures=2)
@@ -80,9 +85,10 @@ def test_timing_marks_do_not_slip_a_mark_on_flush_tilted_scans(
     assert field_errors(result, answers) == {}
 
 
-def test_timing_marks_non_rigid_refinement(tmp_path, spec):
+@pytest.mark.parametrize("non_rigid", [True, "tracks"])
+def test_timing_marks_non_rigid_refinement(tmp_path, spec, non_rigid):
     template = spec.to_template()
-    template["preProcessors"][0]["options"]["nonRigid"] = True
+    template["preProcessors"][0]["options"]["nonRigid"] = non_rigid
     engine = make_engine(tmp_path, template)
     rng = random.Random(4)
     answers = random_answers(spec, rng)
@@ -276,6 +282,25 @@ def test_crop_page_finds_white_sheet_on_light_background(tmp_path, spec):
     engine = make_engine(tmp_path, template)
 
     result = engine.scan(canvas, "light-desk")
+
+    assert result.status != STATUS_ERROR
+    assert field_errors(result, answers) == {}
+
+
+@pytest.mark.parametrize("angle", [-30, 40])
+def test_timing_marks_register_steeply_turned_photos(tmp_path, spec, angle):
+    # Marks turned by tens of degrees fill less of their upright bounding box;
+    # they must still count as marks
+    engine = make_engine(tmp_path, spec.to_template())
+    rng = random.Random(11)
+    answers = random_answers(spec, rng)
+    image, _ = render_sheet(spec, answers, rng=rng)
+    pad = int(0.15 * max(image.shape))
+    desk = cv2.copyMakeBorder(image, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=90)
+    turn = cv2.getRotationMatrix2D((desk.shape[1] / 2, desk.shape[0] / 2), angle, 1.0)
+    photo = cv2.warpAffine(desk, turn, (desk.shape[1], desk.shape[0]), borderValue=90)
+
+    result = engine.scan(photo, "sheet")
 
     assert result.status != STATUS_ERROR
     assert field_errors(result, answers) == {}

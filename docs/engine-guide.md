@@ -111,7 +111,13 @@ orientations, fits a RANSAC homography to the matched marks and rejects the
 sheet if fewer than `minMatchedMarks` marks match or the mean residual exceeds
 `maxResidual`. It then warps straight into template coordinates.
 `nonRigid: true` adds a thin-plate-spline correction for curled paper and
-phone lens distortion.
+phone lens distortion; `nonRigid: "tracks"` instead corrects each row and
+column from the timing marks themselves (a vertical track measures row
+offsets, a horizontal one column offsets, interpolated between opposite tracks
+and never extrapolated past their ends). `indexSeed: true` adds the index
+points' own fit as a starting guess for the track search. `earlyStop` (on by default; `false` turns it off) stops trying
+orientations once one fits cleanly; 0 and 180 degrees are still both tried (the second with only its 3 unshifted guesses)
+unless the index points already decided.
 
 **EccAlignment.** Dense refinement against an image of the blank form. Use it
 after a coarse step.
@@ -123,7 +129,9 @@ symbology it supports:
 - 2D codes: PDF417, QR (all versions), Micro QR, rMQR, Data Matrix, Aztec and MaxiCode
 
 Restrict a zone with `formats`. OCR uses Tesseract's LSTM engine, in-process
-through `tesserocr` when it is installed, which takes about 10 ms per zone.
+through `tesserocr` when it is installed, or straight through the libtesseract
+library that ships with `tesseract.exe` (set `OMR_LIBTESSERACT` to its path, or
+`OMR_TESSERACT_CAPI=0` to turn it off); either takes about 10 ms per zone.
 ICR reads boxed characters with a trained crop classifier. Until a model is
 configured, ICR results are always sent to review.
 
@@ -695,9 +703,13 @@ python -m src.ml.train --data datasets/bubbles --out models/bubble_model.onnx --
 python -m src.benchmark --template T.json --images holdout/ --truth holdout.csv --bubble-model models/bubble_model.onnx
 ```
 
-Then set `ml_params.bubble_model_path` in `config.json`. With a model
-configured, the model decides and the threshold reader acts as a cross-check:
-where they disagree, the field goes to review. ICR models are trained the same
+Then set `ml_params.bubble_model_path` in `config.json`. By default the model
+is a second opinion (`ml_params.bubble_model_role: "second_opinion"`): the
+threshold reader decides, agreement can raise a bubble's confidence, and
+where they disagree the field goes to review (`model_disagrees`). A model
+with an extra `erased` (or `crossed`) class sends crossed-out marks to
+review too. Set `bubble_model_role: "decide"` only once the benchmark shows
+fewer silent errors at the same or lower review rate. ICR models are trained the same
 way with `--kind icr`.
 
 ## Benchmark

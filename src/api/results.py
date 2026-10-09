@@ -42,6 +42,7 @@ from src.api.worker import (
     PNG_FAST,
     archive_template_version,
     build_engine,
+    file_sha256,
     summarize,
     template_hash,
     template_version,
@@ -306,6 +307,16 @@ class ResultsService:
             }
 
     # ---- rendering ---------------------------------------------------------
+    @staticmethod
+    def check_source(result, path):
+        """Refuse a file whose contents differ from the one that was read."""
+        expected = result.get("source_sha256")
+        if expected and file_sha256(path) != expected:
+            raise ResultsError(
+                f"'{path}' is not the file that was read (its contents changed)",
+                409,
+            )
+
     def reread(
         self, result, template_overrides=None, config_overrides=None, use_current=False
     ):
@@ -319,6 +330,7 @@ class ResultsService:
                 "or the job's path_remap) if the input folder was moved.",
                 404,
             )
+        self.check_source(result, path)
 
         with self.engines.engine(
             result, template_overrides, config_overrides, use_current
@@ -353,6 +365,7 @@ class ResultsService:
                 "or the job's path_remap) if the input folder was moved.",
                 404,
             )
+        self.check_source(result, path)
         regrade = result.get("regrade") or {}
         with self.engines.engine(
             result,
@@ -963,9 +976,13 @@ def group_highlights(result):
 
 def overlay_payload(result, info):
     """Everything the browser needs to draw and edit the overlay."""
-    highlights = group_highlights(result)
+    # A verified sheet is settled: what was flagged when read no longer shows
+    # as flagged (the flags themselves stay listed, and in the statistics)
+    settled = bool(result.get("verified"))
+    logged = result.get("review_log") or {}
+    highlights = {} if settled else group_highlights(result)
     flagged = {}
-    for name, flag in flag_rows(result):
+    for name, flag in [] if settled else flag_rows(result):
         flagged.setdefault(name, []).append(flag)
     pending = {item["name"] for item in result.get("review") or []}
     fields = []
@@ -990,7 +1007,8 @@ def overlay_payload(result, info):
                 "corrected": original_value(field) != value,
                 "confidence": field.get("confidence"),
                 "flags": field.get("flags") or [],
-                "flagged": name in flagged,
+                # ... and neither does a field a person accepted or corrected
+                "flagged": name in flagged and not field.get("reviewed"),
                 "pending": name in pending,
                 "group_flags": highlights.get(name, []),
                 "box": box,
@@ -1024,7 +1042,7 @@ def overlay_payload(result, info):
                 "corrected": original_value(zone) != zone.get("value", ""),
                 "confidence": zone.get("confidence"),
                 "flags": zone.get("flags") or [],
-                "flagged": name in flagged,
+                "flagged": name in flagged and not zone.get("reviewed"),
                 "pending": name in pending,
                 "box": zone.get("box") or None,
                 "format": zone.get("format"),
@@ -1082,9 +1100,9 @@ def overlay_payload(result, info):
                 "original_value": original,
                 "parts": parts,
                 "flagged": any(m["flagged"] for m in members)
-                or name in flagged
-                or check_name in flagged
-                or bool(check.get("flags")),
+                or (name in flagged and name not in logged)
+                or (check_name in flagged and check_name not in logged)
+                or (bool(check.get("flags")) and not settled),
                 "pending": any(m["pending"] for m in members)
                 or name in pending
                 or check_name in pending,
@@ -1112,6 +1130,8 @@ def overlay_payload(result, info):
         "verified": result.get("verified"),
         "corrected": is_corrected(result),
         "regrade": result.get("regrade"),
+        "manual_alignment": result.get("manual_alignment"),
+        "manual_entry": result.get("manual_entry"),
         "fields": fields,
         "zones": zones,
         "outputs": outputs,
@@ -1163,6 +1183,7 @@ def geometry_overlay(geometry):
         "margin_trim": geometry.get("margin_trim"),
         "page_outline": geometry.get("page_outline"),
         "index_points": geometry.get("index_points"),
+        "alignment_method": geometry.get("alignment_method"),
         "aligned_size": geometry.get("aligned_size"),
         "source_size": geometry.get("source_size"),
         "views": ["dropout", "print"],

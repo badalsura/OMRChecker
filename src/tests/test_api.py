@@ -218,6 +218,12 @@ def test_review_queue(tmp_path, spec):
         assert client.get(item["crop_url"]).status_code == 200
         summary = client.get("/review/summary").json()
         assert summary["total"] == queue["total"]
+        assert {"flag": "multi_marked", "n": 1} in summary["by_flag"]
+        flagged = client.get("/review?flag=multi_marked").json()
+        assert [i["name"] for i in flagged["items"]] == ["q3"]
+        assert client.get("/review?flag=weak_mark").json()["total"] == 0
+        counts = client.get("/review/counts?flag=multi_marked").json()
+        assert counts["total"] == 1
 
         names = [i["name"] for i in result["review"]]
         response = client.post(
@@ -487,6 +493,11 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
     class FakeResult:
         def __init__(self, images):
             self.template = spec.to_template()
+            timing = self.template["preProcessors"][0]["options"]
+            corner = spec.timing_tracks["left"][0]
+            timing["indexPoints"] = [
+                {"name": "P1", "center": [float(v) for v in corner], "size": list(timing["markDimensions"])}
+            ]
             self.reference_image = blank
             self.config = {"review_params": {"max_unmarked_fill_ratio": 0.35}}
             self.report = {
@@ -544,3 +555,229 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
         assert client.get(f"/templates/{tid}").json()["report"]["acknowledged_warnings"] == ["other"]
         response = client.post(f"/templates/{tid}/generator/acknowledge", json={"undo": True})
         assert len(response.json()["warnings"]) == 2
+
+        verify = f"/templates/{tid}/generator/verify"
+        response = client.post(verify, json={"items": ["q1: values", "q2: order"]})
+        assert response.json()["verified_items"] == ["q1: values", "q2: order"]
+        assert client.get(f"/templates/{tid}").json()["report"]["verified_items"] == [
+            "q1: values",
+            "q2: order",
+        ]
+        response = client.post(verify, json={"items": ["q1: values"], "undo": True})
+        assert response.json()["verified_items"] == ["q2: order"]
+        response = client.post(verify, json={"undo": True})
+        assert response.json()["verified_items"] == []
+        calibrated = client.post(f"/templates/{tid}/generator/calibrate-index")
+        assert calibrated.status_code == 200, calibrated.text
+        point = calibrated.json()["points"][0]
+        assert point["found"] == 1 and point["spread"] == 0 and point["moved"] < 3
+        boxes = client.get(f"/templates/{tid}/generator/printed-boxes")
+        assert boxes.status_code == 200 and isinstance(boxes.json()["boxes"], list)
+
+
+def test_primary_key_duplicates(tmp_path, spec):
+    template = spec.to_template(pre_processors=[])
+    template["primaryKey"] = ["roll1", "roll2"]
+    image, _ = make_sheet(spec, 3)
+    other, _ = make_sheet(spec, 4)
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates",
+            files=[("files", ("template.json", json.dumps(template), "application/json"))],
+            data={"name": "Keyed"},
+        )
+        tid = response.json()["id"]
+        first = scan_one(client, tid, image, "a.png")
+        assert first["primary_key"]
+        second = scan_one(client, tid, image, "b.png")
+        scan_one(client, tid, other, "c.png")
+        listing = client.get(f"/results?template_id={tid}&view=duplicates").json()
+        assert {item["id"] for item in listing["items"]} == {
+            first["scan_id"],
+            second["scan_id"],
+        }
+        overlay = client.get(f"/scans/{first['scan_id']}/overlay").json()
+        assert [d["scan_id"] for d in overlay["duplicates"]] == [second["scan_id"]]
+        # Deleting one clears the flag on the other
+        assert client.delete(f"/results/{second['scan_id']}").status_code < 300
+        listing = client.get(f"/results?template_id={tid}&view=duplicates").json()
+        assert listing["items"] == []
+
+
+def test_failed_sheet_aligned_by_hand_or_typed(tmp_path, spec):
+    template = spec.to_template()
+    image, truth = make_sheet(spec, 5)
+    blank = image.copy()
+    options = template["preProcessors"][0]["options"]
+    w, h = options["markDimensions"]
+    for track in options["tracks"].values():
+        for x, y in track["marks"]:
+            cv2.rectangle(blank, (int(x - w), int(y - h)), (int(x + w), int(y + h)), (255, 255, 255), -1)
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates",
+            files=[("files", ("template.json", json.dumps(template), "application/json"))],
+            data={"name": "Tracks"},
+        )
+        tid = response.json()["id"]
+        failed = scan_one(client, tid, blank, "failed.png")
+        assert failed["status"] == "error"
+        sid = failed["scan_id"]
+        targets = client.get(f"/scans/{sid}/manual-align").json()
+        pw, ph = targets["page_size"]
+        assert [pw, ph] == [blank.shape[1], blank.shape[0]]
+        assert client.get(f"/scans/{sid}/views/original").status_code == 200
+        corners = [[0, 0], [pw - 1, 0], [pw - 1, ph - 1], [0, ph - 1]]
+        bad = client.post(f"/scans/{sid}/manual-align", json={"points": [[0], [1], [2], [3]]})
+        assert bad.status_code == 422, bad.text
+        response = client.post(f"/scans/{sid}/manual-align", json={"points": corners})
+        assert response.status_code == 200, response.text
+        stored = client.get(f"/scans/{sid}").json()
+        assert stored["status"] != "error" and stored["manual_alignment"]["kind"] == "corners"
+        wrong = {k: (v, stored["responses"].get(k)) for k, v in truth["answers"].items() if stored["responses"].get(k) != v}
+        assert len(wrong) <= 1, wrong
+        assert client.get(f"/scans/{sid}/render").json()["geometry_replayed"] is True
+
+        other = scan_one(client, tid, blank, "typed.png")
+        response = client.post(
+            f"/scans/{other['scan_id']}/manual-values", json={"values": {"q1": "B"}}
+        )
+        assert response.status_code == 200, response.text
+        typed = client.get(f"/scans/{other['scan_id']}").json()
+        assert typed["status"] == "ok" and typed["responses"]["q1"] == "B"
+        assert typed["manual_entry"] and typed["read_error"]
+
+
+def test_generator_failure_still_opens_a_draft(tmp_path, spec, monkeypatch):
+    import importlib
+
+    # The module the endpoint imports (other tests swap sys.modules entries,
+    # which can leave the package attribute pointing at a different copy)
+    template_gen = importlib.import_module("src.template_gen")
+
+    def boom(*args, **kwargs):
+        raise ValueError("no luck")
+
+    monkeypatch.setattr(template_gen, "generate_template", boom)
+    image, _ = make_sheet(spec, 8)
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/templates/generate",
+            files=[("files", ("s1.png", png_bytes(image), "image/png"))],
+        )
+        assert response.status_code == 201, response.text
+        detail = response.json()
+        assert "no luck" in detail["report"]["warnings"][0]
+        assert client.get(f"/templates/{detail['id']}/reference.png").status_code == 200
+
+
+def test_job_pause_resume_and_cancel(tmp_path, spec):
+    sheets = [make_sheet(spec, seed) for seed in range(4)]
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        files = [("files", (f"s{i}.png", png_bytes(img), "image/png")) for i, (img, _) in enumerate(sheets)]
+        job_id = client.post("/jobs", data={"template_id": template_id, "start": "false"}, files=files).json()["id"]
+        # Not started yet: nothing to pause or resume
+        assert client.post(f"/jobs/{job_id}/pause").status_code == 409
+        assert client.post(f"/jobs/{job_id}/resume").status_code == 409
+        client.post(f"/jobs/{job_id}/start")
+        client.post(f"/jobs/{job_id}/pause")
+        job = wait_for_job(client, job_id)
+        if job["state"] == "paused":
+            assert job["processed_files"] < 4
+            assert client.post(f"/jobs/{job_id}/resume").status_code == 200
+            job = wait_for_job(client, job_id)
+        assert job["state"] == "completed" and job["processed_files"] == 4
+        assert client.post(f"/jobs/{job_id}/resume").status_code == 409
+
+        # A paused job can be cancelled; it keeps the sheets already read
+        job_id = client.post("/jobs", data={"template_id": template_id, "start": "false"}, files=files[:1]).json()["id"]
+        client.post(f"/jobs/{job_id}/start")
+        client.post(f"/jobs/{job_id}/pause")
+        job = wait_for_job(client, job_id)
+        if job["state"] == "paused":
+            assert client.post(f"/jobs/{job_id}/cancel").json()["state"] == "cancelled"
+
+
+def test_job_with_worker_processes_and_prefetch_completes(tmp_path, spec):
+    sheets = [make_sheet(spec, seed) for seed in range(3)]
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        files = [("files", (f"s{i}.png", png_bytes(img), "image/png")) for i, (img, _) in enumerate(sheets)]
+        job_id = client.post(
+            "/jobs", data={"template_id": template_id, "workers": "2", "prefetch": "2"}, files=files
+        ).json()["id"]
+        job = wait_for_job(client, job_id)
+        assert job["state"] == "completed" and job["processed_files"] == 3, job["errors"]
+
+
+def test_jobs_without_images_draw_crops_from_the_original(tmp_path, spec):
+    image, _ = make_sheet(spec, 3)
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        job_id = client.post(
+            "/jobs",
+            data={"template_id": template_id, "save_images": "none"},
+            files=[("files", ("a.png", png_bytes(image), "image/png"))],
+        ).json()["id"]
+        assert wait_for_job(client, job_id)["state"] == "completed"
+        rows = client.get(f"/scans?job_id={job_id}").json()["items"]
+        scan = client.get(f"/scans/{rows[0]['id']}").json()
+        assert not scan["has_images"] and scan["links"]["crop"]
+        name = next(iter(scan["fields"]))
+        crop = client.get(f"/scans/{rows[0]['id']}/crop?name={name}")
+        assert crop.status_code == 200 and crop.headers["content-type"] == "image/png"
+
+
+def test_whole_sheet_review_item_shows_the_sheet(tmp_path, spec):
+    image, _ = make_sheet(spec, 3)
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        result = scan_one(client, template_id, image)
+        scan_id = result["scan_id"]
+        path = next((tmp_path / "data").rglob(f"{scan_id}/result.json"))
+        stored = json.loads(path.read_text())
+        stored["review"] = (stored.get("review") or []) + [
+            {"kind": "sheet", "name": "index_points", "flags": ["index_point_missing"], "missing": ["P1"]}
+        ]
+        path.write_text(json.dumps(stored))
+        response = client.get(f"/scans/{scan_id}/crop?name=index_points&pad=24&outline=true")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        assert client.get(f"/scans/{scan_id}/crop?name=nothing").status_code == 404
+
+
+def test_single_uploads_grouped_by_exam(tmp_path, spec):
+    sheets = [make_sheet(spec, seed) for seed in range(3)]
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+
+        def send(index, batch):
+            image = sheets[index][0]
+            data = {"template_id": template_id}
+            if batch:
+                data["batch"] = batch
+            response = client.post("/scans", data=data, files=[("files", (f"p{index}.png", png_bytes(image), "image/png"))])
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        first = send(0, "Science  Olympiad")
+        second = send(1, "science olympiad")
+        assert first["job_id"] and first["job_id"] == second["job_id"]
+        assert send(2, None)["job_id"] is None
+        job = client.get(f"/jobs/{first['job_id']}").json()
+        assert job["name"] == "Science Olympiad" and job["source"] == "batch"
+        assert job["state"] == "completed" and job["processed_files"] == 2
+        listed = client.get(f"/scans?job_id={first['job_id']}").json()
+        assert listed["total"] == 2
+        assert job.get("label") is None
+        response = client.post(
+            "/scans",
+            data={"template_id": template_id, "batch": "Science Olympiad", "batch_label": "Teacher  uploads"},
+            files=[("files", ("Roll 17.png", png_bytes(sheets[0][0]), "image/png"))],
+        ).json()
+        assert response["job_id"] == first["job_id"] and response["scans"][0]["file_name"] == "Roll_17.png"
+        assert client.get(f"/jobs/{first['job_id']}").json()["label"] == "Teacher uploads"
+        assert client.patch(f"/jobs/{first['job_id']}", json={"label": "Phones"}).json()["label"] == "Phones"
+        assert client.delete(f"/jobs/{first['job_id']}").status_code == 200
+        assert client.get("/scans").json()["total"] == 1

@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from src.api.results import DEFAULT_USER, ResultsError, clean_rules
 
 VIEW_PATTERN = (
-    "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors)$"
+    "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors"
+    "|duplicates|duplicates_template)$"
 )
 
 
@@ -39,6 +40,18 @@ class CorrectionBody(BaseModel):
 
 
 class VerifyBody(BaseModel):
+    user: Optional[str] = None
+
+
+class ManualAlignBody(BaseModel):
+    points: List[List[float]] = Field(..., description="Clicked [x, y] in original pixels")
+    kind: str = Field("corners", pattern="^(corners|index)$")
+    names: Optional[List[str]] = Field(None, description="Index point per click (kind=index)")
+    user: Optional[str] = None
+
+
+class ManualValuesBody(BaseModel):
+    values: Dict[str, Any] = Field(..., description="Output column -> typed value")
     user: Optional[str] = None
 
 
@@ -84,6 +97,12 @@ def register(app, ctx, secured):
     def overlay_response(result, info=None, **extra):
         payload = service.overlay(result, info)
         payload.update(extra)
+        if result.get("key_fields"):
+            # Other sheets of the job with the same primary key
+            payload["duplicates"] = [
+                {"scan_id": d["id"], "file_name": d["file_name"], "status": d["status"]}
+                for d in ctx.index.duplicates_of(result["scan_id"])
+            ]
         return payload
 
     @app.get("/results", tags=["results"], dependencies=secured)
@@ -288,6 +307,47 @@ def register(app, ctx, secured):
             )
         return {**service.overlay(record, info), **extra}
 
+    @app.get("/scans/{scan_id}/manual-align", tags=["results"], dependencies=secured)
+    def scan_align_targets(scan_id: str):
+        """Page size and index points a failed sheet can be aligned by."""
+        from src.api.manual import align_targets
+
+        try:
+            return align_targets(service, service.load(scan_id))
+        except ResultsError as error:
+            fail(error)
+
+    @app.post("/scans/{scan_id}/manual-align", tags=["results"], dependencies=secured)
+    def scan_manual_align(scan_id: str, body: ManualAlignBody, request: Request):
+        """Align a sheet by clicked page corners or index points and read it again."""
+        from src.api.manual import manual_align
+
+        try:
+            record = manual_align(
+                service,
+                scan_id,
+                body.points,
+                body.kind,
+                body.names,
+                user_of(request, body.user),
+            )
+            return overlay_response(record)
+        except ResultsError as error:
+            fail(error)
+
+    @app.post("/scans/{scan_id}/manual-values", tags=["results"], dependencies=secured)
+    def scan_manual_values(scan_id: str, body: ManualValuesBody, request: Request):
+        """Type every output of a sheet the engine could not read."""
+        from src.api.manual import manual_values
+
+        try:
+            record = manual_values(
+                service, scan_id, body.values, user_of(request, body.user)
+            )
+            return overlay_response(record)
+        except ResultsError as error:
+            fail(error)
+
     @app.get("/scans/{scan_id}/audit", tags=["results"], dependencies=secured)
     def scan_audit(scan_id: str, limit: int = Query(200, ge=1, le=1000)):
         items, total = ctx.index.list_corrections(scan_id=scan_id, limit=limit)
@@ -330,16 +390,19 @@ def register(app, ctx, secured):
 
     @app.patch("/jobs/{job_id}", tags=["jobs"], dependencies=secured)
     def patch_job(job_id: str, body: Dict[str, Any] = Body(...)):
-        """Edit a job's name or path_remap ([{"from": ..., "to": ...}])."""
+        """Edit a job's name, label (how its source is shown) or path_remap
+        ([{"from": ..., "to": ...}])."""
         changes = {}
         if "name" in body:
             changes["name"] = str(body["name"] or "")
+        if "label" in body:
+            changes["label"] = " ".join(str(body["label"] or "").split())[:60] or None
         if "path_remap" in body:
             try:
                 changes["path_remap"] = clean_rules(body["path_remap"])
             except ResultsError as error:
                 fail(error)
-        unknown = set(body) - {"name", "path_remap"}
+        unknown = set(body) - {"name", "label", "path_remap"}
         if unknown:
             raise HTTPException(422, f"Cannot change: {', '.join(sorted(unknown))}")
         job = ctx.jobs.update(job_id, changes) if job_id.isalnum() else None

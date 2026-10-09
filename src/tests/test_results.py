@@ -232,6 +232,21 @@ def test_listing_filters_and_neighbours(tmp_path, spec):
         assert page["total"] == 3 and [i["id"] for i in page["items"]] == [ids[2]]
         assert client.get("/results?view=bogus").status_code == 422
 
+        # Verifying a flagged sheet settles it: no longer flagged anywhere
+        client.post(f"/scans/{ids[1]}/verify")
+        flagged = client.get("/results?view=flagged").json()
+        assert ids[1] not in [i["id"] for i in flagged["items"]]
+        unflagged = client.get("/results?view=unflagged").json()
+        assert ids[1] in [i["id"] for i in unflagged["items"]]
+        rendered = client.get(f"/scans/{ids[1]}/overlay").json()
+        assert not any(o["flagged"] for o in rendered["outputs"])
+        q3 = next(f for f in rendered["fields"] if f["name"] == "q3")
+        assert q3["flags"] and not q3["flagged"]
+        # ... and flagged again once the verification is undone
+        client.delete(f"/scans/{ids[1]}/verify")
+        flagged = client.get("/results?view=flagged").json()
+        assert ids[1] in [i["id"] for i in flagged["items"]]
+
 
 def test_moved_folder_remap_and_fallback(tmp_path, spec):
     folder = tmp_path / "inbox"
@@ -339,6 +354,67 @@ def test_regrade_preview_and_apply(tmp_path, spec):
             },
         )
         assert bad.status_code == 422
+
+
+def test_regrade_turns_an_upside_down_sheet(tmp_path, spec):
+    """alignment.rotate turns the sheet before reading; the replay follows it."""
+    image, truth = sheet(spec, 31)
+    upside_down = cv2.rotate(image, cv2.ROTATE_180)
+    questions = [f"q{i}" for i in range(1, 21)]
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, upside_down)["scan_id"]
+        overrides = {"alignment": {"rotate": 180}}
+        client.post(
+            f"/scans/{scan_id}/regrade",
+            json={"template_overrides": overrides, "apply": True},
+        )
+        stored = client.get(f"/scans/{scan_id}").json()
+        read = [stored["responses"][q] for q in questions]
+        assert read == [truth["answers"][q] for q in questions]
+        steps = stored["geometry"]["steps"]
+        assert steps[0]["op"] == "warp" and steps[0]["affine"] is True
+        # The stored geometry replays the turn
+        client.app.state.ctx.results.renders.items.clear()
+        assert client.get(f"/scans/{scan_id}/render").status_code == 200
+
+
+def test_decode_a_box_drawn_around_a_code(tmp_path, spec):
+    """Drag to scan: a box on the aligned page decodes the original there."""
+    image, _ = sheet(spec, 32)
+    if image.ndim == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    code = cv2.QRCodeEncoder.create().encode("ROLL-4521")
+    code = cv2.resize(code, None, fx=8, fy=8, interpolation=cv2.INTER_NEAREST)
+    code = cv2.copyMakeBorder(code, 32, 32, 32, 32, cv2.BORDER_CONSTANT, value=255)
+    h, w = image.shape[:2]
+    page = np.full((h, w + code.shape[1] + 40), 255, np.uint8)
+    page[:, :w] = image
+    page[40 : 40 + code.shape[0], w + 20 : w + 20 + code.shape[1]] = code
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, page)["scan_id"]
+        geometry = client.get(f"/scans/{scan_id}").json()["geometry"]
+        sx = geometry["aligned_size"][0] / page.shape[1]
+        sy = geometry["aligned_size"][1] / page.shape[0]
+        box = [(w + 10) * sx, 30 * sy, (code.shape[1] + 20) * sx, (code.shape[0] + 20) * sy]
+        found = client.post(f"/scans/{scan_id}/decode", json={"box": box}).json()
+        assert found["value"] == "ROLL-4521", found
+        # The same code in the original's pixels
+        box = [w + 10, 30, code.shape[1] + 20, code.shape[0] + 20]
+        found = client.post(
+            f"/scans/{scan_id}/decode", json={"box": box, "view": "original"}
+        ).json()
+        assert found["value"] == "ROLL-4521"
+        # Nothing there: no value, and nothing stored
+        empty = client.post(
+            f"/scans/{scan_id}/decode", json={"box": [5, 5, 40, 40], "view": "original"}
+        ).json()
+        assert empty["value"] == "" and "not_found" in empty["flags"]
+        response = client.post(
+            f"/scans/{scan_id}/decode", json={"box": box, "zone": "nope"}
+        )
+        assert response.status_code == 404
 
 
 def test_queue_review_is_audited(tmp_path, spec):
@@ -520,6 +596,15 @@ def test_corrections_rerun_template_rules(tmp_path, spec):
         ).json()
         assert reviewed["review"] == [] and reviewed["status"] == "ok"
         assert client.get("/review", params={"scan_id": scan_id}).json()["total"] == 0
+
+        # Accepting a group from Results settles its columns with it
+        body = client.post(
+            f"/scans/{scan_id}/corrections",
+            json={"accept": ["RollNo", "roll1", "roll2", "roll3", "roll4"]},
+        ).json()
+        assert body["pending"] == [] and body["status"] == "ok"
+        stored = client.get(f"/scans/{scan_id}").json()["fields"]
+        assert all(stored[f"roll{i}"]["reviewed"] for i in range(1, 5))
 
         # Exports carry the rule outputs as corrected
         record = client.post(

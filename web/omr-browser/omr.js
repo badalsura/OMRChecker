@@ -28,7 +28,7 @@
     // ------------------------------------------------------------------------
     var CONFIG_DEFAULTS = {
       dimensions: { display_height: 2480, display_width: 1640, processing_height: 820, processing_width: 666 },
-      threshold_params: { GAMMA_LOW: 0.7, MIN_GAP: 30, MIN_JUMP: 25, CONFIDENT_SURPLUS: 5, JUMP_DELTA: 30, PAGE_TYPE_FOR_THRESHOLD: "white", mode: "adaptive", fixed_threshold: 120, fixed_min_fill_ratio: 0.12 },
+      threshold_params: { GAMMA_LOW: 0.7, MIN_GAP: 30, MIN_JUMP: 25, CONFIDENT_SURPLUS: 5, JUMP_DELTA: 30, PAGE_TYPE_FOR_THRESHOLD: "white", mode: "adaptive", fixed_threshold: 120, fixed_min_fill_ratio: 0.12, flatten_background: true },
       alignment_params: { auto_align: false, match_col: 5, max_steps: 20, stride: 1, thickness: 3, block_snap_radius: 0, rectify_on_border: false, rectify_search_px: 20 },
       review_params: {
         confidence_margin: 20,
@@ -1858,6 +1858,10 @@
       this.expected = this.expected.map(function (p) {
         return [Math.fround(p[0]), Math.fround(p[1])];
       });
+      // Index points are only drawn (live camera guide); reading does not use them
+      this.indexPoints = (options.indexPoints || []).map(function (p) {
+        return { center: [Number(p.center[0]), Number(p.center[1])], size: p.size ? [Number(p.size[0]), Number(p.size[1])] : [20, 20] };
+      });
       this.markW = options.markDimensions[0];
       this.markH = options.markDimensions[1];
       this.sizeTolerance = options.sizeTolerance !== undefined ? options.sizeTolerance : TM_DEFAULT_SIZE_TOLERANCE;
@@ -3142,12 +3146,61 @@
       return failed;
     }
 
+    // Grey morphology with cv2.getStructuringElement(MORPH_ELLIPSE, (k, k)); outside pixels ignored
+    function morphEllipse(img, k, isMax) {
+      var w = img.width, h = img.height, r = k >> 1, out = new Uint8Array(w * h).fill(isMax ? 0 : 255), rows = {};
+      for (var i = 0; i < k; i++) {
+        var dy = i - r;
+        if (Math.abs(dy) > r) continue;
+        var dx = Math.round(r * Math.sqrt((r * r - dy * dy) / (r * r)));
+        var j1 = Math.max(r - dx, 0), j2 = Math.min(r + dx + 1, k), key = j1 + ":" + j2;
+        if (!rows[key]) rows[key] = rowExtreme(img.data, w, h, r - j1, j2 - 1 - r, isMax);
+        var src = rows[key];
+        for (var y = 0; y < h; y++) {
+          var sy = y + dy;
+          if (sy < 0 || sy >= h) continue;
+          var o = y * w, so = sy * w;
+          for (var x = 0; x < w; x++) {
+            var v = src[so + x];
+            if (isMax ? v > out[o + x] : v < out[o + x]) out[o + x] = v;
+          }
+        }
+      }
+      return makeImage(w, h, out);
+    }
+    // Port of ImageInstanceOps.flatten_background: the page divided by a smooth
+    // estimate of its paper brightness (closing at quarter resolution, blurred)
+    function flattenBackground(img, bubbleSize) {
+      var w = img.width, h = img.height;
+      var small = resizeArea(img, Math.max(Math.floor(w / 4), 1), Math.max(Math.floor(h / 4), 1));
+      var k = Math.max(3, Math.round((3 * bubbleSize) / 4)) | 1;
+      var bg = morphEllipse(morphEllipse(small, k, true), k, false);
+      bg = resizeLinear(gaussianBlur(bg, k, k, 0), w, h);
+      var out = new Uint8Array(w * h), d = img.data, b = bg.data;
+      for (var i = 0; i < out.length; i++) {
+        var q = (d[i] * 255) / Math.max(b[i], 1), f = Math.floor(q), v = q - f > 0.5 || (q - f === 0.5 && f % 2) ? f + 1 : f;
+        out[i] = v > 255 ? 255 : v;
+      }
+      return makeImage(w, h, out);
+    }
+
     function readBubbles(template, image, config, modelProbs) {
       var tp = config.threshold_params, rp = config.review_params, ap = config.alignment_params || {};
       var img = image;
       if (img.width !== template.pageDimensions[0] || img.height !== template.pageDimensions[1]) img = resizeLinear(img, template.pageDimensions[0], template.pageDimensions[1]);
       var mm = minMax(img);
       if (mm[1] > mm[0]) img = normalizeMinMax(img);
+      // Zones and stored images use the page as aligned
+      var alignedOut = img;
+      if (tp.flatten_background && template.fieldBlocks.length) {
+        var sizes = template.fieldBlocks.map(function (b) {
+          return Math.max(b.bubbleDimensions[0], b.bubbleDimensions[1]);
+        }).sort(function (a, b) {
+          return a - b;
+        });
+        var mid = sizes.length >> 1;
+        img = flattenBackground(img, sizes.length % 2 ? sizes[mid] : (sizes[mid - 1] + sizes[mid]) / 2);
+      }
       var snap = ap.block_snap_radius || 0;
       template.fieldBlocks.forEach(function (block) {
         block.shiftY = 0;
@@ -3242,7 +3295,7 @@
         return {
           omrResponse: omrResponse,
           fieldDetails: fieldDetails,
-          alignedImage: img,
+          alignedImage: alignedOut,
           thresholds: thresholds,
         };
       });
@@ -5084,6 +5137,164 @@
       }
       return img;
     };
+    // Live camera preview: register one (small) gray frame without reading it.
+    // Returns where the page and its timing marks sit in the frame, and how sharp it is.
+    Engine.prototype.preview = function (gray) {
+      var ctx = {}, pre = this.preProcessors, dims = this.config.dimensions, sx = 1, sy = 1;
+      if (pre.length && !pre[0].needsFullResolution) {
+        sx = Math.trunc(dims.processing_width) / gray.width;
+        sy = Math.trunc(dims.processing_height) / gray.height;
+      }
+      var aligned = null;
+      try {
+        aligned = this.register(gray, ctx, null);
+      } catch (error) {
+        ctx.registration = { error: String((error && error.message) || error) };
+      }
+      var reg = ctx.registration || {}, page = this.template.pageDimensions, quad = null, marks = null;
+      var blocks = null, bubbles = null, bubbleRadius = null, overlay = null;
+      function toFrame(p) {
+        return [p[0] / sx, p[1] / sy];
+      }
+      if (reg.homography) {
+        quad = projectPoints(reg.homography, [[0, 0], [page[0], 0], [page[0], page[1]], [0, page[1]]]).map(toFrame);
+        var tm = pre.filter(function (p) {
+          return p.name === "TimingMarkAlignment";
+        })[0];
+        if (tm) marks = projectPoints(reg.homography, tm.expected).map(toFrame);
+        var H = reg.homography;
+        overlay = this.overlayLayout(function (p) {
+          return toFrame(projectPoint(H, p[0], p[1]));
+        }, Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) / page[0]);
+        blocks = overlay.blocks;
+        bubbles = overlay.bubbles;
+        bubbleRadius = overlay.bubbleRadius;
+        overlay.indexPoints.forEach(function (ip) {
+          ip.found = darkSpot(gray, ip.center, ip.radius);
+        });
+      } else if (reg.corners && reg.corners.length === 4) {
+        quad = reg.corners.map(toFrame);
+      }
+      return {
+        ok: !!aligned,
+        error: reg.error || null,
+        method: reg.method || null,
+        matched: reg.matched_marks !== undefined ? reg.matched_marks : null,
+        expected: reg.expected_marks !== undefined ? reg.expected_marks : null,
+        quad: quad,
+        marks: marks,
+        blocks: blocks,
+        bubbles: bubbles,
+        bubbleRadius: bubbleRadius,
+        // the template where the sheet is (aligned) or, until then, a fixed
+        // guide centred in the frame to line the sheet up with
+        overlay: overlay || this.guideOverlay(gray.width, gray.height),
+        sharpness: roundTo(laplacianVariance(gray), 1),
+        // index points seen where the page fit puts them (null: none in the template)
+        indexFound: overlay && overlay.indexPoints.length ? overlay.indexPoints.filter(function (ip) { return ip.found; }).length : null,
+        indexTotal: overlay && overlay.indexPoints.length ? overlay.indexPoints.length : null,
+      };
+    };
+    // A printed dot or square at centre: its middle clearly darker than a ring
+    // of paper around it (cheap check on the small preview frame)
+    var DARK_SPOT_CONTRAST = 35;
+    function darkSpot(img, centre, radius) {
+      var r = Math.max(2, radius), w = img.width, h = img.height, d = img.data;
+      var cx = centre[0], cy = centre[1], reach = Math.ceil(r * 2.4);
+      var inSum = 0, inN = 0, ringSum = 0, ringN = 0;
+      for (var y = Math.max(0, Math.floor(cy - reach)); y <= Math.min(h - 1, Math.ceil(cy + reach)); y++) {
+        for (var x = Math.max(0, Math.floor(cx - reach)); x <= Math.min(w - 1, Math.ceil(cx + reach)); x++) {
+          var dist = Math.hypot(x - cx, y - cy), v = d[y * w + x];
+          if (dist <= r * 0.6) {
+            inSum += v;
+            inN++;
+          } else if (dist >= r * 1.6 && dist <= r * 2.4) {
+            ringSum += v;
+            ringN++;
+          }
+        }
+      }
+      if (!inN || !ringN) return false;
+      return ringSum / ringN - inSum / inN >= DARK_SPOT_CONTRAST;
+    }
+    // The template's page outline, timing tracks, index points, field blocks
+    // and bubbles mapped into frame pixels by map(point); scale = frame pixels
+    // per template unit (for radii)
+    Engine.prototype.overlayLayout = function (map, scale) {
+      var layout = this.previewLayout(), page = this.template.pageDimensions;
+      function mapAll(points) {
+        return points.map(map);
+      }
+      return {
+        aligned: true,
+        page: mapAll([[0, 0], [page[0], 0], [page[0], page[1]], [0, page[1]]]),
+        tracks: layout.tracks.map(mapAll),
+        indexPoints: layout.indexPoints.map(function (p) {
+          return { center: map(p.center), radius: (Math.max(p.size[0], p.size[1]) / 2) * scale };
+        }),
+        blocks: layout.blocks.map(mapAll),
+        bubbles: mapAll(layout.bubbles),
+        bubbleRadius: layout.radius * scale,
+      };
+    };
+    // The template fitted inside a width x height frame, centred with a margin
+    Engine.prototype.guideOverlay = function (width, height) {
+      var page = this.template.pageDimensions, margin = 0.06;
+      var scale = Math.min((width * (1 - 2 * margin)) / page[0], (height * (1 - 2 * margin)) / page[1]);
+      var ox = (width - page[0] * scale) / 2, oy = (height - page[1] * scale) / 2;
+      var guide = this.overlayLayout(function (p) {
+        return [ox + p[0] * scale, oy + p[1] * scale];
+      }, scale);
+      guide.aligned = false;
+      return guide;
+    };
+    // Timing tracks, index points, field block outlines and bubble centres in
+    // template units, for drawing the template over a camera frame (computed
+    // once per engine)
+    Engine.prototype.previewLayout = function () {
+      if (this._previewLayout) return this._previewLayout;
+      var tm = this.preProcessors.filter(function (p) {
+        return p.name === "TimingMarkAlignment";
+      })[0];
+      var blocks = [], bubbles = [], sizes = [];
+      this.template.fieldBlocks.forEach(function (block) {
+        var bw = block.bubbleDimensions[0], bh = block.bubbleDimensions[1];
+        var x0 = block.origin[0], y0 = block.origin[1];
+        var x1 = x0 + block.dimensions[0], y1 = y0 + block.dimensions[1];
+        blocks.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+        block.fields.forEach(function (field) {
+          field.bubbles.forEach(function (b) {
+            bubbles.push([b.x + bw / 2, b.y + bh / 2]);
+          });
+        });
+        sizes.push(Math.min(bw, bh));
+      });
+      sizes.sort(function (a, b) { return a - b; });
+      var radius = sizes.length ? sizes[sizes.length >> 1] * 0.35 : 0;
+      this._previewLayout = {
+        tracks: tm ? tm.tracks : [],
+        indexPoints: tm ? tm.indexPoints : [],
+        blocks: blocks,
+        bubbles: bubbles,
+        radius: radius,
+      };
+      return this._previewLayout;
+    };
+    // Variance of the 4-neighbour Laplacian: low on blurred or shaken frames
+    function laplacianVariance(img) {
+      var w = img.width, h = img.height, d = img.data, sum = 0, sq = 0, n = 0;
+      for (var y = 1; y < h - 1; y += 2) {
+        for (var x = 1; x < w - 1; x += 2) {
+          var i = y * w + x, v = d[i - 1] + d[i + 1] + d[i - w] + d[i + w] - 4 * d[i];
+          sum += v;
+          sq += v * v;
+          n++;
+        }
+      }
+      if (!n) return 0;
+      var mean = sum / n;
+      return sq / n - mean * mean;
+    }
     Engine.prototype.scan = function (source, opts) {
       var self = this;
       opts = opts || {};
@@ -5441,6 +5652,11 @@
                 return result;
               });
             });
+          },
+          // gray: {width, height, data} from a downscaled video frame
+          preview: function (gray) {
+            var data = gray.data, buf = data.byteOffset === 0 && data.buffer.byteLength === data.byteLength ? data.buffer : data.slice().buffer;
+            return call("preview", { width: gray.width, height: gray.height, data: buf }, [buf]);
           },
           terminate: function () {
             worker.terminate();

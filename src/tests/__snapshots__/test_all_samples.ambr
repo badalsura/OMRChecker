@@ -76,12 +76,13 @@
     'Manual/NeedsReview.csv': '''
       "file_id","input_path","kind","name","value","confidence","flags"
       "omr-1.png","samples/community/Sandeep-1507/omr-1.png","field","b3","9","1.0","weak_mark"
-      "omr-1.png","samples/community/Sandeep-1507/omr-1.png","field","b5","8","0.733","weak_mark"
-      "omr-1.png","samples/community/Sandeep-1507/omr-1.png","field","b7","0","0.54","weak_mark"
+      "omr-1.png","samples/community/Sandeep-1507/omr-1.png","field","b5","8","0.695","weak_mark"
+      "omr-1.png","samples/community/Sandeep-1507/omr-1.png","field","b7","0","0.674","weak_mark"
       "omr-1.png","samples/community/Sandeep-1507/omr-1.png","field","q29","AC","0.804","multi_marked"
       "omr-1.png","samples/community/Sandeep-1507/omr-1.png","field","q192","AD","1.0","multi_marked"
-      "omr-3.png","samples/community/Sandeep-1507/omr-3.png","field","b6","7","0.537","weak_mark"
-      "omr-3.png","samples/community/Sandeep-1507/omr-3.png","field","b7","3","0.699","weak_mark"
+      "omr-3.png","samples/community/Sandeep-1507/omr-3.png","field","b5","no","0.081","empty|low_confidence"
+      "omr-3.png","samples/community/Sandeep-1507/omr-3.png","field","b6","7","0.652","weak_mark"
+      "omr-3.png","samples/community/Sandeep-1507/omr-3.png","field","b7","3","0.818","weak_mark"
   
     ''',
     'Results/Results_05AM.csv': '''
@@ -168,7 +169,7 @@
       "file_id","input_path","kind","name","value","confidence","flags"
       "scan-type-2.jpg","samples/community/UmarFarootAPS/scans/scan-type-2.jpg","field","q9","C","1.0","possible_missed_mark"
       "scan-type-2.jpg","samples/community/UmarFarootAPS/scans/scan-type-2.jpg","field","q55","AD","1.0","multi_marked"
-      "scan-type-2.jpg","samples/community/UmarFarootAPS/scans/scan-type-2.jpg","field","q131","","0.295","empty|low_confidence"
+      "scan-type-2.jpg","samples/community/UmarFarootAPS/scans/scan-type-2.jpg","field","q131","","0.267","empty|low_confidence"
       "scan-type-2.jpg","samples/community/UmarFarootAPS/scans/scan-type-2.jpg","field","q168","D","1.0","possible_missed_mark"
   
     ''',
@@ -291,6 +292,7 @@
     ''',
     'Manual/NeedsReview.csv': '''
       "file_id","input_path","kind","name","value","confidence","flags"
+      "AdrianSample_p2.png","samples/sample2/AdrianSample.pdf","field","q1","C","1.0","possible_missed_mark"
   
     ''',
     'Results/Results_05AM.csv': '''
@@ -427,10 +429,10 @@
     'Manual/NeedsReview.csv': '''
       "file_id","input_path","kind","name","value","confidence","flags"
       "IMG_20201116_143512.jpg","samples/sample4/IMG_20201116_143512.jpg","field","q7","BC","1.0","multi_marked"
-      "IMG_20201116_150717658.jpg","samples/sample4/IMG_20201116_150717658.jpg","field","q7","BC","0.722","multi_marked"
-      "IMG_20201116_150750830.jpg","samples/sample4/IMG_20201116_150750830.jpg","field","q5","AC","0.847","multi_marked"
+      "IMG_20201116_150717658.jpg","samples/sample4/IMG_20201116_150717658.jpg","field","q7","BC","0.884","multi_marked"
+      "IMG_20201116_150750830.jpg","samples/sample4/IMG_20201116_150750830.jpg","field","q5","AC","0.821","multi_marked"
       "multiple-images_p1.png","samples/sample4/multiple-images.pdf","field","q7","BC","1.0","multi_marked"
-      "multiple-images_p3.png","samples/sample4/multiple-images.pdf","field","q5","AC","0.871","multi_marked"
+      "multiple-images_p3.png","samples/sample4/multiple-images.pdf","field","q5","AC","0.872","multi_marked"
   
     ''',
     'Results/Results_05AM.csv': '''

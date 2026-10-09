@@ -39,6 +39,9 @@ def _ellipse_mask(h, w):
     return inside
 
 
+# Classifier labels for a crossed-out or erased bubble (optional extra class)
+ERASED_LABELS = ("erased", "crossed", "crossed_out")
+
 class ImageInstanceOps:
     """Class to hold fine-tuned utilities for a group of images. One instance for each processing directory."""
 
@@ -50,6 +53,10 @@ class ImageInstanceOps:
         self.save_img_list: Any = defaultdict(list)
         # Optional learned classifier (src/ml/classifiers.py) for bubble crops
         self.bubble_classifier = None
+        # Rule for learned models (item 15): a second opinion unless
+        # ml_params.bubble_model_role is "decide"
+        self.model_decides = False
+        self.model_erased_probs = None
         # While companion images are tracked: geometric steps of the current
         # preprocessor (see ImagePreprocessor.record_geometry)
         self.geometry_ops = None
@@ -74,13 +81,41 @@ class ImageInstanceOps:
         flat, matrix, size = flatten_page(image, outline)
         recorder = self.geometry_recorder
         if recorder is not None:
+            # The outline is stored in source pixels: undo earlier steps (a turn)
+            back = np.linalg.inv(recorder.page_homography())
+            source = cv2.perspectiveTransform(
+                np.asarray(outline, np.float64).reshape(-1, 1, 2), back
+            ).reshape(-1, 2)
             recorder.warp(matrix, size)
             recorder.info["page_outline"] = [
-                [round(float(x), 2), round(float(y), 2)] for x, y in outline
+                [round(float(x), 2), round(float(y), 2)] for x, y in source
             ]
         for key in list(companions or {}):
             companions[key] = ImageUtils.four_point_transform(companions[key], outline)
         return flat
+
+    TURNS = {
+        90: cv2.ROTATE_90_CLOCKWISE,
+        180: cv2.ROTATE_180,
+        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    }
+
+    def turn_sheet(self, image, degrees, companions=None):
+        """Turn a sheet fed in sideways or upside down (alignment "rotate")."""
+        h, w = image.shape[:2]
+        # source px -> turned px, so stored geometry replays the turn
+        matrix = {
+            90: [[0, -1, h - 1], [1, 0, 0]],
+            180: [[-1, 0, w - 1], [0, -1, h - 1]],
+            270: [[0, 1, 0], [-1, 0, w - 1]],
+        }[degrees]
+        turned = cv2.rotate(image, self.TURNS[degrees])
+        recorder = self.geometry_recorder
+        if recorder is not None:
+            recorder.warp(matrix, (turned.shape[1], turned.shape[0]), affine=True)
+        for key in list(companions or {}):
+            companions[key] = cv2.rotate(companions[key], self.TURNS[degrees])
+        return turned
 
     def apply_preprocessors(self, file_path, in_omr, template, companions=None):
         """
@@ -91,6 +126,9 @@ class ImageInstanceOps:
         tuning_config = self.tuning_config
         pre_processors = template.pre_processors
         recorder = self.geometry_recorder
+        turn = int(self.alignment_option(template, "rotate", 0) or 0) % 360
+        if turn:
+            in_omr = self.turn_sheet(in_omr, turn, companions)
         if self.alignment_option(template, "page_outline", False):
             in_omr = self.flatten_page_outline(in_omr, companions, file_path)
         # resize to conform to template, unless registration works on the original
@@ -164,20 +202,20 @@ class ImageInstanceOps:
         )
 
     def read_omr_response_detailed(
-        self, template, image, name, save_dir=None, print_image=None
+        self, template, image, name, save_dir=None, print_image=None, draw_marked=True
     ):
         """
         Read all bubble fields, returning per-field values, confidence and review
         flags. print_image: an aligned copy that keeps the printed form (see
         src.geometry.print_kept_image), used to find block borders when the
-        image read has its print dropped out.
+        image read has its print dropped out. draw_marked=False skips drawing
+        the marked-sheet picture (final_marked is then None).
         """
         config = self.tuning_config
         auto_align = config.alignment_params.auto_align
-        img = image.copy()
-        # origDim = img.shape[:2]
+        # resize_util always returns a new image, so the input is never modified
         img = ImageUtils.resize_util(
-            img, template.page_dimensions[0], template.page_dimensions[1]
+            image, template.page_dimensions[0], template.page_dimensions[1]
         )
         if img.max() > img.min():
             img = ImageUtils.normalize_util(img)
@@ -188,11 +226,23 @@ class ImageInstanceOps:
             )
             if print_img.max() > print_img.min():
                 print_img = ImageUtils.normalize_util(print_img)
-        # Processing copies
-        transp_layer = img.copy()
-        final_marked = img.copy()
+        # Zones (OCR, barcodes) and stored images use the page as aligned
+        aligned_out = img
+        if config.threshold_params.get("flatten_background", False):
+            sizes = [max(b.bubble_dimensions) for b in template.field_blocks]
+            if sizes:
+                img = self.flatten_background(img, float(np.median(sizes)))
+        # Canvases for the marked-sheet picture, only when someone will see it
+        draw_marked = (
+            draw_marked
+            or (config.outputs.save_detections and save_dir is not None)
+            or self.save_image_level >= 2
+        )
+        transp_layer = img.copy() if draw_marked else None
+        final_marked = img.copy() if draw_marked else None
 
-        morph = img.copy()
+        # Every step below returns a new image, so img itself is not modified
+        morph = img
         self.append_save_img(3, morph)
 
         if auto_align:
@@ -325,11 +375,17 @@ class ImageInstanceOps:
         snap_radius = config.alignment_params.block_snap_radius
         for field_block in template.field_blocks:
             field_block.shift_y = 0
-            if snap_radius:
+            radius = self.snap_radius_for(field_block, snap_radius)
+            if radius:
                 field_block.shift, field_block.shift_y = self.snap_field_block(
-                    img, field_block, snap_radius
+                    img, field_block, radius, capped=snap_radius < 0
                 )
         rectify_failed = self.rectify_field_blocks(img, template, print_img)
+        sheet_review = self.grid_fit_review(
+            print_img if print_img is not None else img,
+            template,
+            config.review_params.get("min_grid_fit", 0),
+        )
 
         final_align = None
         if config.outputs.show_image_level >= 2:
@@ -409,7 +465,8 @@ class ImageInstanceOps:
         #     appendSaveImg(5,hist)
         #     appendSaveImg(2,hist)
 
-        model_marked_probs = self.get_model_marked_probs(img, template)
+        # Training crops come from the stored (unflattened) aligned image
+        model_marked_probs = self.get_model_marked_probs(aligned_out, template)
 
         per_omr_threshold_avg, total_q_strip_no, total_q_box_no = 0, 0, 0
         review_params = config.review_params
@@ -437,12 +494,35 @@ class ImageInstanceOps:
 
                 detected_bubbles = []
                 bubble_details = []
+                strip_fills = iter(
+                    self.get_fill_ratios(
+                        img,
+                        [
+                            (
+                                bubble.x + field_block.shift + bubble.dx,
+                                bubble.y + field_block.shift_y + bubble.dy,
+                            )
+                            for bubble in field_block_bubbles
+                        ],
+                        box_w,
+                        box_h,
+                        fixed_threshold
+                        if fixed_mode
+                        else per_q_strip_threshold - review_params.confidence_margin,
+                    )
+                )
                 for bubble in field_block_bubbles:
+                    fill_ratio = next(strip_fills)
                     bubble_mean = all_q_vals[total_q_box_no]
                     model_prob = (
                         None
                         if model_marked_probs is None
                         else float(model_marked_probs[total_q_box_no])
+                    )
+                    erased_prob = (
+                        None
+                        if self.model_erased_probs is None
+                        else float(self.model_erased_probs[total_q_box_no])
                     )
                     total_q_box_no += 1
                     x, y, field_value = (
@@ -452,9 +532,6 @@ class ImageInstanceOps:
                     )
                     if fixed_mode:
                         # Marked when enough of the interior is darker than the line
-                        fill_ratio = self.get_fill_ratio(
-                            img, x, y, box_w, box_h, fixed_threshold
-                        )
                         bubble_is_marked = fill_ratio >= fixed_min_fill
                         bubble_confidence = float(
                             np.clip(
@@ -463,16 +540,6 @@ class ImageInstanceOps:
                         )
                     else:
                         bubble_is_marked = per_q_strip_threshold > bubble_mean
-                        # Count only pixels clearly darker than the decision threshold
-                        # so printed letters and tinted backgrounds don't count as ink
-                        fill_ratio = self.get_fill_ratio(
-                            img,
-                            x,
-                            y,
-                            box_w,
-                            box_h,
-                            per_q_strip_threshold - review_params.confidence_margin,
-                        )
                         # How far the bubble sits from the decision boundary, in [0, 1]
                         bubble_confidence = float(
                             np.clip(
@@ -494,20 +561,30 @@ class ImageInstanceOps:
                         "confidence": round(bubble_confidence, 3),
                     }
                     if model_prob is not None:
-                        # The learned classifier decides; the threshold read is a cross-check
                         model_is_marked = model_prob >= 0.5
+                        model_confidence = abs(model_prob - 0.5) * 2
                         bubble_detail["model_marked_prob"] = round(model_prob, 4)
-                        bubble_detail["model_disagrees"] = bool(
-                            model_is_marked != bubble_is_marked
-                        )
-                        bubble_is_marked = model_is_marked
-                        bubble_detail["marked"] = bool(model_is_marked)
-                        bubble_detail["confidence"] = round(
-                            abs(model_prob - 0.5) * 2, 3
-                        )
+                        disagrees = model_is_marked != bubble_is_marked
+                        if erased_prob is not None:
+                            bubble_detail["model_erased_prob"] = round(erased_prob, 4)
+                            # A crossed-out or erased mark is never decided silently
+                            disagrees = disagrees or erased_prob >= 0.5
+                        bubble_detail["model_disagrees"] = bool(disagrees)
+                        if self.model_decides:
+                            # Opt-in: the learned classifier decides
+                            bubble_is_marked = model_is_marked
+                            bubble_detail["marked"] = bool(model_is_marked)
+                            bubble_detail["confidence"] = round(model_confidence, 3)
+                        elif not disagrees:
+                            # Second opinion (default): agreement can raise
+                            # confidence; disagreement goes to review
+                            bubble_detail["confidence"] = round(
+                                max(bubble_confidence, model_confidence), 3
+                            )
                     bubble_details.append(bubble_detail)
                     if bubble_is_marked:
                         detected_bubbles.append(bubble)
+                    if final_marked is not None and bubble_is_marked:
                         cv2.rectangle(
                             final_marked,
                             (int(x + box_w / 12), int(y + box_h / 12)),
@@ -528,7 +605,7 @@ class ImageInstanceOps:
                             (20, 20, 10),
                             int(1 + 3.5 * TEXT_SIZE),
                         )
-                    else:
+                    elif final_marked is not None:
                         cv2.rectangle(
                             final_marked,
                             (int(x + box_w / 10), int(y + box_h / 10)),
@@ -565,7 +642,7 @@ class ImageInstanceOps:
                     len(detected_bubbles),
                     strip_low_confidence,
                     review_params,
-                    ["rectify_failed"] if field_block.name in rectify_failed else None,
+                    rectify_flags(field_block, rectify_failed),
                 )
 
                 if config.outputs.show_image_level >= 5:
@@ -580,7 +657,10 @@ class ImageInstanceOps:
         per_omr_threshold_avg /= total_q_strip_no
         per_omr_threshold_avg = round(per_omr_threshold_avg, 2)
         # Translucent
-        cv2.addWeighted(final_marked, alpha, transp_layer, 1 - alpha, 0, final_marked)
+        if final_marked is not None:
+            cv2.addWeighted(
+                final_marked, alpha, transp_layer, 1 - alpha, 0, final_marked
+            )
         # Box types
         if config.outputs.show_image_level >= 6:
             # plt.draw()
@@ -615,11 +695,11 @@ class ImageInstanceOps:
                 "Template Alignment Adjustment", final_align, 0, 0, config=config
             )
 
-        if config.outputs.save_detections and save_dir is not None:
-            image_path = str(save_dir.joinpath(name))
-            ImageUtils.save_img(image_path, final_marked)
-
-        self.append_save_img(2, final_marked)
+        if final_marked is not None:
+            if config.outputs.save_detections and save_dir is not None:
+                image_path = str(save_dir.joinpath(name))
+                ImageUtils.save_img(image_path, final_marked)
+            self.append_save_img(2, final_marked)
 
         if save_dir is not None:
             for i in range(config.outputs.save_image_level):
@@ -631,7 +711,8 @@ class ImageInstanceOps:
             "multi_marked": multi_marked,
             "multi_roll": multi_roll,
             "field_details": field_details,
-            "aligned_image": img,
+            "aligned_image": aligned_out,
+            "sheet_review": sheet_review,
             "print_image": print_img,
             "thresholds": {
                 "global": round(float(global_thr), 2),
@@ -695,7 +776,93 @@ class ImageInstanceOps:
         return failed
 
     @staticmethod
-    def snap_field_block(img, field_block, radius):
+    def flatten_background(img, bubble_size):
+        """
+        The page divided by a smooth estimate of its paper brightness: shadows
+        and uneven light vanish while marks keep their contrast. The estimate
+        is a closing (removes print and marks smaller than ~3 bubbles) at
+        quarter resolution, blurred and scaled back up.
+        """
+        h, w = img.shape[:2]
+        small = cv2.resize(img, (max(w // 4, 1), max(h // 4, 1)), interpolation=cv2.INTER_AREA)
+        k = int(max(3, round(3 * float(bubble_size) / 4))) | 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        background = cv2.morphologyEx(small, cv2.MORPH_CLOSE, kernel)
+        background = cv2.GaussianBlur(background, (k, k), 0)
+        background = cv2.resize(background, (w, h), interpolation=cv2.INTER_LINEAR)
+        background = np.maximum(background, 1)
+        return cv2.divide(img, background, scale=255)
+
+    @staticmethod
+    def bubble_pitch(field_block):
+        gap = getattr(field_block, "bubbles_gap", None)
+        if gap:
+            return float(gap)
+        return float(max(field_block.bubble_dimensions)) * 1.5
+
+    @classmethod
+    def snap_radius_for(cls, field_block, configured):
+        """Search radius for block snapping: -1 = 0.3 x bubble pitch."""
+        if configured is None or configured == 0:
+            return 0
+        if configured < 0:
+            return int(max(2, round(0.3 * cls.bubble_pitch(field_block))))
+        return int(configured)
+
+    @classmethod
+    def grid_fit_score(cls, img, field_block):
+        """Correlation of the block's expected bubble outlines with the page."""
+        box_w, box_h = field_block.bubble_dimensions
+        block_w, block_h = (int(v) for v in field_block.dimensions)
+        x0 = int(field_block.origin[0] + field_block.shift)
+        y0 = int(field_block.origin[1] + field_block.shift_y)
+        img_h, img_w = img.shape[:2]
+        if x0 < 0 or y0 < 0 or x0 + block_w > img_w or y0 + block_h > img_h:
+            return None
+        mask = np.zeros((block_h, block_w), dtype=np.float32)
+        count = 0
+        for strip in field_block.traverse_bubbles:
+            for bubble in strip:
+                centre = (
+                    int(bubble.x - field_block.origin[0] + bubble.dx + box_w / 2),
+                    int(bubble.y - field_block.origin[1] + bubble.dy + box_h / 2),
+                )
+                axes = (max(int(box_w / 2) - 1, 1), max(int(box_h / 2) - 1, 1))
+                cv2.ellipse(mask, centre, axes, 0, 0, 360, 1.0, 2)
+                count += 1
+        if count < 4 or not mask.any():
+            return None
+        region = 255.0 - img[y0 : y0 + block_h, x0 : x0 + block_w].astype(np.float32)
+        return float(cv2.matchTemplate(region, mask, cv2.TM_CCOEFF_NORMED)[0, 0])
+
+    @classmethod
+    def grid_fit_review(cls, img, template, minimum):
+        """
+        A sheet registered onto the wrong marks still has a small residual, but
+        its printed bubbles no longer sit where the template puts them. Flag it
+        when the blocks' median outline correlation is below `minimum`.
+        """
+        if not minimum:
+            return []
+        scores = {}
+        for block in template.field_blocks:
+            score = cls.grid_fit_score(img, block)
+            if score is not None:
+                scores[block.name] = round(score, 3)
+        if not scores or float(np.median(list(scores.values()))) >= minimum:
+            return []
+        return [
+            {
+                "kind": "sheet",
+                "name": "registration",
+                "flags": ["registration_suspect"],
+                "grid_fit": scores,
+                "min_grid_fit": minimum,
+            }
+        ]
+
+    @staticmethod
+    def snap_field_block(img, field_block, radius, capped=False):
         """Find the (dx, dy) within radius that best fits the block's printed bubbles.
 
         Correlates a mask of the expected bubble outlines and interiors with the
@@ -735,6 +902,10 @@ class ImageInstanceOps:
         # the edge of the search window (the true optimum may lie beyond it)
         if best - centre_score < 0.02 or abs(dx) == radius or abs(dy) == radius:
             return field_block.shift, 0
+        # Automatic radius: a move of 0.4 pitch or more would be the
+        # neighbouring bubble, not drift (an explicit radius is trusted)
+        if capped and np.hypot(dx, dy) >= 0.4 * ImageInstanceOps.bubble_pitch(field_block):
+            return field_block.shift, 0
         return dx, dy
 
     def get_model_marked_probs(self, img, template):
@@ -750,7 +921,44 @@ class ImageInstanceOps:
                     y = bubble.y + field_block.shift_y + bubble.dy
                     crops.append(img[max(y, 0) : y + box_h, max(x, 0) : x + box_w])
         probabilities = self.bubble_classifier.predict_proba(crops)
+        labels = list(self.bubble_classifier.labels)
+        erased = [i for i, name in enumerate(labels) if name in ERASED_LABELS]
+        self.model_erased_probs = (
+            probabilities[:, erased].sum(axis=1) if erased else None
+        )
         return probabilities[:, self.bubble_classifier.label_index("marked")]
+
+    @classmethod
+    def get_fill_ratios(cls, img, points, box_w, box_h, threshold):
+        """get_fill_ratio for many same-size bubbles at once: the boxes that lie
+        fully on the page are stacked and counted together, the rest one by one.
+        Fixed mode counts against the fixed line; adaptive mode counts only
+        pixels clearly darker than the strip's decision threshold, so printed
+        letters and tinted backgrounds don't count as ink."""
+        page_h, page_w = img.shape[:2]
+        inside = [
+            0 <= x and 0 <= y and x + box_w <= page_w and y + box_h <= page_h
+            for x, y in points
+        ]
+        ratios = [None] * len(points)
+        full = [i for i, ok in enumerate(inside) if ok]
+        mask = _ellipse_mask(box_h, box_w)
+        pixels = int(np.count_nonzero(mask))
+        if full and pixels:
+            rois = np.stack(
+                [
+                    img[y : y + box_h, x : x + box_w]
+                    for x, y in (points[i] for i in full)
+                ]
+            )
+            counts = np.count_nonzero(rois[:, mask] < threshold, axis=1)
+            for i, count in zip(full, counts):
+                ratios[i] = float(count) / float(pixels)
+        for i, ratio in enumerate(ratios):
+            if ratio is None:
+                x, y = points[i]
+                ratios[i] = cls.get_fill_ratio(img, x, y, box_w, box_h, threshold)
+        return ratios
 
     @staticmethod
     def get_fill_ratio(img, x, y, box_w, box_h, threshold):
@@ -1145,3 +1353,14 @@ class ImageInstanceOps:
     def reset_all_save_img(self):
         for i in range(self.save_image_level):
             self.save_img_list[i + 1] = []
+
+
+def rectify_flags(field_block, rectify_failed):
+    """Flags of a block whose border fit failed (border_slide: it would have
+    moved the bubbles by 0.4 of a pitch or more)."""
+    if field_block.name not in rectify_failed:
+        return None
+    flags = ["rectify_failed"]
+    if (getattr(field_block, "last_rectification", None) or {}).get("slide"):
+        flags.append("border_slide")
+    return flags

@@ -41,6 +41,8 @@ from src.evaluation import (
     scoring_summary,
 )
 from src.logger import logger
+from src.quality import measure as measure_quality
+from src.quality import review as quality_review
 from src.ml.classifiers import load_crop_classifier
 from src.readers import read_zone, read_zones
 from src.readers.image_zone import attach_zone_images
@@ -48,6 +50,7 @@ from src.rules import review_items
 from src.template import Template
 from src.utils.image import ImageUtils
 from src.utils.parsing import (
+    Settings,
     describe_groups,
     get_concatenated_response,
     group_review_items,
@@ -83,6 +86,8 @@ class ScanResult:
     scoring: dict = field(default_factory=dict)
     # Groups with groupOptions: per-column states (src/utils/parsing.py)
     groups: dict = field(default_factory=dict)
+    # Image quality measures (src/quality.py)
+    quality: Optional[dict] = None
     # Images are kept out of to_dict(); callers decide whether to persist them
     aligned_image: Optional[np.ndarray] = None
     marked_image: Optional[np.ndarray] = None
@@ -110,6 +115,8 @@ class ScanResult:
         }
         if self.geometry is not None:
             out["geometry"] = self.geometry
+        if self.quality is not None:
+            out["quality"] = self.quality
         return out
 
 
@@ -145,7 +152,7 @@ class OMREngine:
         tuning_config["outputs"]["save_image_level"] = 0
         for section, values in (config_overrides or {}).items():
             tuning_config.setdefault(section, {}).update(values)
-        self.tuning_config = DotMap(tuning_config, _dynamic=False)
+        self.tuning_config = Settings(tuning_config, _dynamic=False)
 
         self.template = Template(
             template_path, self.tuning_config, overrides=template_overrides
@@ -171,6 +178,7 @@ class OMREngine:
         self.image_ops.bubble_classifier = load_crop_classifier(
             resolve_path(template_dir, bubble_model_path or ml_params.bubble_model_path)
         )
+        self.image_ops.model_decides = ml_params.get("bubble_model_role") == "decide"
         self.zone_engines = {
             "icr": load_crop_classifier(
                 resolve_path(template_dir, icr_model_path or ml_params.icr_model_path)
@@ -199,6 +207,7 @@ class OMREngine:
         if image is None:
             return ScanResult(file_id, STATUS_ERROR, error="Image could not be read")
         recorder = GeometryRecorder(image.shape[1], image.shape[0])
+        source = image
         # Colour dropout; variants exist only for zones with their own setting
         print_source = None
         if image.ndim == 3:
@@ -238,7 +247,12 @@ class OMREngine:
 
         step = time.perf_counter()
         detailed = self.image_ops.read_omr_response_detailed(
-            self.template, aligned, file_id, save_dir=None, print_image=print_aligned
+            self.template,
+            aligned,
+            file_id,
+            save_dir=None,
+            print_image=print_aligned,
+            draw_marked=keep_images,
         )
         timings["bubbles"] = _elapsed_ms(step)
         geometry = recorder.build(self.template.page_dimensions, self._block_geometry())
@@ -290,7 +304,12 @@ class OMREngine:
         review = review_items(fields, zones, rule_review)
         review.extend(group_review_items(groups, review))
         review.extend(self._sheet_review(fields))
+        review.extend(detailed.get("sheet_review") or [])
         review.extend(recorder.info.get("review") or [])
+        quality = measure_quality(
+            source, geometry, min(self.template.bubble_dimensions or [0])
+        )
+        review.extend(quality_review(quality, self.tuning_config.review_params))
         timings["total"] = _elapsed_ms(started)
         return ScanResult(
             file_id=file_id,
@@ -307,6 +326,7 @@ class OMREngine:
             thresholds=detailed["thresholds"],
             timings_ms=timings,
             geometry=geometry,
+            quality=quality,
             aligned_image=aligned_image if keep_images else None,
             marked_image=detailed["final_marked"] if keep_images else None,
             print_image=detailed.get("print_image") if keep_images else None,
@@ -317,6 +337,9 @@ class OMREngine:
         """A print-kept copy is worth making: blocks are fitted and dropout is on."""
         if self.template.color_dropout.mode == "grey":
             return False
+        if self.tuning_config.review_params.get("min_grid_fit", 0):
+            # The registration check needs the printed bubble outlines
+            return True
         option = self.image_ops.alignment_option
         if option(self.template, "rectify_on_border", False) or option(
             self.template, "block_perspective", False
@@ -381,7 +404,7 @@ class OMREngine:
             }
         ]
 
-    def load_images(self, file_path, pdf_params=None):
+    def load_images(self, file_path, pdf_params=None, data=None):
         """
         [(name, image)] of an image file or the selected pages of a PDF.
 
@@ -393,15 +416,18 @@ class OMREngine:
         if overrides:
             values = config.toDict()
             values["pdf_params"] = {**values.get("pdf_params", {}), **overrides}
-            config = DotMap(values, _dynamic=False)
+            config = Settings(values, _dynamic=False)
         return ImageUtils.load_omr_image(
-            Path(file_path), config, color=self.needs_color
+            Path(file_path), config, color=self.needs_color, data=data
         )
 
-    def scan_path(self, file_path, keep_images=True, pdf_params=None):
-        """Read an image or every selected page of a PDF; returns a list of results."""
+    def scan_path(self, file_path, keep_images=True, pdf_params=None, data=None):
+        """
+        Read an image or every selected page of a PDF; returns a list of results.
+        data: the file's bytes when already read (file_path then names it).
+        """
         file_path = Path(file_path)
-        images = self.load_images(file_path, pdf_params)
+        images = self.load_images(file_path, pdf_params, data)
         if not images:
             return [
                 ScanResult(file_path.name, STATUS_ERROR, error="File could not be read")
