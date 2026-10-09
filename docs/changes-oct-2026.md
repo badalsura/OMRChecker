@@ -244,6 +244,9 @@ this station.
   - The Exam / olympiad field sends `batch` with each upload, so all sheets
     of one exam land in one job. Review, Results, CSV export and cleanup then
     work per exam through the Job filters.
+  - With the field empty, each visit to the page gets its own new job,
+    named "Camera" plus the date and time. Sheets dropped on the Scan tab
+    likewise go into one new "Uploads <date time>" job per visit.
   - **Source label for the exam** sets the job's label; the default is
     "camera / single uploads".
   - **Sheet name** renames the uploaded photo; empty keeps the photo's name.
