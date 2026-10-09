@@ -109,23 +109,45 @@ def models_complete():
     )
 
 
+PROBE = (
+    "import os, sys; print(sys.version_info[:2] >= (3, 9) and sys.version_info[:2] <= (3, 12), "
+    "os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')))"
+)
+
+
 def newer_python():
-    """A Python >= 3.9 to run paddle2onnx: the py launcher, else python3 on PATH."""
+    """
+    A python.org Python 3.9-3.12 to run paddle2onnx (the py launcher, else
+    python3 / python on PATH). Anaconda Pythons are skipped: their own older
+    Visual C++ runtime DLLs make paddle2onnx fail with "DLL load failed ...
+    The specified procedure could not be found".
+    """
     candidates = []
     if shutil.which("py"):
-        candidates += [["py", f"-3.{minor}"] for minor in (12, 11, 10, 9)]
+        candidates += [["py", f"-3.{minor}"] for minor in (11, 12, 10, 9)]
     candidates += [["python3"], ["python"]]
     for command in candidates:
         try:
-            out = subprocess.run(
-                command + ["-c", "import sys; print(sys.version_info[:2] >= (3, 9))"],
-                capture_output=True, text=True, timeout=60,
-            )
+            out = subprocess.run(command + ["-c", PROBE], capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             continue
-        if out.returncode == 0 and out.stdout.strip() == "True":
+        if out.returncode == 0 and out.stdout.split() == ["True", "False"]:
             return command
     return None
+
+
+def venv_base_is_conda(venv):
+    """True if an existing venv was made from an Anaconda Python."""
+    try:
+        cfg = (venv / "pyvenv.cfg").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in cfg.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "home":
+            home = Path(value.strip())
+            return any((folder / "conda-meta").is_dir() for folder in (home, home.parent))
+    return False
 
 
 def ocr_models():
@@ -135,16 +157,26 @@ def ocr_models():
     python = newer_python()
     if python is None:
         fail(
-            "Converting the PaddleOCR models needs Python 3.9 or newer next to 3.8 "
-            "(paddle2onnx has no 3.8 wheels). Install Python 3.11 from python.org, "
+            "Converting the PaddleOCR models needs a python.org Python 3.9-3.12 next to 3.8 "
+            "(paddle2onnx has no 3.8 wheels, and it does not load under Anaconda). "
+            "Install Python 3.11 from https://www.python.org/downloads/ (tick 'py launcher'), "
             "or copy packaging\\tessdata, packaging\\models and packaging\\ocr_build.json "
-            "from a GitHub Actions build."
+            "from a GitHub Actions build (artifact 'ocr-models')."
         )
     venv = ROOT / "build" / "venv_models"
     exe = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if venv.is_dir() and (venv_base_is_conda(venv) or not exe.is_file()):
+        print(f"  recreating {venv} (it was made from Anaconda)")
+        shutil.rmtree(str(venv))
     if not exe.is_file():
         subprocess.check_call(python + ["-m", "venv", str(venv)])
     subprocess.check_call([str(exe), "-m", "pip", "install", "-q", "paddlepaddle", "paddle2onnx", "packaging"])
+    if subprocess.call([str(exe), "-c", "import paddle, paddle2onnx"]) != 0:
+        fail(
+            "paddle2onnx does not load in build\\venv_models (see the error above). Install the "
+            "latest Visual C++ x64 redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe) "
+            "and run the build again."
+        )
     subprocess.check_call([str(exe), str(HERE / "fetch_ocr_models.py")] + OCR_ARGS)
     if not models_complete():
         fail("the OCR models were not all fetched")
