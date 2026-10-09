@@ -143,7 +143,7 @@
       </div>
       <div id="liveWrap" class="hidden">
         <div class="live-view"><video id="video" playsinline muted></video><canvas id="liveOverlay"></canvas></div>
-        <div class="row" style="margin-top:8px"><button class="primary" id="grabBtn">Capture frame</button><button id="stopBtn">Stop camera</button>
+        <div class="row" style="margin-top:8px"><button class="primary" id="grabBtn">Capture</button><button id="stopBtn">Close camera</button>
           <label><input type="checkbox" id="autoCapture" checked> Auto-capture when steady</label>
           <label><input type="checkbox" id="showTemplate" checked> Show template</label></div>
         <div id="liveHint" class="muted" style="margin-top:4px">Point the camera at a sheet.</div>
@@ -424,19 +424,37 @@
     fetch("examples/sample-phone.jpg").then(function (r) { return r.blob(); }).then(function (b) { scanBlob(b, "sample-phone.jpg"); });
   });
 
+  // Both buttons open the in-page camera with the template overlay: "Take
+  // photo" captures on a tap, "Live camera" also captures by itself when the
+  // sheet is steady. The camera closes after the shot. Without camera access
+  // (plain http), "Take photo" falls back to the phone's own camera app.
+  function cameraAvailable() {
+    return !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  }
+  $("photo").addEventListener("click", function (e) {
+    if (!cameraAvailable()) return;
+    e.preventDefault();
+    openCamera(false);
+  });
   $("liveBtn").addEventListener("click", function () {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    if (!cameraAvailable()) {
       alert("Live camera needs HTTPS and a browser with camera access; use “Take photo” instead.");
       return;
     }
+    openCamera(true);
+  });
+  function openCamera(auto) {
+    $("autoCapture").checked = auto;
+    if (state.stream) { $("liveWrap").scrollIntoView({ block: "center" }); return; }
     navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false }).then(function (stream) {
       state.stream = stream;
       $("video").srcObject = stream;
       $("video").play();
       $("liveWrap").classList.remove("hidden");
+      $("liveWrap").scrollIntoView({ block: "center" });
       startPreview();
     }).catch(function (e) { alert("Camera unavailable: " + e.message); });
-  });
+  }
   function stopCamera() {
     if (state.stream) state.stream.getTracks().forEach(function (t) { t.stop(); });
     state.stream = null;
@@ -450,7 +468,9 @@
     var c = document.createElement("canvas");
     c.width = v.videoWidth; c.height = v.videoHeight;
     c.getContext("2d").drawImage(v, 0, 0);
+    stopCamera();
     c.toBlob(function (blob) { scanBlob(blob, "camera-" + new Date().toISOString().replace(/[:.]/g, "-") + ".jpg"); }, "image/jpeg", 0.92);
+    $("resultCard").scrollIntoView({ block: "start" });
   }
   $("grabBtn").addEventListener("click", grabFrame);
 
