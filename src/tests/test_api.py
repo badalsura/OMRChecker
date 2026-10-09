@@ -218,6 +218,12 @@ def test_review_queue(tmp_path, spec):
         assert client.get(item["crop_url"]).status_code == 200
         summary = client.get("/review/summary").json()
         assert summary["total"] == queue["total"]
+        assert {"flag": "multi_marked", "n": 1} in summary["by_flag"]
+        flagged = client.get("/review?flag=multi_marked").json()
+        assert [i["name"] for i in flagged["items"]] == ["q3"]
+        assert client.get("/review?flag=weak_mark").json()["total"] == 0
+        counts = client.get("/review/counts?flag=multi_marked").json()
+        assert counts["total"] == 1
 
         names = [i["name"] for i in result["review"]]
         response = client.post(

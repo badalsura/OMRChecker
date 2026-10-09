@@ -62,13 +62,15 @@
         <label class="field inline">Kind
           <select id="rv-kind"><option value="">All</option><option value="field">Bubble fields</option><option value="zone">Zones</option><option value="check">Cross-field checks</option><option value="custom_label">Custom labels</option><option value="sheet">Whole sheet</option></select>
         </label>
-        <label class="field inline">Job <input id="rv-job" placeholder="any" size="12"></label>
+        <label class="field inline">Job <select id="rv-job"><option value="">All</option></select></label>
+        <label class="field inline" title="Only items read with this flag">Flag <select id="rv-flag"><option value="">All</option></select></label>
         <label class="field inline">Scan <input id="rv-scan" placeholder="any" size="12"></label>
         <label class="field inline">Order
           <select id="rv-order"><option value="risk">Highest risk first</option><option value="oldest">Oldest first</option></select>
         </label>
         <label class="field inline"><input type="checkbox" id="rv-wide"> Wide context</label>
-        <label class="field inline" title="Show the same field from many sheets as a grid of crops and accept the right ones together"><input type="checkbox" id="rv-grid"> Grid of one field</label>
+        <label class="field inline" title="Show many crops as a grid and accept the right ones together"><input type="checkbox" id="rv-grid"> Grid</label>
+        <label class="field inline" title="Grid of one field from many sheets, or of every item that has the same flag">by <select id="rv-grid-by"><option value="field">field</option><option value="flag">flag</option></select></label>
         <button id="rv-load" class="primary">Reload queue</button>
         <button id="rv-accept-bulk" class="ghost" title="Accept every pending item under these filters with the value the engine read. Nothing is deleted; who and when is recorded.">Accept all as read…</button>
         <span class="spacer"></span>

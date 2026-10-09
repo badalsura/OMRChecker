@@ -759,6 +759,9 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             pattern="^(oldest|risk)$",
             description="risk: whole-sheet and check items before single fields",
         ),
+        flag: Optional[str] = Query(
+            None, description="Only items read with this flag (e.g. weak_mark)"
+        ),
     ):
         # A little before the query, so an item committed meanwhile is not missed
         now = time.time() - 2
@@ -772,6 +775,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             offset=offset,
             created_after=created_after,
             order=order,
+            flag=flag,
         )
         results, items = {}, []
         for row in rows:
@@ -889,7 +893,29 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     @app.get("/review/summary", tags=["review"], dependencies=secured)
     def review_summary(template_id: Optional[str] = None, job_id: Optional[str] = None):
         names = ctx.index.pending_review_names(template_id=template_id, job_id=job_id)
-        return {"by_name": names, "total": sum(row["n"] for row in names)}
+        return {
+            "by_name": names,
+            "by_flag": ctx.index.pending_review_flags(template_id, job_id),
+            "by_job": review_jobs(template_id),
+            "total": sum(row["n"] for row in names),
+        }
+
+    def review_jobs(template_id=None):
+        """Jobs with pending items, newest first, with their name and date."""
+        rows = ctx.index.pending_review_jobs(template_id)
+        out = []
+        for row in rows:
+            job = ctx.jobs.get(row["job_id"]) if row["job_id"] else None
+            out.append(
+                {
+                    "job_id": row["job_id"],
+                    "n": row["n"],
+                    "name": (job or {}).get("name") or "",
+                    "created_at": (job or {}).get("created_at"),
+                }
+            )
+        out.sort(key=lambda r: r["created_at"] or 0, reverse=True)
+        return out
 
     # ------------------------------------------------------------------
     # jobs

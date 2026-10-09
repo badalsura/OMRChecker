@@ -29,6 +29,9 @@ export function initReview() {
   document.getElementById("rv-template").addEventListener("change", refreshNames);
   document.getElementById("rv-wide").addEventListener("change", () => show());
   document.getElementById("rv-grid").addEventListener("change", () => show());
+  document.getElementById("rv-grid-by").addEventListener("change", () => show());
+  document.getElementById("rv-job").addEventListener("change", () => refreshNames().then(() => load()));
+  document.getElementById("rv-flag").addEventListener("change", () => load());
   document.getElementById("rv-order").addEventListener("change", () => load());
   // The queue loads when the tab opens (no "Load queue" press needed)
   document.querySelector('.tabs button[data-tab="review"]').addEventListener("click", () => {
@@ -45,7 +48,7 @@ export function initReview() {
     load();
   });
   on("review-job", (jobId) => {
-    document.getElementById("rv-job").value = jobId;
+    setChoice("rv-job", jobId);
     document.getElementById("rv-scan").value = "";
     document.querySelector('.tabs button[data-tab="review"]').click();
     load();
@@ -67,14 +70,50 @@ export async function refreshBadge() {
 
 async function refreshNames() {
   const select = document.getElementById("rv-name");
+  const params = new URLSearchParams();
   const template = document.getElementById("rv-template").value;
+  const job = document.getElementById("rv-job").value;
+  if (template) params.set("template_id", template);
+  if (job) params.set("job_id", job);
   const current = select.value;
   try {
-    const summary = await api(`/review/summary${template ? `?template_id=${encodeURIComponent(template)}` : ""}`);
+    const summary = await api(`/review/summary?${params}`);
     fillNames(summary.by_name, summary.total, current);
+    fillFlags(summary.by_flag || []);
+    fillJobs(summary.by_job || []);
   } catch (e) {
     /* ignore */
   }
+}
+
+// Select a value, adding it when the list does not have it (yet)
+function setChoice(id, value) {
+  const select = document.getElementById(id);
+  if (value && ![...select.options].some((o) => o.value === value)) select.append(el("option", { value }, value));
+  select.value = value || "";
+}
+
+function fillJobs(rows) {
+  const select = document.getElementById("rv-job");
+  const current = select.value;
+  select.innerHTML = "";
+  select.append(el("option", { value: "" }, "All"));
+  for (const row of rows) {
+    if (!row.job_id) continue;
+    const date = row.created_at ? new Date(row.created_at * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "";
+    const label = [row.name || row.job_id.slice(0, 8), date].filter(Boolean).join(" · ");
+    select.append(el("option", { value: row.job_id, title: row.job_id }, `${label} (${row.n})`));
+  }
+  setChoice("rv-job", current);
+}
+
+function fillFlags(rows) {
+  const select = document.getElementById("rv-flag");
+  const current = select.value;
+  select.innerHTML = "";
+  select.append(el("option", { value: "" }, "All"));
+  for (const row of rows) select.append(el("option", { value: row.flag }, `${row.flag} (${row.n})`));
+  setChoice("rv-flag", current);
 }
 
 function fillNames(rows, total, current) {
@@ -109,7 +148,10 @@ function refreshCounts(delay = 400) {
       const data = await api(`/review/counts?${filterParams()}`);
       q.total = data.total;
       q.doneAtCount = q.done;
-      if (document.getElementById("rv-template").value === (q.filters.template_id || "")) fillNames(data.by_name, data.all_names);
+      if (document.getElementById("rv-template").value === (q.filters.template_id || "")) {
+        fillNames(data.by_name, data.all_names);
+        if (data.by_flag) fillFlags(data.by_flag);
+      }
       updateProgress();
     } catch (e) {
       /* ignore */
@@ -199,6 +241,7 @@ function readFilters() {
     name: value("rv-name"),
     kind: value("rv-kind"),
     job_id: value("rv-job"),
+    flag: value("rv-flag"),
     scan_id: value("rv-scan"),
     order: value("rv-order"),
   };
@@ -484,10 +527,13 @@ function sendDecision(item, value, body) {
 // Batch by field: the same field from many sheets as a grid of crops; the
 // ticked ones are accepted as read together, the others open one by one
 function showGrid(main, item) {
+  // By flag: every pending item read with the chosen flag (or this item's first)
+  const flag = document.getElementById("rv-grid-by").value === "flag" ? q.filters.flag || (item.flags || [])[0] : null;
+  const matches = flag ? (it) => (it.flags || []).includes(flag) || (q.filters.flag === flag) : (it) => it.name === item.name;
   const same = [];
   for (let i = q.pos; i < q.buffer.length && same.length < 30; i++) {
     const it = q.buffer[i];
-    if (it.name === item.name && it.decided === undefined && !othersDone(it)) same.push([i, it]);
+    if (matches(it) && it.decided === undefined && !othersDone(it)) same.push([i, it]);
   }
   const ticks = new Map();
   const tiles = same.map(([index, it]) => {
@@ -502,6 +548,7 @@ function showGrid(main, item) {
         "div",
         { class: "row gap" },
         tick,
+        flag ? el("span", { class: "muted small" }, displayName(it.name)) : null,
         el("code", {}, it.value === "" || it.value === null || it.value === undefined ? "∅" : String(it.value)),
         el("span", { class: "spacer" }),
         el("button", { class: "small ghost", title: "Review this one on its own", onclick: () => { document.getElementById("rv-grid").checked = false; q.pos = index; show(); } }, "Open")
@@ -528,7 +575,7 @@ function showGrid(main, item) {
     el(
       "div",
       { class: "row gap" },
-      el("h3", {}, `${displayName(item.name)}: ${same.length} sheet(s)`),
+      el("h3", {}, flag ? `${flag}: ${same.length} item(s)` : `${displayName(item.name)}: ${same.length} sheet(s)`),
       el("span", { class: "muted small" }, "Untick any crop that read wrong, then accept the rest. Unticked crops stay in the queue."),
       el("span", { class: "spacer" }),
       el("button", { class: "primary", onclick: acceptTicked }, "Accept ticked")

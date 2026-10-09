@@ -476,6 +476,7 @@ class ScanIndex:
         created_after=None,
         created_before=None,
         order="oldest",
+        flag=None,
     ):
         where, params = self._filters(
             state="pending",
@@ -485,6 +486,13 @@ class ScanIndex:
             name=name,
             kind=kind,
         )
+        if flag:
+            # Items flagged this way when the sheet was read
+            where += (
+                " AND EXISTS (SELECT 1 FROM scan_flags f WHERE f.scan_id ="
+                " review_items.scan_id AND f.name = review_items.name AND f.flag = ?)"
+            )
+            params.append(flag)
         if created_after is not None:
             # Items queued since a client last looked (new sheets of a running job)
             where += " AND created_at > ?"
@@ -503,6 +511,27 @@ class ScanIndex:
             0
         ]["n"]
         return items, total
+
+    def pending_review_flags(self, template_id=None, job_id=None):
+        """Pending items per flag they were read with (an item can count under
+        several flags)."""
+        where, params = self._filters(
+            **{"r.state": "pending", "r.template_id": template_id, "r.job_id": job_id}
+        )
+        return self._query(
+            "SELECT f.flag AS flag, COUNT(*) AS n FROM review_items r JOIN scan_flags f"
+            f" ON f.scan_id = r.scan_id AND f.name = r.name {where}"
+            " GROUP BY f.flag ORDER BY n DESC",
+            params,
+        )
+
+    def pending_review_jobs(self, template_id=None):
+        where, params = self._filters(state="pending", template_id=template_id)
+        return self._query(
+            f"SELECT job_id, COUNT(*) AS n FROM review_items {where} "
+            "GROUP BY job_id ORDER BY n DESC",
+            params,
+        )
 
     def pending_review_names(self, template_id=None, job_id=None):
         where, params = self._filters(

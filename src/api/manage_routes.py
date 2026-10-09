@@ -54,6 +54,7 @@ class ReviewFilters(BaseModel):
     kind: Optional[str] = Field(
         None, pattern="^(field|zone|check|custom_label|sheet)$"
     )
+    flag: Optional[str] = None
 
 
 class AcceptBulkBody(ReviewFilters):
@@ -227,7 +228,7 @@ def register(app, ctx, secured):
     def filters_of(body):
         return {
             key: getattr(body, key)
-            for key in ("template_id", "job_id", "scan_id", "name", "kind")
+            for key in ("template_id", "job_id", "scan_id", "name", "kind", "flag")
             if getattr(body, key)
         }
 
@@ -243,6 +244,7 @@ def register(app, ctx, secured):
         since: Optional[float] = Query(
             None, description="Also count items queued after this server time"
         ),
+        flag: Optional[str] = None,
     ):
         """
         Pending items under the queue filters, per field/zone name (for the
@@ -255,6 +257,7 @@ def register(app, ctx, secured):
             "job_id": job_id,
             "scan_id": scan_id,
             "kind": kind,
+            "flag": flag,
         }
         _, total = ctx.index.pending_reviews(name=name, limit=1, **filters)
         where_names = ctx.index.pending_review_names(
@@ -269,6 +272,7 @@ def register(app, ctx, secured):
             "total": total,
             "by_name": where_names,
             "all_names": sum(row["n"] for row in where_names),
+            "by_flag": ctx.index.pending_review_flags(template_id, job_id),
             "new": new,
             "now": now,
         }
