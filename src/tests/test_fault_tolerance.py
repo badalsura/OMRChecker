@@ -110,7 +110,7 @@ def test_job_survives_reader_crash_and_rescans_errors(tmp_path, spec):
         assert response.status_code == 200 and response.json()["rescan_files"] == 1
         job = wait_for_job(client, job_id)
         assert job["state"] == "completed" and not job["counts"].get("error"), job
-        assert job["elapsed_s"] > first_elapsed
+        assert job["elapsed_s"] >= first_elapsed  # the rescan adds to it (rounded to 0.1 s)
         assert job["pages"] == 3  # replaced, not added
         result_files = list((tmp_path / "data" / "scans").rglob("result.json"))
         assert len(result_files) == 3
