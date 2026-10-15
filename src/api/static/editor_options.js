@@ -123,14 +123,14 @@ function numberInput(value, onchange, placeholder = "", step = "any") {
 }
 
 // ------------------------------------------------------------------ review thresholds
-function slider(label, value, fallback, { min = 0, max = 1, step = 0.01 }, onchange) {
+function slider(label, value, fallback, { min = 0, max = 1, step = 0.01 }, onchange, ctx = "review") {
   const shown = value ?? fallback;
   const range = el("input", { type: "range", min, max, step, value: shown });
   const num = el("input", { type: "number", min, max, step, value: shown, class: "slider-num" });
   range.addEventListener("input", () => (num.value = range.value));
   range.addEventListener("change", () => onchange(Number(range.value)));
   num.addEventListener("change", () => onchange(num.value === "" ? null : Number(num.value)));
-  return labeled(label, el("div", { class: "row gap slider" }, range, num, value === undefined ? el("span", { class: "muted small" }, "default") : null), "review");
+  return labeled(label, el("div", { class: "row gap slider" }, range, num, value === undefined ? el("span", { class: "muted small" }, "default") : null), ctx);
 }
 
 export function renderReviewParams(ed) {
@@ -363,6 +363,32 @@ export function renderModels(ed) {
       .catch(() => build([]));
   }
   return section(ed, "models", "Learned models", box);
+}
+
+// ------------------------------------------------------------------ fast pass (speed_params)
+const SPEED_DEFAULTS = { fast_pass: false, fast_scale: 0.5, fast_clear_empty: 0.25, fast_clear_marked: 0.6 };
+const FAST_SCALES = [[0.5, "Half size (recommended)"], [0.25, "Quarter size (fastest, small bubbles may not pass)"]];
+
+export function renderSpeedParams(ed) {
+  const config = ed.configObject() || {};
+  const p = config.speed_params || {};
+  const set = (key, value) => ed.setConfig("speed_params", { [key]: value === SPEED_DEFAULTS[key] || value === null ? null : value });
+  const on = !!p.fast_pass;
+  const sliderIn = (label, key) => slider(label, p[key], SPEED_DEFAULTS[key], {}, (v) => set(key, v), "speed");
+  return section(
+    ed,
+    "speed",
+    `Fast pass${on ? " · on" : ""}`,
+    ticked("Fast first pass at reduced size", on, (v) => set("fast_pass", v), "speed"),
+    labeled("Fast pass size", select(FAST_SCALES, p.fast_scale ?? SPEED_DEFAULTS.fast_scale, (v) => set("fast_scale", Number(v))), "speed"),
+    sliderIn("Keep fast read when empty bubbles are at most", "fast_clear_empty"),
+    sliderIn("…and marked bubbles at least", "fast_clear_marked"),
+    el(
+      "div",
+      { class: "muted small" },
+      "Each sheet is first read at the reduced size; the result is kept only when nothing needs review and every bubble is clearly empty or clearly filled, otherwise the sheet is read again at full size. Works with timing-track templates (Exact and Smooth curve included) whose zones are barcodes or QR codes only."
+    )
+  );
 }
 
 export const PDF_DPI_CHOICES = [["auto", "auto (the PDF's own resolution)"], [150, "150"], [200, "200"], [300, "300"], [400, "400"], [600, "600"]];

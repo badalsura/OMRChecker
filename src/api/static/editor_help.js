@@ -110,6 +110,10 @@ export const HELP = {
   // models, pdf, language
   "ml:Bubble model": "Learned model that double-checks every bubble. Classical thresholding only when none.",
   "ml:Handwriting model": "Model that reads handwritten characters in ICR zones. Without one, ICR zones go to review.",
+  "speed:Fast first pass at reduced size": "Read every sheet at half (or quarter) size first. A clear-cut sheet keeps that read; any doubt (a flag, a bubble between empty and filled, a zone not read) re-reads it at full size, so results match a full read. Usually 2-3 times faster on clean batches. Off for templates with other alignment methods, block border fitting, OCR/handwriting/image zones or a bubble model.",
+  "speed:Fast pass size": "How much smaller the first read is. Half size is checked on real batches; quarter size is faster but small bubbles often fail the check and are re-read anyway.",
+  "speed:Keep fast read when empty bubbles are at most": "A fast read is kept only if every unmarked bubble is filled at most this much. Lower = stricter (more sheets re-read at full size).",
+  "speed:…and marked bubbles at least": "A fast read is kept only if every marked bubble is filled at least this much. Higher = stricter.",
   "pdf:PDF render DPI": "Resolution PDF pages are rendered at. Auto uses the PDF's own image resolution; 200–300 suits most scans.",
   "pdf:PDF pages": "Which pages of each PDF to read: 1, 2-4, 3- (to the end) or all.",
   "barcode:Decoders, in order": "Barcode decoders tried in order for every barcode zone.",

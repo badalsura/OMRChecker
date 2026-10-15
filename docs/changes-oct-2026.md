@@ -73,6 +73,10 @@ Contents:
   fit finding the most index points, then without shear, wins. Sheets with
   every index point found and no shear skip this. Also in the browser reader
   (shear only, it does not use index points).
+- **Fast pass works with "Bend to fit the marks"** (Exact and Smooth curve),
+  and has its own editor panel (Options › Fast pass). On 199 Jhansi sheets
+  with each mode, 163 were kept from the half-size read and all 163 matched
+  the full read.
 - **`nonRigid: "tracks"` lands every mark on its template place.** It also
   corrects side to side: a vertical track's marks drifting left or right are
   followed when there is no horizontal track (and the other way round). The

@@ -22,6 +22,7 @@ sections that contain all the words you type, for example `double mark`,
 | Tune how dark a mark must be, double marks, light pencil | 5. → Review thresholds |
 | Answer keys, marks, negative marking | 5. → Scoring |
 | Pink or red printed sheets | 5. → Colours |
+| Read big batches faster | 5. → Fast pass |
 
 ## 1. Getting started: install, launcher, accounts, remote access, branding
 
@@ -214,7 +215,7 @@ Bulk mode reads every image and PDF in a folder with one template, writes the re
 
 **What you get:** `results.csv` (one row per sheet: file, status, score, the fields needing review, then one column per answer) and `results.jsonl` (the full details). Rows are written as soon as each sheet is read, so a stopped run loses nothing. Rows with status `needs_review` or `error`, or a non-empty `needs_review` column, should be checked by hand. To use the review screens, scan the same folder as a job in the app instead.
 
-**Fast pass (test mode):** a configuration file with `"speed_params": {"fast_pass": true}` makes each sheet first be read at half size; a sheet is kept from that quick read only when every bubble is clearly empty or clearly filled and nothing needs review, otherwise it is read again normally. It saves time on clean timing-mark sheets. It is off by default and only set in `config.json`; pass that file with `--config`. Templates that use OCR, handwriting, image zones, border fitting or other advanced steps are always read at full size.
+**Fast pass (test mode):** a configuration file with `"speed_params": {"fast_pass": true}` makes each sheet first be read at half size; a sheet is kept from that quick read only when every bubble is clearly empty or clearly filled and nothing needs review, otherwise it is read again normally. It saves time on clean timing-mark sheets. It is off by default; switch it on in the template editor (**Options › Fast pass**), or for a command-line run pass a config.json that turns it on with `--config`. Templates that use OCR, handwriting, image zones, border fitting or other advanced steps are always read at full size.
 
 ##### How to run a bulk read from the command line
 
@@ -1930,6 +1931,7 @@ A few words used throughout:
 | **Page** panel › **Cross-field checks** | The list of checks, **+ Add check** |
 | **Page** panel › **Options** › **Review thresholds** | Every review slider and the list of flags that send a field to review, with a fill histogram |
 | **Page** panel › **Options** › **Learned models** | **Bubble model** and **Handwriting model** |
+| **Page** panel › **Options** › **Fast pass** | The quick first read at reduced size and its two "clear-cut" limits |
 | **Page** panel › **Options** › **PDF input** | **PDF render DPI** and **PDF pages** |
 | **Page** panel › **Options** › **Barcode advanced** | Barcode decoders used by every barcode zone |
 | **Page** panel › **Options** › **Advanced (JSON)** | The raw config.json and evaluation.json boxes |
@@ -2094,7 +2096,7 @@ Example config.json with a few changes:
 {
   "threshold_params": { "MIN_JUMP": 20 },
   "review_params": { "min_marked_bubbles": 10, "min_contrast": 30 },
-  "speed_params": { "fast_pass": true }
+  "ml_params": { "bubble_model_role": "decide" }
 }
 ```
 
@@ -2105,16 +2107,27 @@ Example config.json with a few changes:
 | `review_params.min_sharpness`, `min_contrast`, `min_bubble_px` | 10, 40, 5 | Image-quality gate (above). |
 | `review_params.min_grid_fit` | 0 (off) | Registration check (above). |
 | `ml_params.bubble_model_role` | `second_opinion` | Learned bubble model role (above). |
-| `speed_params.fast_pass` | off | Test mode for speed: each sheet is first read at a smaller size, and that quick result is kept only when it is clear-cut; any other sheet is read again at full size. |
-| `speed_params.fast_scale` | 0.5 | Size of the quick read: 0.5 (half) or 0.25 (quarter). |
-| `speed_params.fast_clear_empty` | 0.25 | A quick read is kept only if every empty bubble is at most this full… |
-| `speed_params.fast_clear_marked` | 0.6 | …and every marked bubble is at least this full, nothing needs review and every zone was read. |
 | `dimensions.processing_width`, `processing_height` | 666, 820 | Internal processing size. Leave as is. |
 | `outputs.show_image_level`, `save_image_level`, `save_detections`, `filter_out_multimarked_files` | 0, 0, on, off | Debug images and old command-line output options. Leave as is. |
 
 Alignment fine-tuning (`alignment_params`), OCR (`ocr_params`) and other zone settings are described in the layout and zones section.
 
-**About the fast pass.** It only applies to templates aligned with timing tracks and without the features it cannot check at the small size: bending to fit the marks, fitting to printed borders, OCR, handwriting or image zones, a bubble model, the old auto-align option or the registration check. Those templates always read at full size. On 800 real sheets it kept 72% of quick reads with no answer differences and cut time per sheet by about a quarter. It is called a test mode because it is off by default: try it on a batch you have already read, compare the exports, and only then use it for live work. If you loosen `fast_clear_empty` or `fast_clear_marked` (bring them closer together), more doubtful sheets are kept from the quick read and accuracy can suffer.
+The fast pass settings (`speed_params`) moved to their own panel: see "Fast pass" below.
+
+---
+
+### Fast pass (Options › Fast pass)
+
+Reads each sheet at a smaller size first and keeps that quick read only when the sheet is clear-cut; every other sheet is read again at full size. The panel title shows "· on" when it is switched on.
+
+| Option | Key | Default | What it does |
+|---|---|---|---|
+| **Fast first pass at reduced size** | `speed_params.fast_pass` | off | Switches the quick first read on. |
+| **Fast pass size** | `speed_params.fast_scale` | Half size | Half size (checked on real batches) or Quarter size (fastest, but small bubbles often fail the check and are re-read anyway). |
+| **Keep fast read when empty bubbles are at most** | `speed_params.fast_clear_empty` | 0.25 | A quick read is kept only if every empty bubble is filled at most this much. Lower = stricter. |
+| **…and marked bubbles at least** | `speed_params.fast_clear_marked` | 0.6 | …and every marked bubble is filled at least this much, nothing needs review and every zone was read. Higher = stricter. |
+
+**About the fast pass.** It only applies to templates aligned with timing tracks (with or without **Bend to fit the marks**: Exact and Smooth curve both work) and without the features it cannot check at the small size: fitting to printed borders, OCR, handwriting or image zones, a bubble model, the old auto-align option or the registration check. Those templates always read at full size. On 800 real sheets it kept 72% of quick reads with no answer differences and cut time per sheet by about a quarter; on 199 Jhansi sheets with Exact and with Smooth curve it kept 163 quick reads, all identical to a full read. It is called a test mode because it is off by default: try it on a batch you have already read, compare the exports, and only then use it for live work. If you loosen `fast_clear_empty` or `fast_clear_marked` (bring them closer together), more doubtful sheets are kept from the quick read and accuracy can suffer.
 
 ---
 

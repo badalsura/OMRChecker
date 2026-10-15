@@ -341,3 +341,26 @@ def test_timing_marks_repair_a_track_paired_one_mark_off(tmp_path, spec):
 
     assert repaired is not fit
     assert np.allclose(repaired["homography"], true_fit["homography"], atol=1e-3)
+
+
+@pytest.mark.parametrize("non_rigid", ["tracks", True])
+def test_fast_pass_reads_non_rigid_templates(tmp_path, spec, non_rigid):
+    template = spec.to_template()
+    template["preProcessors"][0]["options"]["nonRigid"] = non_rigid
+    # The fast pass reads barcode and QR zones only
+    template["zones"] = {k: z for k, z in template.get("zones", {}).items() if z["type"] in ("barcode", "qrcode")}
+    path = tmp_path / "template.json"
+    path.write_text(json.dumps(template))
+    engine = OMREngine(path, config_overrides={"speed_params": {"fast_pass": True}})
+    assert engine.fast_engine is not None
+    rng = random.Random(5)
+    answers = random_answers(spec, rng)
+    image, _ = render_sheet(spec, answers, rng=rng)
+    captured, _ = augment(image, rng, rotation=1.5, perspective=0.01)
+    sheet = tmp_path / "sheet.jpg"
+    cv2.imwrite(str(sheet), captured, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+    result = engine.scan_path(sheet)[0]
+
+    assert result.read_pass in ("fast", "full")
+    assert field_errors(result, answers) == {}

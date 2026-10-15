@@ -17,8 +17,12 @@ How a fast read works:
   fast_clear_marked) and every zone was read. Coordinates in the accepted
   result are scaled back to full size, so overlays and re-renders line up.
 
+Non-rigid alignment ("Bend to fit the marks": Exact tracks or a smooth
+curve) runs at half size too: its correction is measured from the marks in
+the halved template, and the recorded geometry replays at full size.
+
 Templates with steps not checked at half size (other preprocessors,
-non-rigid alignment, block border fitting, OCR/ICR/image zones, a bubble
+block border fitting, OCR/ICR/image zones, a bubble
 model, auto_align) never use the fast pass.
 """
 
@@ -95,9 +99,6 @@ def unsupported_reason(template_json, tuning_config, engine):
     steps = template_json.get("preProcessors") or []
     if not steps or any(step.get("name") != "TimingMarkAlignment" for step in steps):
         return "only timing-mark templates are supported"
-    for step in steps:
-        if (step.get("options") or {}).get("nonRigid"):
-            return "non-rigid alignment"
     alignment = template_json.get("alignment") or {}
     if any(
         alignment.get(key)
