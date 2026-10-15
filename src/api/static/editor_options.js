@@ -16,7 +16,7 @@ export const PSM_CHOICES = [
 ];
 
 
-const REVIEW_DEFAULTS = { min_confidence: 0.35, min_marked_fill_ratio: 0.25, max_unmarked_fill_ratio: 0.6, confidence_margin: 20, min_marked_bubbles: 0 };
+const REVIEW_DEFAULTS = { min_confidence: 0.35, min_marked_fill_ratio: 0.25, max_unmarked_fill_ratio: 0.6, confidence_margin: 20, min_marked_bubbles: 0, keep_darker_gap: 0, strict_double_mark: 0 };
 const REVIEW_FLAGS = [
   ["multi_marked", "two or more bubbles marked"],
   ["empty", "nothing marked"],
@@ -26,6 +26,8 @@ const REVIEW_FLAGS = [
   ["possible_missed_mark", "possible missed mark"],
   ["model_disagrees", "bubble model disagrees"],
   ["rectify_failed", "printed border not found"],
+  ["kept_darker_mark", "double mark settled by darker bubble"],
+  ["faint_second_mark", "faint second mark"],
 ];
 const DEFAULT_REVIEW_FLAGS = ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees"];
 const BARCODE_ENGINES = ["zxing", "builtin", "opencv", "pyzbar"];
@@ -153,6 +155,8 @@ export function renderReviewParams(ed) {
     slider("Weak mark below", r.min_marked_fill_ratio, REVIEW_DEFAULTS.min_marked_fill_ratio, {}, (v) => set("min_marked_fill_ratio", v)),
     slider("Possible missed mark above", r.max_unmarked_fill_ratio, REVIEW_DEFAULTS.max_unmarked_fill_ratio, {}, (v) => set("max_unmarked_fill_ratio", v)),
     slider("Confidence margin", r.confidence_margin, REVIEW_DEFAULTS.confidence_margin, { min: 1, max: 80, step: 1 }, (v) => set("confidence_margin", v)),
+    slider("Keep darker mark when ahead by", r.keep_darker_gap, REVIEW_DEFAULTS.keep_darker_gap, {}, (v) => set("keep_darker_gap", v)),
+    slider("Strict double marks from", r.strict_double_mark, REVIEW_DEFAULTS.strict_double_mark, {}, (v) => set("strict_double_mark", v)),
     labeled("Min marked bubbles per sheet", numberInput(r.min_marked_bubbles, (v) => set("min_marked_bubbles", v === null ? null : Math.max(0, Math.round(v))), "0 = off", "1"), "review"),
     labeled("Flags that send a field to review", flagBox, "review")
   );

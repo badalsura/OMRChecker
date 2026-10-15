@@ -79,6 +79,9 @@ CONFIG_SCHEMA = {
                 },
                 # Sheet-level too_few_marks when fewer bubbles are marked; 0 = off
                 "min_marked_bubbles": {"type": "integer", "minimum": 0},
+                # Double-mark rules; 0 = off
+                "keep_darker_gap": {"type": "number", "minimum": 0, "maximum": 1},
+                "strict_double_mark": {"type": "number", "minimum": 0, "maximum": 1},
                 "review_flags": {
                     "type": "array",
                     "items": {
@@ -93,6 +96,8 @@ CONFIG_SCHEMA = {
                             "model_disagrees",
                             "rectify_failed",
                             "border_slide",
+                            "kept_darker_mark",
+                            "faint_second_mark",
                         ],
                     },
                 },

@@ -617,6 +617,10 @@ class ImageInstanceOps:
                             -1,
                         )
 
+                double_mark_flags = self.resolve_double_marks(
+                    field_block_bubbles, bubble_details, detected_bubbles, review_params
+                )
+
                 for bubble in detected_bubbles:
                     field_label, field_value = (
                         bubble.field_label,
@@ -642,7 +646,7 @@ class ImageInstanceOps:
                     len(detected_bubbles),
                     strip_low_confidence,
                     review_params,
-                    rectify_flags(field_block, rectify_failed),
+                    (rectify_flags(field_block, rectify_failed) or []) + double_mark_flags,
                 )
 
                 if config.outputs.show_image_level >= 5:
@@ -976,6 +980,46 @@ class ImageInstanceOps:
         return float(np.count_nonzero(inside < threshold)) / float(inside.size)
 
     @staticmethod
+    def resolve_double_marks(field_bubbles, bubble_details, detected_bubbles, params):
+        """Optional double-mark rules (review_params; 0 turns each off).
+
+        keep_darker_gap: when two or more bubbles are marked and the darkest
+        is filled this much more than the next, only the darkest counts
+        (flag kept_darker_mark).
+        strict_double_mark: when a bubble is marked, any other bubble filled
+        at least this much counts as marked too, so the field becomes
+        multi_marked (flag faint_second_mark). A field keep_darker_gap
+        settled is left as it is.
+
+        Updates bubble_details and detected_bubbles in place; returns flags.
+        """
+        flags = []
+        gap = params.get("keep_darker_gap", 0) or 0
+        strict = params.get("strict_double_mark", 0) or 0
+        if not detected_bubbles or not (gap or strict):
+            return flags
+        marked = [i for i, d in enumerate(bubble_details) if d["marked"]]
+        if gap and len(marked) > 1:
+            ranked = sorted(marked, key=lambda i: bubble_details[i]["fill_ratio"], reverse=True)
+            fills = [bubble_details[i]["fill_ratio"] for i in ranked]
+            if fills[0] - fills[1] >= gap:
+                for i in ranked[1:]:
+                    bubble_details[i]["marked"] = False
+                    bubble_details[i]["dropped_lighter_mark"] = True
+                marked = ranked[:1]
+                flags.append("kept_darker_mark")
+        if strict and not flags:
+            for i, detail in enumerate(bubble_details):
+                if not detail["marked"] and detail["fill_ratio"] >= strict:
+                    detail["marked"] = True
+                    detail["faint_second_mark"] = True
+                    marked.append(i)
+                    flags.append("faint_second_mark")
+        marked_set = set(marked)
+        detected_bubbles[:] = [b for i, b in enumerate(field_bubbles) if i in marked_set]
+        return flags
+
+    @staticmethod
     def summarize_field(
         field_label,
         value,
@@ -997,6 +1041,7 @@ class ImageInstanceOps:
                 flags.append("weak_mark")
             if (
                 not bubble["marked"]
+                and not bubble.get("dropped_lighter_mark")
                 and bubble["fill_ratio"] > params.max_unmarked_fill_ratio
             ):
                 flags.append("possible_missed_mark")

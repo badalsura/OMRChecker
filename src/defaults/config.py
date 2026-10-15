@@ -77,6 +77,12 @@ CONFIG_DEFAULTS = DotMap(
             # Flag the sheet (too_few_marks) when fewer bubbles are marked; 0 = off.
             # Catches pens the colour dropout removed along with the print
             "min_marked_bubbles": 0,
+            # Double marks (0 = off). keep_darker_gap: with two or more marked,
+            # keep only the darkest when its fill beats the next by this much.
+            # strict_double_mark: with one marked, any other bubble filled at
+            # least this much makes the field multi_marked
+            "keep_darker_gap": 0,
+            "strict_double_mark": 0,
             # Flags that send a field to the manual review queue
             "review_flags": [
                 "multi_marked",

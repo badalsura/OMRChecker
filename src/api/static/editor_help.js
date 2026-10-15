@@ -87,6 +87,8 @@ export const HELP = {
   "review:Weak mark below": "A marked bubble with less of its inside filled than this is a weak mark.",
   "review:Possible missed mark above": "An unmarked bubble with more of its inside filled than this may be a missed mark.",
   "review:Confidence margin": "Intensity distance from the threshold that counts as fully confident. Larger = stricter.",
+  "review:Keep darker mark when ahead by": "When two or more bubbles are marked and the darkest is filled this much more than the next, only the darkest counts (flag kept_darker_mark). 0 = off.",
+  "review:Strict double marks from": "When one bubble is marked, any other bubble filled at least this much also counts, so the question becomes a double mark (flag faint_second_mark). 0 = off; 0.30 suits pen dots and ticks.",
   "review:Min marked bubbles per sheet": "Flag the whole sheet when fewer bubbles are marked (catches pens removed by colour dropout). 0 = off.",
   "review:Flags that send a field to review": "Which problems put a field in the review queue. Unticked flags are still shown in the results.",
   // alignment
