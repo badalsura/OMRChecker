@@ -1212,6 +1212,28 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             name="browser",
         )
 
+    @app.get("/branding", tags=["meta"])
+    def branding():
+        """Product name and icon (branding/branding.json); open, for the sign-in page."""
+        from src.branding import icon_path, load_branding
+
+        brand = load_branding()
+        return {
+            "name": brand["name"],
+            "publisher": brand["publisher"],
+            "icon_url": "/branding/icon.png" if icon_path() else None,
+        }
+
+    @app.get("/branding/icon.png", include_in_schema=False)
+    @app.get("/favicon.ico", include_in_schema=False)
+    def branding_icon():
+        from src.branding import icon_path
+
+        path = icon_path()
+        if path is None:
+            raise HTTPException(404, "No icon")
+        return FileResponse(path, media_type="image/png")
+
     @app.get("/", include_in_schema=False)
     @app.get("/ui", include_in_schema=False)
     def gui():

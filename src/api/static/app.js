@@ -32,7 +32,22 @@ function showUser() {
   document.getElementById("user-btn").textContent = signedIn ? `👤 ${signedIn.display || signedIn.name}` : state.user ? `User: ${state.user}` : "User";
 }
 
+// Product name from branding/branding.json: tab title and every .brand-name
+async function applyBranding() {
+  try {
+    const response = await fetch("/branding");
+    if (!response.ok) return;
+    const brand = await response.json();
+    if (!brand.name) return;
+    document.title = brand.name;
+    for (const node of document.querySelectorAll(".brand-name")) node.textContent = brand.name;
+  } catch (error) {
+    // The name already in the page stays
+  }
+}
+
 async function init() {
+  applyBranding();
   for (const button of document.querySelectorAll(".tabs button")) {
     button.addEventListener("click", () => showTab(button.dataset.tab));
   }

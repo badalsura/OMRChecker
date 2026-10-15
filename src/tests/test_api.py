@@ -785,3 +785,13 @@ def test_single_uploads_grouped_by_exam(tmp_path, spec):
         assert client.patch(f"/jobs/{first['job_id']}", json={"label": "Phones"}).json()["label"] == "Phones"
         assert client.delete(f"/jobs/{first['job_id']}").status_code == 200
         assert client.get("/scans").json()["total"] == 1
+
+
+def test_branding_name_and_icon_are_open(tmp_path):
+    from src.branding import load_branding
+
+    with make_client(tmp_path) as client:
+        brand = client.get("/branding").json()
+        assert brand["name"] == load_branding()["name"]
+        icon = client.get(brand["icon_url"])
+        assert icon.status_code == 200 and icon.headers["content-type"] == "image/png"

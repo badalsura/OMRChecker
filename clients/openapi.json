@@ -5355,6 +5355,26 @@
           }
         }
       }
+    },
+    "/branding": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Branding",
+        "description": "Product name and icon (branding/branding.json); open, for the sign-in page.",
+        "operationId": "branding_branding_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

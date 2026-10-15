@@ -273,6 +273,16 @@ sent 76 pen dots or ticks to review; keep-darker never matched the answer key,
 which writes every double mark as `*`. Both apply to every bubble field, roll
 numbers included.
 
+## Name and icon: UNIC OMR Scanner
+
+The program is now called **UNIC OMR Scanner** and has its own icon (browser
+tab, app header, sign-in page, launcher window, exe, installer and its
+shortcuts). Both live in `branding/` (`branding.json` and `icon.png`); see
+"Name and icon (branding)" in `packaging/README.md` to change them.
+`GET /branding` returns the name for other front ends. The exe, install
+folder and data folder are still called `OMRChecker`, so existing results
+stay where they are.
+
 ## Failed sheets
 
 A sheet that failed to register can be fixed on the Results screen in two

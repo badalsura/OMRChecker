@@ -211,6 +211,25 @@ newer Windows; a Win7 VM is acceptable if no PC is available):
 - [ ] Note the Windows build, browser versions and any missing updates in the
       release notes.
 
+## Name and icon (branding)
+
+The product name and icon live in one folder, `branding/`:
+
+- `branding.json`: `name` (shown in the browser tab, the app header, the
+  sign-in page, the launcher window, the installer and its shortcuts) and
+  `publisher` (installer).
+- `icon.png`: the icon (square, 256 px or larger).
+
+To rebrand, edit `branding.json` and/or replace `icon.png`, then run
+`python packaging\apply_branding.py`. It writes `icon.ico` (exe, installer,
+shortcuts) and `branding.iss` (installer name); `build_windows.bat` runs it
+too. Running from source or with an already built exe, the new name and icon
+show after a restart without rebuilding (edit `branding\` next to
+`OMRChecker.exe` in the onedir build); the exe's own file icon and
+the installer need a rebuild. `apply_branding.py --draw` redraws the default
+icon. The exe, the install folder and the data folder keep the name
+`OMRChecker`, so a rename never moves anyone's results.
+
 ## Building
 
 Build on Windows (7 SP1, 10 or 11, x64) with **Python 3.8.10 x64**

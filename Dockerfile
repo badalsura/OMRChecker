@@ -34,6 +34,7 @@ COPY main.py ./
 COPY src ./src
 COPY samples ./samples
 COPY web/omr-browser ./web/omr-browser
+COPY branding ./branding
 
 # Optional learned models (bubble / ICR / PaddleOCR ONNX files): mount them at
 # /app/models (see docker-compose.yml) and point config.json ml_params at them.
