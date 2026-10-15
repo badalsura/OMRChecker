@@ -137,6 +137,16 @@ CONFIG_DEFAULTS = DotMap(
             # models are installed ("auto"), or always Tesseract ("tesseract")
             "icr_engine": "auto",
         },
+        "speed_params": {
+            # Test mode (src/fast_pass.py): read at half size first and re-read
+            # the normal way any sheet that is not clear-cut. Off by default
+            "fast_pass": False,
+            "fast_scale": 0.5,
+            # A fast read is kept only if every unmarked bubble is at most this
+            # full and every marked bubble at least fast_clear_marked full
+            "fast_clear_empty": 0.25,
+            "fast_clear_marked": 0.6,
+        },
         "outputs": {
             "show_image_level": 0,
             "save_image_level": 0,

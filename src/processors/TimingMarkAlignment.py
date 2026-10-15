@@ -422,8 +422,10 @@ class TimingMarkAlignment(ImagePreprocessor):
         turned = sized & (solidity <= 0.6)
         if turned.any():
             solidity = solidity.copy()
-            for index in np.flatnonzero(turned):
-                solidity[index] = _moment_solidity(labels, stats, centroids, index + 1)
+            indices = np.flatnonzero(turned)
+            solidity[indices] = _moment_solidities(
+                binary, labels, stats, centroids, indices + 1
+            )
         long_side = max(self.mark_w, self.mark_h) * scale
         keep = (
             sized
@@ -1019,6 +1021,34 @@ def _moment_solidity(labels, stats, centroids, label):
     sxy = np.bincount(bins, dx * dy, minlength=1)[0] / n
     det = max(sxx * syy - sxy * sxy, 1e-9)
     return np.float32(area / max(12.0 * np.sqrt(det), 1.0))
+
+
+def _moment_solidities(binary, labels, stats, centroids, label_ids):
+    """_moment_solidity for many components in one pass over the page: the same
+    sums in the same pixel order, so the same values, without a Python loop.
+    binary: the image the components were labelled from (non-zero = inside)."""
+    wanted = np.zeros(len(stats), dtype=bool)
+    wanted[label_ids] = True
+    points = cv2.findNonZero(binary)
+    if points is None:
+        return np.ones(len(label_ids), np.float32)
+    points = points.reshape(-1, 2)
+    xs, ys = points[:, 0], points[:, 1]
+    owner = labels[ys, xs]
+    keep = wanted[owner]
+    xs, ys, owner = xs[keep], ys[keep], owner[keep]
+    dx = xs - centroids[owner, 0]
+    dy = ys - centroids[owner, 1]
+    size = len(stats)
+    counts = np.bincount(owner, minlength=size).astype(np.float64)
+    n = np.maximum(counts, 1.0)
+    sxx = np.bincount(owner, dx * dx, minlength=size) / n
+    syy = np.bincount(owner, dy * dy, minlength=size) / n
+    sxy = np.bincount(owner, dx * dy, minlength=size) / n
+    det = np.maximum(sxx * syy - sxy * sxy, 1e-9)
+    area = stats[:, cv2.CC_STAT_AREA].astype(np.float64)
+    out = area / np.maximum(12.0 * np.sqrt(det), 1.0)
+    return out[label_ids].astype(np.float32)
 
 
 def _size_matches(found, expected, tolerance):

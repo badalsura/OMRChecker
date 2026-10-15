@@ -194,6 +194,16 @@ CONFIG_SCHEMA = {
                 },
             },
         },
+        "speed_params": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "fast_pass": {"type": "boolean"},
+                "fast_scale": {"enum": [0.5, 0.25]},
+                "fast_clear_empty": {"type": "number", "minimum": 0, "maximum": 1},
+                "fast_clear_marked": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+        },
         "outputs": {
             "type": "object",
             "additionalProperties": False,
