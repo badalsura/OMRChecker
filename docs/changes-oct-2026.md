@@ -123,6 +123,11 @@ Contents:
   ends the job. The readers are restarted, the sheets they had are read again
   one at a time, and the one that fails on its own is stored as an error. A
   job that still fails (the readers kept crashing) can be resumed.
+- **Time taken.** The Jobs table has a **Time** column (`elapsed_s` in the
+  job): the time spent reading, with the start-up of the reader processes
+  included and pauses left out; a resumed job adds to it. The live Sheets/s
+  counter uses the same clock and updates every second, also while the
+  readers are still starting.
 - **Rescan errors.** A button on the Jobs tab reads a job's error sheets
   again; sheets someone already reviewed are kept. Works on completed,
   paused, interrupted and failed jobs.

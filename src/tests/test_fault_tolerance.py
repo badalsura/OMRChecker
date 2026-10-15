@@ -100,6 +100,9 @@ def test_job_survives_reader_crash_and_rescans_errors(tmp_path, spec):
         job = wait_for_job(client, job_id)
         assert job["state"] == "completed", job["errors"]
         assert job["processed_files"] == 3
+        # Time taken includes the reader start-up and carries on across runs
+        assert job["elapsed_s"] > 0
+        first_elapsed = job["elapsed_s"]
         assert job["counts"].get("error") == 1 and job["pages"] == 3, job["counts"]
         # The crash is fixed: Rescan errors reads only that sheet again
         manager.task_fn = job_task
@@ -107,6 +110,7 @@ def test_job_survives_reader_crash_and_rescans_errors(tmp_path, spec):
         assert response.status_code == 200 and response.json()["rescan_files"] == 1
         job = wait_for_job(client, job_id)
         assert job["state"] == "completed" and not job["counts"].get("error"), job
+        assert job["elapsed_s"] > first_elapsed
         assert job["pages"] == 3  # replaced, not added
         result_files = list((tmp_path / "data" / "scans").rglob("result.json"))
         assert len(result_files) == 3

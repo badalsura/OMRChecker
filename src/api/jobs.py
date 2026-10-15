@@ -484,6 +484,11 @@ class JobManager:
         job["pages"] = sum(job["counts"].values())
 
     def _run(self, job):
+        # Clock for the job's time taken and live speed: starts before the
+        # template is loaded and the reader processes start, so their start-up
+        # counts; it adds to the time of earlier runs (resume)
+        run_started = time.time()
+        earlier_s = job.get("elapsed_s") or 0
         template_id = job["template_id"]
         template_dir = self.templates.path(template_id)
         if not (template_dir / "template.json").exists():
@@ -517,7 +522,7 @@ class JobManager:
             if seq not in done
         )
         workers = job["options"].get("workers") or self.settings.effective_workers
-        run_started, processed_now = time.time(), 0
+        processed_now = 0
         pending_rows, last_flush = [], time.time()
 
         def flush(force=False):
@@ -529,6 +534,7 @@ class JobManager:
                 pending_rows = []
             if force or time.time() - last_flush > 1:
                 elapsed = max(time.time() - run_started, 1e-6)
+                job["elapsed_s"] = round(earlier_s + elapsed, 1)
                 job["throughput_per_s"] = round(processed_now / elapsed, 2)
                 remaining = job["total_files"] - job["processed_files"]
                 rate = job["throughput_per_s"] or 0
@@ -620,6 +626,8 @@ class JobManager:
                     finished, _ = wait(
                         list(in_flight), timeout=1, return_when=FIRST_COMPLETED
                     )
+                    # Speed and time taken move on while the readers start up
+                    flush()
                     for future in finished:
                         task = in_flight.pop(future)
                         running_since.pop(future, None)

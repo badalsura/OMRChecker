@@ -119,6 +119,7 @@ export async function refreshJobs() {
         el("td", {}, counts.needs_review || 0),
         el("td", {}, counts.error || 0),
         el("td", {}, job.throughput_per_s ?? ""),
+        el("td", { title: "Time spent reading, start-up of the readers included (pauses not counted)" }, fmtDuration(job.elapsed_s)),
         el("td", {}, job.state === "running" ? fmtDuration(job.eta_s) : ""),
         el(
           "td",
@@ -143,7 +144,7 @@ export async function refreshJobs() {
       )
     );
   }
-  if (!data.jobs.length) body.append(el("tr", {}, el("td", { colspan: 10, class: "muted" }, "No jobs yet")));
+  if (!data.jobs.length) body.append(el("tr", {}, el("td", { colspan: 11, class: "muted" }, "No jobs yet")));
   if (active && document.getElementById("tab-jobs").classList.contains("active")) {
     pollTimer = setTimeout(refreshJobs, 1500);
   }
