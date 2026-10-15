@@ -14,6 +14,7 @@ const r = {
   data: null, // overlay payload of the open sheet
   image: null,
   preview: null, // {data, image} while a regrade preview is shown
+  place: null, // {scanId, targets, quad} while the page is being placed by hand
   view: { scale: 1, x: 0, y: 0 },
   overlay: true,
   selected: null, // field/zone name
@@ -246,6 +247,7 @@ function loadImage(src) {
 
 async function open(scanId, { keepView = false, quiet = false } = {}) {
   if (r.align && r.align.scanId !== scanId) r.align = null;
+  if (r.place && r.place.scanId !== scanId) r.place = null;
   r.busy = true;
   if (!quiet) statusLine.textContent = "Rendering…";
   r.preview = null;
@@ -579,9 +581,26 @@ function bindCanvas() {
       r.scan.box = { kind: p.pane.kind, x0: p.x, y0: p.y, x1: p.x, y1: p.y };
       return;
     }
+    if (r.place) {
+      const p = toImage(e.clientX, e.clientY);
+      const handle = p.pane.kind === "original" ? placeHandleAt(p) : null;
+      if (handle !== null) {
+        r.place.active = handle;
+        drag = { place: handle, start: p, quad: r.place.quad.map((q) => q.slice()), pane: p.pane };
+        return;
+      }
+    }
     drag = { x: e.clientX, y: e.clientY, vx: r.view.x, vy: r.view.y, moved: false };
   });
   window.addEventListener("mousemove", (e) => {
+    if (drag && drag.place !== undefined) {
+      const p = toImage(e.clientX, e.clientY, drag.pane);
+      const dx = p.x - drag.start.x;
+      const dy = p.y - drag.start.y;
+      r.place.quad = drag.quad.map(([x, y], i) => (drag.place === "move" || drag.place === i ? [x + dx, y + dy] : [x, y]));
+      draw();
+      return;
+    }
     if (drag && drag.scan) {
       const p = toImage(e.clientX, e.clientY, drag.pane);
       r.scan.box.x1 = p.x;
@@ -616,8 +635,10 @@ function bindCanvas() {
     const was = drag;
     drag = null;
     if (was && was.scan) return decodeBox();
+    if (was && was.place !== undefined) return;
     if (!was || was.moved || e.target !== canvas) return;
     if (r.align) return alignClick(toImage(e.clientX, e.clientY));
+    if (r.place) return;
     const hit = hitTest(toImage(e.clientX, e.clientY));
     if (!hit) return;
     if (hit.kind === "bubble") {
@@ -707,6 +728,10 @@ function drawPane(pane, dpr) {
     return;
   }
   if (r.align && pane.kind === "original") drawAlignClicks(px);
+  if (r.place && pane.kind === "original") {
+    drawPlacement(px);
+    return;
+  }
   if (pane.kind === "original" && r.borders) drawPageOutline(px);
   if (r.scan && r.scan.box && r.scan.box.kind === pane.kind) drawScanBox(r.scan.box, px);
   if (!r.data) return;
@@ -1036,7 +1061,8 @@ function renderSide() {
   side.append(el("div", { id: "res-view-notes" }));
   if (r.data.drift && r.data.drift.length) side.append(el("div", { class: "res-warning" }, `Re-reading now gives different values for: ${r.data.drift.join(", ")}`));
   if (d.error) side.append(el("div", { class: "res-warning error" }, d.error));
-  if (d.status === "error" && !r.preview) side.append(failedSheetBox(d));
+  if (r.place && r.place.scanId === d.scan_id && !r.preview) side.append(placementBox());
+  else if (d.status === "error" && !r.preview) side.append(failedSheetBox(d));
   if (r.preview) side.append(previewBox());
   for (const item of d.sheet_review || []) {
     const detail = item.marked_bubbles !== undefined ? ` (${item.marked_bubbles} marked, minimum ${item.min_marked_bubbles})` : "";
@@ -1134,6 +1160,7 @@ function onKey(e) {
   }
   const k = e.key;
   if (k === "Escape" && r.scan) return stopScan();
+  if (r.place && placeKey(e)) return e.preventDefault();
   if (k === "j" || k === "ArrowDown" || k === "ArrowRight") step(1);
   else if (k === "k" || k === "ArrowUp" || k === "ArrowLeft") step(-1);
   else if (k === "v" || (k === "Enter" && !e.target.matches("button"))) verify();
@@ -1248,6 +1275,7 @@ function failedSheetBox(d) {
       { class: "row gap wrap" },
       el("button", { class: "small primary", onclick: () => startAlign("corners") }, "Align by page corners"),
       el("button", { class: "small", onclick: () => startAlign("index") }, "Align by index points"),
+      el("button", { class: "small", onclick: () => startPlacement(d) }, "Place the page by hand"),
       el("button", { class: "small", onclick: () => typeValues(d) }, "Type values…"),
       r.align ? el("button", { class: "small ghost", onclick: () => { r.align = null; draw(); renderSide(); } }, "Cancel clicking") : null
     )
@@ -1335,6 +1363,213 @@ function drawAlignClicks(px) {
     ctx2d.stroke();
     label(r.align.names[i], x + 10 * px, y - 10 * px, px, COLORS.selected);
   });
+}
+
+// ---- placing the whole page by hand: the template's marks, index points and
+// bubbles are drawn over the original scan through 4 draggable page corners;
+// the sheet is then read again through that placement (manual-align, corners)
+const PLACE_HANDLE_PX = 14;
+
+function solveLinear(a, b) {
+  const n = b.length;
+  const m = a.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let pivot = c;
+    for (let i = c + 1; i < n; i++) if (Math.abs(m[i][c]) > Math.abs(m[pivot][c])) pivot = i;
+    if (Math.abs(m[pivot][c]) < 1e-12) return null;
+    [m[c], m[pivot]] = [m[pivot], m[c]];
+    for (let i = 0; i < n; i++) {
+      if (i === c) continue;
+      const f = m[i][c] / m[c][c];
+      for (let j = c; j <= n; j++) m[i][j] -= f * m[c][j];
+    }
+  }
+  return m.map((row, i) => row[n] / row[i]);
+}
+
+// 3x3 homography (row-major, 9 numbers) taking 4 src points onto 4 dst points
+function homography4(src, dst) {
+  const a = [];
+  const b = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i];
+    const [u, v] = dst[i];
+    a.push([x, y, 1, 0, 0, 0, -u * x, -u * y]);
+    b.push(u);
+    a.push([0, 0, 0, x, y, 1, -v * x, -v * y]);
+    b.push(v);
+  }
+  const h = solveLinear(a, b);
+  return h ? [...h, 1] : null;
+}
+
+function project(h, x, y) {
+  const w = h[6] * x + h[7] * y + h[8];
+  return [(h[0] * x + h[1] * y + h[2]) / w, (h[3] * x + h[4] * y + h[5]) / w];
+}
+
+function placeCorners() {
+  const [w, h] = r.place.targets.page_size;
+  return [
+    [0, 0],
+    [w - 1, 0],
+    [w - 1, h - 1],
+    [0, h - 1],
+  ];
+}
+
+async function startPlacement(d) {
+  try {
+    const targets = await api(`/scans/${d.scan_id}/manual-align`);
+    r.align = null;
+    if (r.mode !== "original") setViewOption("mode", "original");
+    await loadViews();
+    // A load started by the view switch is still running: wait for it
+    for (let i = 0; i < 300 && viewEntry("original") && viewEntry("original").loading; i++) await new Promise((done) => setTimeout(done, 100));
+    const entry = viewEntry("original");
+    if (!entry || !entry.meta) return toast("The original scan could not be loaded", "error", 5000);
+    const page = entry.meta.map && entry.meta.map.page;
+    const W = entry.meta.width;
+    const H = entry.meta.height;
+    const quad = page && page.length === 4 ? page.map((p) => p.slice()) : rectQuad(0, 0, W - 1, H - 1);
+    r.place = { scanId: d.scan_id, targets, quad, initial: quad.map((p) => p.slice()), active: null, busy: false };
+    toast("Drag the corners (or the centre) until the boxes sit on the printed marks, then Regrade", "", 6000);
+    renderSide();
+    draw();
+  } catch (error) {
+    toast(error.message, "error", 5000);
+  }
+}
+
+function placementBox() {
+  const p = r.place;
+  const turn = (steps) => {
+    // Which scan corner is the page's top-left: turns the page in 90° steps
+    p.quad = p.quad.map((_, i) => p.quad[(i + steps) % 4]);
+    draw();
+  };
+  return el(
+    "div",
+    { class: "res-failed" },
+    el("strong", {}, "Place the page by hand"),
+    el(
+      "p",
+      { class: "muted small" },
+      "Drag a corner circle to stretch, or the centre cross to move the whole page, until the red timing-mark boxes, blue index points and grey bubbles sit on the printed ones. Arrow keys nudge the selected corner (or the whole page) by 1 px, Shift by 10."
+    ),
+    el(
+      "div",
+      { class: "row gap wrap" },
+      el("button", { class: "small primary", disabled: p.busy || undefined, onclick: submitPlacement }, p.busy ? "Reading…" : "Regrade with this placement"),
+      el("button", { class: "small", onclick: () => turn(2) }, "Turn 180°"),
+      el("button", { class: "small", onclick: () => turn(1) }, "Turn 90°"),
+      el("button", { class: "small", onclick: () => { p.quad = p.initial.map((q) => q.slice()); draw(); } }, "Reset"),
+      el("button", { class: "small ghost", onclick: () => { r.place = null; renderSide(); draw(); } }, "Cancel")
+    )
+  );
+}
+
+async function submitPlacement() {
+  const p = r.place;
+  if (!p || p.busy) return;
+  p.busy = true;
+  renderSide();
+  try {
+    const points = p.quad.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10]);
+    const data = await api(`/scans/${p.scanId}/manual-align`, { method: "POST", json: { points, kind: "corners" } });
+    const changes = data && data.changes ? ` · ${data.changes.length} value(s) changed` : "";
+    toast(`Read again with the page placed by hand${changes}`, "ok");
+    r.place = null;
+    await open(p.scanId);
+    load(r.offset, true);
+    emit("review-changed");
+  } catch (error) {
+    p.busy = false;
+    toast(error.message, "error", 6000);
+    renderSide();
+  }
+}
+
+function placeHandleAt(p) {
+  const px = 1 / (r.view.scale * p.pane.k);
+  const near = (q) => Math.hypot(q[0] - p.x, q[1] - p.y) <= PLACE_HANDLE_PX * px;
+  const index = r.place.quad.findIndex(near);
+  if (index >= 0) return index;
+  return near(placeCentre()) ? "move" : null;
+}
+
+function placeCentre() {
+  const h = homography4(placeCorners(), r.place.quad);
+  const [w, hh] = r.place.targets.page_size;
+  return h ? project(h, w / 2, hh / 2) : r.place.quad[0];
+}
+
+function placeKey(e) {
+  const moves = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  if (e.key === "Escape") {
+    r.place = null;
+    renderSide();
+    draw();
+    return true;
+  }
+  const move = moves[e.key];
+  if (!move) return false;
+  const step = e.shiftKey ? 10 : 1;
+  const active = r.place.active;
+  r.place.quad = r.place.quad.map(([x, y], i) => (active === null || active === "move" || active === i ? [x + move[0] * step, y + move[1] * step] : [x, y]));
+  draw();
+  return true;
+}
+
+function drawPlacement(px) {
+  const p = r.place;
+  const h = homography4(placeCorners(), p.quad);
+  if (!h) return;
+  const t = p.targets;
+  const box = (x, y, w, hh) => path(rectQuad(x, y, w, hh).map(([a, b]) => project(h, a, b)));
+  ctx2d.lineWidth = 1 * px;
+  ctx2d.strokeStyle = "rgba(90, 98, 115, 0.8)";
+  for (const [x, y, w, hh] of t.bubbles || []) {
+    box(x, y, w, hh);
+    ctx2d.stroke();
+  }
+  const [mw, mh] = t.mark_size || [0, 0];
+  ctx2d.lineWidth = 2 * px;
+  ctx2d.strokeStyle = COLORS.selected;
+  for (const [x, y] of t.timing_marks || []) {
+    box(x - mw / 2, y - mh / 2, mw, mh);
+    ctx2d.stroke();
+  }
+  ctx2d.strokeStyle = "#1478dc";
+  for (const point of t.index_points || []) {
+    const [w, hh] = point.size || [16, 16];
+    box(point.center[0] - w / 2, point.center[1] - hh / 2, w, hh);
+    ctx2d.stroke();
+  }
+  // Page outline, corner handles and the centre cross
+  ctx2d.strokeStyle = "#1478dc";
+  ctx2d.setLineDash([10 * px, 6 * px]);
+  path(p.quad);
+  ctx2d.stroke();
+  ctx2d.setLineDash([]);
+  p.quad.forEach(([x, y], i) => {
+    ctx2d.fillStyle = p.active === i ? "rgba(208, 52, 44, 0.5)" : "rgba(20, 120, 220, 0.25)";
+    ctx2d.beginPath();
+    ctx2d.arc(x, y, PLACE_HANDLE_PX * px, 0, Math.PI * 2);
+    ctx2d.fill();
+    ctx2d.stroke();
+    label(CORNER_NAMES[i], x + 16 * px, y - 16 * px, px, "#1478dc");
+  });
+  const [cx, cy] = placeCentre();
+  const c = PLACE_HANDLE_PX * px;
+  ctx2d.strokeStyle = p.active === "move" ? COLORS.selected : "#1478dc";
+  ctx2d.lineWidth = 3 * px;
+  ctx2d.beginPath();
+  ctx2d.moveTo(cx - c, cy);
+  ctx2d.lineTo(cx + c, cy);
+  ctx2d.moveTo(cx, cy - c);
+  ctx2d.lineTo(cx, cy + c);
+  ctx2d.stroke();
 }
 
 async function typeValues(d) {
@@ -1569,7 +1804,23 @@ function showRegrade() {
       el("label", { class: "small" }, current, " use the current template version"),
       result
     ),
-    [el("button", { onclick: () => run(false) }, "Preview"), el("button", { class: "primary", onclick: () => run(true) }, "Apply")],
+    [
+      el(
+        "button",
+        {
+          class: "ghost",
+          title: "For a sheet read badly out of place: position the page over the template yourself and read it again",
+          onclick: () => {
+            const d = r.data;
+            dialog.close();
+            startPlacement(d);
+          },
+        },
+        "Place the page by hand…"
+      ),
+      el("button", { onclick: () => run(false) }, "Preview"),
+      el("button", { class: "primary", onclick: () => run(true) }, "Apply"),
+    ],
     { wide: true }
   );
 }

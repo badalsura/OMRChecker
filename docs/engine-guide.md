@@ -125,7 +125,12 @@ sheet if fewer than `minMatchedMarks` marks match or the mean residual exceeds
 phone lens distortion; `nonRigid: "tracks"` instead corrects each row and
 column from the timing marks themselves (a vertical track measures row
 offsets, a horizontal one column offsets, interpolated between opposite tracks
-and never extrapolated past their ends). `indexSeed: true` adds the index
+and never extrapolated past their ends; with tracks in one direction only,
+the same tracks also give the offset across them, so every matched mark lands
+on its template place). When index points are missing or the fit shears the
+page (more than 0.012), each track is re-paired up to one mark pitch either
+way and the fit finding the most index points, then without shear, is kept:
+a track paired one mark off otherwise reads one side of the sheet a row off. `indexSeed: true` adds the index
 points' own fit as a starting guess for the track search. `earlyStop` (on by default; `false` turns it off) stops trying
 orientations once one fits cleanly; 0 and 180 degrees are still both tried (the second with only its 3 unshifted guesses)
 unless the index points already decided.

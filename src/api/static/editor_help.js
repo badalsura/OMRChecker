@@ -96,7 +96,7 @@ export const HELP = {
   "align:Search radius": "How far (template px) a mark may sit from where the template expects it.",
   "align:Minimum matched marks": "Fewer matched timing marks than this rejects the sheet.",
   "align:Max leftover error": "Mean distance (template px) between the fitted and found marks above which the sheet is rejected.",
-  "align:Bend to fit the marks (nonRigid)": "Add a curve correction on top of the perspective fit, for curled paper.",
+  "align:Bend to fit the marks (nonRigid)": "Off: one perspective fit for the whole page. Exact: after that fit, the page is stretched so every timing mark lands on its template place, rows and side to side (good for scanners that feed unevenly). Smooth curve: a thin-plate correction for curled paper and phone photos.",
   "align:Detect sheets fed upside down": "Try 90/180/270° turns when the tracks don't match.",
   "align:Marker image": "Image of the corner marker, in the template folder.",
   "align:Marker width share": "Sheet width divided by marker width.",

@@ -62,6 +62,8 @@
     var TM_DEFAULT_SIZE_TOLERANCE = 0.5, TM_DEFAULT_MIN_MATCHED = 8, TM_DEFAULT_MAX_RESIDUAL = 3.0, TM_MIN_PAGE_AREA_FRACTION = 0.3, TPS_GRID_STEP = 16;
     // A fit matching this share of marks with none past the track ends is final
     var TM_GOOD_FIT_FRACTION = 0.95, TM_MIN_TILT_DEGREES = 0.3;
+    // Shear a real scan stays under; a track paired one mark off shears about 0.02
+    var TM_MAX_SHEAR = 0.012;
     // CropPage
     var MIN_PAGE_AREA_THRESHOLD = 80000, MAX_COSINE_THRESHOLD = 0.35, APPROX_POLY_EPSILON_FACTOR = 0.025;
 
@@ -1889,6 +1891,7 @@
       for (var r = 0; r < rotations.length; r++) {
         var fit = this.fitOrientation(corners, candidates, rotations[r]);
         if (!fit) continue;
+        fit = this.repairTrackSlides(fit, candidates);
         if (!best || fit.matched > best.matched || (fit.matched === best.matched && fit.residual < best.residual)) best = fit;
       }
       if (!best || best.matched < this.minMatched) {
@@ -2032,6 +2035,65 @@
         if (!best || fitKeyGreater(fit, best)) best = fit;
         if (fit.beyondEnds === 0 && fit.matched >= TM_GOOD_FIT_FRACTION * this.expected.length) break;
       }
+      return best;
+    };
+    // Shear of the homography's affine part, scale removed (_shear)
+    function homographyShear(H) {
+      var det = Math.abs(H[0] * H[4] - H[1] * H[3]) || 1;
+      return Math.abs(H[1] + H[3]) / Math.sqrt(det);
+    }
+    // One track paired with its neighbouring marks shears the fit; re-pair each
+    // track up to one pitch either way and keep a fit without shear
+    // (repair_track_slides; the port has no index points, so shear decides)
+    TimingMarkAlignment.prototype.repairTrackSlides = function (fit, candidates) {
+      var self = this;
+      var names = [];
+      this.tracks.forEach(function (m, t) {
+        if (m.length >= 3) names.push(t);
+      });
+      if (!names.length || homographyShear(fit.homography) <= TM_MAX_SHEAR) return fit;
+      var radius = this.searchRadius * this.pixelsPerUnit(fit.homography);
+      var pairs = this.match(fit.homography, candidates, radius * 0.5);
+      if (pairs.length < 4) return fit;
+      var owner = [];
+      this.tracks.forEach(function (m, t) {
+        for (var i = 0; i < m.length; i++) owner.push([t, i]);
+      });
+      if (fit.beyondEnds === undefined) fit.beyondEnds = this.marksBeyondTrackEnds(fit.homography, candidates, radius * 0.5);
+      var best = fit;
+      var combos = [[]];
+      names.forEach(function () {
+        var next = [];
+        combos.forEach(function (c) {
+          [-1, 0, 1].forEach(function (s) {
+            next.push(c.concat([s]));
+          });
+        });
+        combos = next;
+      });
+      combos.forEach(function (shifts, c) {
+        if (shifts.every(function (s) { return s === 0; })) return;
+        var shiftOf = {};
+        names.forEach(function (t, k) {
+          shiftOf[t] = shifts[k];
+        });
+        var tp = [], ip = [];
+        pairs.forEach(function (p) {
+          var o = owner[p[0]], marks = self.tracks[o[0]], moved = o[1] + (shiftOf[o[0]] || 0);
+          if (moved >= 0 && moved < marks.length) {
+            tp.push(marks[moved]);
+            ip.push(candidates[p[1]]);
+          }
+        });
+        if (tp.length < 4 || !spansTwoDimensions(tp)) return;
+        var start = findHomographyLS(tp, ip);
+        if (!start) return;
+        var cand = self.refine(start, candidates, radius, 4321 + c * 17);
+        if (!cand || cand.matched < fit.matched - 3 || homographyShear(cand.homography) > TM_MAX_SHEAR) return;
+        cand.rotation = fit.rotation;
+        cand.beyondEnds = self.marksBeyondTrackEnds(cand.homography, candidates, radius * 0.5);
+        if (best === fit || fitKeyGreater(cand, best)) best = cand;
+      });
       return best;
     };
     function fitKeyGreater(a, b) {

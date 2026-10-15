@@ -18,6 +18,8 @@ registration feature on machine-read forms. This preprocessor:
 6. warps the original-resolution image straight into template coordinates.
 """
 
+import itertools
+
 import cv2
 import numpy as np
 
@@ -45,6 +47,9 @@ TRACK_GRID_STEP = 48
 INDEX_POINT_WEIGHT = 4
 # Index points are looked for this far (template px) from where the fit puts them
 INDEX_SEARCH_UNITS = 10.0
+# Shear (|a01 + a10| of the scale-free affine part) a real scan stays under;
+# one track slid a mark pitch against the other shears the fit about 0.02
+MAX_SHEAR = 0.012
 REGION_NAMES = {
     (0, 0): "top-left",
     (0, 1): "top",
@@ -152,6 +157,7 @@ class TimingMarkAlignment(ImagePreprocessor):
                     continue
                 if self.index_points:
                     self.locate_index_points(image, fit)
+                fit = self.repair_track_slides(image, fit, candidates)
                 orientation_fits.append(fit)
                 if best is None or self._orientation_key(fit) > self._orientation_key(
                     best
@@ -278,6 +284,10 @@ class TimingMarkAlignment(ImagePreprocessor):
         candidates = getattr(self, "_candidates", None)
         if candidates is None or not len(candidates) or not len(self.expected):
             return []
+        if self.index_points and best.get("index_found", 0) == len(self.index_points):
+            # Every index point found where the fit puts it: they pin the
+            # pairing, a fit slid one pitch would miss them
+            return []
         homography = best["homography"]
         radius = self.search_radius * self._pixels_per_unit(homography) * 0.5
         best_key = self._slide_key(homography, candidates, radius)
@@ -294,6 +304,99 @@ class TimingMarkAlignment(ImagePreprocessor):
                     tied.append(name)
                     break
         return tied
+
+    def repair_track_slides(self, image, fit, candidates):
+        """
+        The fit with each track re-paired up to one mark pitch either way,
+        when the tracks or the index points say a track locked onto its
+        neighbouring marks.
+
+        Tracks are periodic: a page that is cut short, or fed a little
+        crooked, can let one track pair every mark with its neighbour while
+        the other track pairs correctly. A homography then shears the page
+        to fit both and every mark still matches, so the residual stays low
+        and the answers are read a row off on one side. The index points
+        (placed asymmetrically, not periodic) and the shear tell the fits
+        apart: of the re-paired fits, the one finding the most index points,
+        then without shear, then matching the most marks wins.
+        """
+        names = [n for n, m in self.tracks.items() if len(m) >= 3]
+        found_all = not self.index_points or fit.get("index_found", 0) == len(
+            self.index_points
+        )
+        if not names or (found_all and _shear(fit["homography"]) <= MAX_SHEAR):
+            return fit
+        radius = self.search_radius * self._pixels_per_unit(fit["homography"])
+        pairs = self.match(fit["homography"], candidates, radius * 0.5)
+        if len(pairs) < 4:
+            return fit
+        # Expected-mark index -> (track, position along it)
+        owner = []
+        for name, marks in self.tracks.items():
+            owner.extend((name, i) for i in range(len(marks)))
+        fit.setdefault(
+            "beyond_ends",
+            self._marks_beyond_track_ends(fit["homography"], candidates, radius * 0.5),
+        )
+        best, best_key = fit, self._repair_key(fit)
+        baseline = best_key[:2]
+        seen = [fit["homography"]]
+        for shifts in itertools.product((-1, 0, 1), repeat=len(names)):
+            if not any(shifts):
+                continue
+            shift_of = dict(zip(names, shifts))
+            template_pts, image_pts = [], []
+            for expected_index, candidate_index in pairs:
+                name, position = owner[expected_index]
+                marks = self.tracks[name]
+                moved = position + shift_of.get(name, 0)
+                if 0 <= moved < len(marks):
+                    template_pts.append(marks[moved])
+                    image_pts.append(candidates[candidate_index])
+            if len(template_pts) < 4:
+                continue
+            template_pts = np.float32(template_pts)
+            if not self._spans_two_dimensions(template_pts):
+                continue
+            start, _ = cv2.findHomography(template_pts, np.float32(image_pts), 0)
+            if start is None or not _well_conditioned(start):
+                continue
+            candidate_fit = self._refine(start, candidates, radius)
+            if candidate_fit is None or any(
+                np.allclose(candidate_fit["homography"], h, atol=1e-3) for h in seen
+            ):
+                continue
+            seen.append(candidate_fit["homography"])
+            candidate_fit["rotation"] = fit["rotation"]
+            candidate_fit["beyond_ends"] = self._marks_beyond_track_ends(
+                candidate_fit["homography"], candidates, radius * 0.5
+            )
+            if self.index_points:
+                self.locate_index_points(image, candidate_fit)
+            key = self._repair_key(candidate_fit)
+            # A re-paired fit losing many marks is a different layout, not a
+            # repair; one that only matches a little better is no evidence
+            if candidate_fit["matched"] < fit["matched"] - 3 or key[:2] <= baseline:
+                continue
+            if key > best_key:
+                best, best_key = candidate_fit, key
+        if best is not fit:
+            logger.info(
+                f"Timing marks re-paired: index points {fit.get('index_found', 0)} -> "
+                f"{best.get('index_found', 0)}, shear {_shear(fit['homography']):.3f} -> "
+                f"{_shear(best['homography']):.3f}"
+            )
+            best["repaired"] = True
+        return best
+
+    @staticmethod
+    def _repair_key(fit):
+        return (
+            fit.get("index_found", 0),
+            _shear(fit["homography"]) <= MAX_SHEAR,
+            fit["matched"] - 2 * fit.get("beyond_ends", 0),
+            -fit["residual"],
+        )
 
     def _slide_key(self, homography, candidates, radius):
         matched = len(self.match(homography, candidates, radius))
@@ -655,7 +758,10 @@ class TimingMarkAlignment(ImagePreprocessor):
         (nonRigid: "tracks"). A vertical track measures each row's offset, a
         horizontal track each column's; with tracks on both sides the offset
         is interpolated across the page. Offsets are held, never extrapolated,
-        past a track's ends; a direction without a track keeps the homography.
+        past a track's ends. A track also measures the offset across itself
+        (a vertical track's marks drifting left or right), which is used when
+        no track runs the other way, so every matched mark lands on its
+        template position.
         """
         page_w, page_h = int(self.page_dimensions[0]), int(self.page_dimensions[1])
         template_pts = np.asarray(fit.get("template_pts", []), np.float64)
@@ -670,7 +776,8 @@ class TimingMarkAlignment(ImagePreprocessor):
         step = TRACK_GRID_STEP
         gx = np.arange(0, page_w + step, step, dtype=np.float64)
         gy = np.arange(0, page_h + step, step, dtype=np.float64)
-        rows, cols = [], []  # (position across, coords along, offsets along)
+        # (position across, coords along, offsets along, offsets across)
+        rows, cols = [], []
         for marks in self.tracks.values():
             if len(marks) < 2:
                 continue
@@ -682,25 +789,36 @@ class TimingMarkAlignment(ImagePreprocessor):
             vertical = np.ptp(marks[:, 1]) >= np.ptp(marks[:, 0])
             if vertical:
                 order = np.argsort(pts[:, 1])
-                rows.append((float(np.median(pts[:, 0])), pts[order, 1], offs[order, 1]))
+                rows.append(
+                    (float(np.median(pts[:, 0])), pts[order, 1], offs[order, 1], offs[order, 0])
+                )
             else:
                 order = np.argsort(pts[:, 0])
-                cols.append((float(np.median(pts[:, 1])), pts[order, 0], offs[order, 0]))
+                cols.append(
+                    (float(np.median(pts[:, 1])), pts[order, 0], offs[order, 0], offs[order, 1])
+                )
 
-        def blend(rulers, along, across):
+        def blend(rulers, along, across, which=2):
             """Offsets on the grid: each ruler interpolated along itself, then
             across between the outermost two rulers (clamped, no extrapolation)."""
             rulers = sorted(rulers, key=lambda r: r[0])
             first, last = rulers[0], rulers[-1]
-            a = np.interp(along, first[1], first[2])
+            a = np.interp(along, first[1], first[which])
             if len(rulers) == 1 or last[0] - first[0] < 1:
                 return np.repeat(a[:, None], len(across), axis=1)
-            b = np.interp(along, last[1], last[2])
+            b = np.interp(along, last[1], last[which])
             t = np.clip((across - first[0]) / (last[0] - first[0]), 0.0, 1.0)
             return a[:, None] * (1 - t[None]) + b[:, None] * t[None]
 
-        dy = blend(rows, gy, gx) if rows else np.zeros((len(gy), len(gx)))
-        dx = blend(cols, gx, gy).T if cols else np.zeros((len(gy), len(gx)))
+        zeros = np.zeros((len(gy), len(gx)))
+        if rows:
+            dy = blend(rows, gy, gx)
+        else:
+            dy = blend(cols, gx, gy, which=3).T if cols else zeros
+        if cols:
+            dx = blend(cols, gx, gy).T
+        else:
+            dx = blend(rows, gy, gx, which=3) if rows else zeros
         grid = {
             "grid": {"dx": np.round(dx, 2).tolist(), "dy": np.round(dy, 2).tolist()},
             "grid_step": step,
@@ -993,6 +1111,13 @@ class TimingMarkAlignment(ImagePreprocessor):
             "left": round(float(max(0.0, -mapped[:, 0].min())), 1),
             "right": round(float(max(0.0, mapped[:, 0].max() - (page_w - 1))), 1),
         }
+
+
+def _shear(homography):
+    """Shear of the homography's affine part, scale removed (0 for a rotation)."""
+    affine = np.asarray(homography, np.float64)[:2, :2]
+    scale = np.sqrt(abs(np.linalg.det(affine))) or 1.0
+    return float(abs(affine[0, 1] + affine[1, 0]) / scale)
 
 
 def _well_conditioned(homography, max_condition=1e8):

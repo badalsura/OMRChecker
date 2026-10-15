@@ -19,19 +19,40 @@ from src.api.storage import is_corrected
 
 
 def align_targets(service, result):
-    """Page size and the template's index points, for the click prompts."""
+    """
+    Page size, the template's index points (for the click prompts) and its
+    layout in template pixels (to place the page by hand): timing marks as
+    [x, y] centres with their size, bubbles as [x, y, w, h].
+    """
     with service.engines.engine(result) as (engine, _):
         template = engine.template
         width, height = (int(v) for v in template.page_dimensions)
-        points = []
+        points, marks, mark_size = [], [], None
         for step in template.pre_processors:
             for point in getattr(step, "index_points", None) or []:
                 points.append(
-                    {"name": point["name"], "center": [float(v) for v in point["center"]]}
+                    {
+                        "name": point["name"],
+                        "center": [float(v) for v in point["center"]],
+                        "size": [float(v) for v in point["size"]],
+                    }
                 )
+            for track in (getattr(step, "tracks", None) or {}).values():
+                marks.extend([float(x), float(y)] for x, y in track)
+            if getattr(step, "tracks", None):
+                mark_size = [float(step.mark_w), float(step.mark_h)]
+        bubbles = []
+        for block in template.field_blocks:
+            bw, bh = (float(v) for v in block.bubble_dimensions)
+            for field_bubbles in block.traverse_bubbles:
+                # Printed positions (no per-sheet shift: that comes from a read)
+                bubbles.extend([float(b.x), float(b.y), bw, bh] for b in field_bubbles)
     return {
         "page_size": [width, height],
         "index_points": points,
+        "timing_marks": marks,
+        "mark_size": mark_size,
+        "bubbles": bubbles,
         "output_columns": service.template_info(result)["output_columns"],
     }
 

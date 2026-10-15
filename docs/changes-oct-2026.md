@@ -62,6 +62,23 @@ Contents:
   `timingMarks.indexSeed` uses the index points for the first guess;
   `nonRigid: "tracks"` corrects along the timing-track grid. Both are stored
   and replayed exactly.
+- **A track paired one mark off is repaired.** Timing tracks repeat, so on
+  a sheet cut short or fed unevenly one track could pair every mark with its
+  neighbour while the other paired correctly. The fit then sheared the page,
+  every mark still matched with a low residual, and one side of the sheet was
+  read a row off (on the "Jhansi Mid Test Fast Run" job: 35 of 6344 sheets,
+  20 of them with no registration flag; healthy sheets shear under 0.006,
+  these about 0.02). When index points are missing or the fit shears more
+  than 0.012, each track is now re-paired up to one mark either way and the
+  fit finding the most index points, then without shear, wins. Sheets with
+  every index point found and no shear skip this. Also in the browser reader
+  (shear only, it does not use index points).
+- **`nonRigid: "tracks"` lands every mark on its template place.** It also
+  corrects side to side: a vertical track's marks drifting left or right are
+  followed when there is no horizontal track (and the other way round). The
+  template editor's "Bend to fit the marks" is now a choice: Off, Exact
+  (`"tracks"`), Smooth curve (`true`) or Curve when marks cover the page
+  (`"auto"`).
 - **Learned bubble model is a second opinion.** By default the threshold read
   decides; when the model disagrees, or sees an erased mark, the bubble goes
   to review (`ml_params.bubble_model_role`, `"decide"` to let the model
@@ -265,6 +282,14 @@ ways:
   original, then re-read.
 - **Type the values.** Enter them directly; the form is prefilled from what
   was read.
+- **Place the page by hand.** Also offered for any sheet from the Regrade
+  dialog ("Place the page by hand…"): the template's timing marks (red), index
+  points (blue) and bubbles (grey) are drawn over the original scan. Drag the
+  four corner circles to stretch, or the centre cross to move the whole page,
+  until they sit on the printed ones; arrow keys nudge by 1 px (Shift: 10),
+  "Turn 180°" / "Turn 90°" fix a sheet read the wrong way up. "Regrade with
+  this placement" reads the sheet again through it (the same call as
+  aligning by corners, so it is stored and replayed the same way).
 
 ## Duplicate sheets (primary key)
 
@@ -333,7 +358,7 @@ this station.
 | `POST /jobs/{id}/rescan-errors` | Read a job's error sheets again; returns `rescan_files` |
 | `PATCH /jobs/{id}` | Also takes `label` |
 | `POST /scans` | Takes `batch` (exam name, collects sheets in one job) and `batch_label`; returns `job_id` |
-| `GET/POST /scans/{id}/manual-align` | Align a failed sheet by clicked points |
+| `GET/POST /scans/{id}/manual-align` | Align a sheet by clicked points or a hand placement; GET also returns the template's `timing_marks`, `mark_size` and `bubbles` to draw |
 | `POST /scans/{id}/manual-values` | Type the values of a failed sheet |
 | `POST /scans/{id}/decode` | Decode a barcode/QR inside a box drawn on the sheet |
 | `POST /scans/{id}/regrade` | Template overrides may include `alignment.rotate` |

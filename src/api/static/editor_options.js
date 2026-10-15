@@ -213,6 +213,12 @@ function renderHistogram(ed, r) {
 }
 
 // ------------------------------------------------------------------ alignment
+const NON_RIGID = [
+  ["", "Off (straight perspective fit)"],
+  ["tracks", "Exact: every mark onto its template place"],
+  ["true", "Smooth curve (curled paper, phone photos)"],
+  ["auto", "Curve when marks cover the page"],
+];
 const ALIGN_METHODS = [
   ["", "None (sheets are already straight)"],
   ["TimingMarkAlignment", "Timing tracks"],
@@ -295,7 +301,11 @@ export function renderAlignment(ed) {
       num("Minimum matched marks", "minMatchedMarks", "default", "1"),
       num("Max leftover error", "maxResidual", "default"),
       // upside-down detection: the "Detect upside-down sheets" switch with the tracks below
-      tick("Bend to fit the marks (nonRigid)", "nonRigid")
+      labeled(
+        "Bend to fit the marks (nonRigid)",
+        select(NON_RIGID, o.nonRigid === true ? "true" : o.nonRigid || "", (v) => setOpt("nonRigid", v === "true" ? true : v || null)),
+        "align"
+      )
     );
   } else if (proc?.name === "CropOnMarkers") {
     body.push(text("Marker image", "relativePath", "omr_marker.jpg"), num("Marker width share", "sheetToMarkerWidthRatio", "17"), num("Min match score", "min_matching_threshold", "default"));

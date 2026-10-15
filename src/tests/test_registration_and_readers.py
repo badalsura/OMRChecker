@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import random
 
@@ -304,3 +305,39 @@ def test_timing_marks_register_steeply_turned_photos(tmp_path, spec, angle):
 
     assert result.status != STATUS_ERROR
     assert field_errors(result, answers) == {}
+
+
+def test_timing_marks_repair_a_track_paired_one_mark_off(tmp_path, spec):
+    # One track paired with its neighbouring marks while the other pairs
+    # correctly: a sheared homography still matches every mark with a low
+    # residual, so only the shear (or index points) shows the slip
+    # Tracks down both sides, like most printed answer sheets
+    left = spec.timing_tracks["left"]
+    sided = dataclasses.replace(
+        spec,
+        timing_tracks={"left": left, "right": [[spec.page[0] - x, y] for x, y in left]},
+    )
+    engine = make_engine(tmp_path, sided.to_template())
+    rng = random.Random(11)
+    image, _ = render_sheet(sided, random_answers(sided, rng), rng=rng)
+    aligner = engine.template.pre_processors[0]
+    candidates = aligner.blob_centres(image, aligner.find_page_corners(image))
+    true_fit = aligner._refine(np.eye(3), candidates, aligner.search_radius)
+    template_pts, image_pts = [], []
+    for name, marks in aligner.tracks.items():
+        for i, mark in enumerate(marks):
+            moved = i + 1 if name == "left" else i
+            if moved < len(marks):
+                template_pts.append(marks[moved])
+                image_pts.append(
+                    cv2.perspectiveTransform(mark[None, None], true_fit["homography"])[0, 0]
+                )
+    slid, _ = cv2.findHomography(np.float32(template_pts), np.float32(image_pts), 0)
+    fit = aligner._refine(slid, candidates, aligner.search_radius * 0.5)
+    fit["rotation"] = 0
+    assert fit["matched"] >= len(aligner.expected) - 2
+
+    repaired = aligner.repair_track_slides(image, fit, candidates)
+
+    assert repaired is not fit
+    assert np.allclose(repaired["homography"], true_fit["homography"], atol=1e-3)
