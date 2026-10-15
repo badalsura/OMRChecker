@@ -6,6 +6,350 @@
     "version": "1.0"
   },
   "paths": {
+    "/auth/status": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Status",
+        "description": "Whether login is on, who is signed in, and how registration works.",
+        "operationId": "auth_status_auth_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Register",
+        "description": "Create an account. The first account is the administrator and is\nsigned in at once (login is required from then on); later accounts\nwait for an administrator unless registration is open.",
+        "operationId": "auth_register_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Login",
+        "description": "Sign in; sets the session cookie and returns a token for programs.",
+        "operationId": "auth_login_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Logout",
+        "operationId": "auth_logout_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Password",
+        "description": "Change your own password (signs out your other sessions).",
+        "operationId": "auth_password_auth_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/users": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Users",
+        "operationId": "auth_users_auth_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Add User",
+        "description": "Add an active account (works when registration is closed).",
+        "operationId": "auth_add_user_auth_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewUser"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/users/{name}": {
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Update User",
+        "description": "Approve or disable an account, change its role, reset its password or\nset the server folders it may use.",
+        "operationId": "auth_update_user_auth_users__name__patch",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Delete User",
+        "operationId": "auth_delete_user_auth_users__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/settings": {
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Settings",
+        "operationId": "auth_settings_auth_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [
@@ -1035,6 +1379,37 @@
               "title": "Created After"
             },
             "description": "Only items queued after this server time ('now')"
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(oldest|risk)$",
+              "description": "risk: whole-sheet and check items before single fields",
+              "default": "oldest",
+              "title": "Order"
+            },
+            "description": "risk: whole-sheet and check items before single fields"
+          },
+          {
+            "name": "flag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only items read with this flag (e.g. weak_mark)",
+              "title": "Flag"
+            },
+            "description": "Only items read with this flag (e.g. weak_mark)"
           }
         ],
         "responses": {
@@ -1292,6 +1667,127 @@
         }
       }
     },
+    "/jobs/{job_id}/pause": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Pause Job",
+        "operationId": "pause_job_jobs__job_id__pause_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/resume": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Resume Job",
+        "operationId": "resume_job_jobs__job_id__resume_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/rescan-errors": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Rescan Job Errors",
+        "description": "Read the job's error sheets again; reviewed sheets are kept.",
+        "operationId": "rescan_job_errors_jobs__job_id__rescan_errors_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/jobs/{job_id}/cancel": {
       "post": {
         "tags": [
@@ -1376,7 +1872,7 @@
           "jobs"
         ],
         "summary": "Patch Job",
-        "description": "Edit a job's name or path_remap ([{\"from\": ..., \"to\": ...}]).",
+        "description": "Edit a job's name, label (how its source is shown) or path_remap\n([{\"from\": ..., \"to\": ...}]).",
         "operationId": "patch_job_jobs__job_id__patch",
         "parameters": [
           {
@@ -1685,7 +2181,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors)$",
+              "pattern": "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors|duplicates|duplicates_template)$",
               "default": "all",
               "title": "View"
             }
@@ -1942,7 +2438,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors)$",
+              "pattern": "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors|duplicates|duplicates_template)$",
               "default": "all",
               "title": "View"
             }
@@ -2367,7 +2863,7 @@
               "schema": {
                 "anyOf": [
                   {
-                    "$ref": "#/components/schemas/VerifyBody"
+                    "$ref": "#/components/schemas/src__api__results_routes__VerifyBody"
                   },
                   {
                     "type": "null"
@@ -2463,6 +2959,147 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RegradeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scans/{scan_id}/manual-align": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan Align Targets",
+        "description": "Page size and index points a failed sheet can be aligned by.",
+        "operationId": "scan_align_targets_scans__scan_id__manual_align_get",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan Manual Align",
+        "description": "Align a sheet by clicked page corners or index points and read it again.",
+        "operationId": "scan_manual_align_scans__scan_id__manual_align_post",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualAlignBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scans/{scan_id}/manual-values": {
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan Manual Values",
+        "description": "Type every output of a sheet the engine could not read.",
+        "operationId": "scan_manual_values_scans__scan_id__manual_values_post",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualValuesBody"
               }
             }
           }
@@ -2940,6 +3577,57 @@
         }
       }
     },
+    "/scans/{scan_id}/decode": {
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan Decode",
+        "description": "Decode a barcode or QR code inside a box the reviewer drew (box in the\naligned page's pixels, or the original's with view=original). Reads the\noriginal scan at full resolution; nothing is stored.",
+        "operationId": "scan_decode_scans__scan_id__decode_post",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecodeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scans/{scan_id}/views/{view}": {
       "get": {
         "tags": [
@@ -3375,6 +4063,22 @@
               "title": "Since"
             },
             "description": "Also count items queued after this server time"
+          },
+          {
+            "name": "flag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Flag"
+            }
           }
         ],
         "responses": {
@@ -3936,6 +4640,47 @@
         }
       }
     },
+    "/templates/{template_id}/generator/printed-boxes": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Printed Boxes",
+        "description": "Rectangles printed on the reference sheet (block border candidates).",
+        "operationId": "printed_boxes_templates__template_id__generator_printed_boxes_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/templates/{template_id}/generator/find-mark": {
       "post": {
         "tags": [
@@ -4079,6 +4824,47 @@
         }
       }
     },
+    "/templates/{template_id}/generator/calibrate-index": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Calibrate Index",
+        "description": "Measure each index point on the stored sample sheets, aligned by the\ntracks alone: the median position and size, the spread, and the sheets\nit was missed on. The editor stores the medians.",
+        "operationId": "calibrate_index_templates__template_id__generator_calibrate_index_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/templates/{template_id}/generator/acknowledge": {
       "post": {
         "tags": [
@@ -4104,6 +4890,57 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/AckBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/templates/{template_id}/generator/verify": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Verify",
+        "description": "Mark \"Needs verification\" items as checked; saved with the template.",
+        "operationId": "verify_templates__template_id__generator_verify_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/src__api__generator_routes__VerifyBody"
               }
             }
           }
@@ -4580,6 +5417,17 @@
             ],
             "title": "Kind"
           },
+          "flag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flag"
+          },
           "limit": {
             "type": "integer",
             "maximum": 20000.0,
@@ -4710,6 +5558,20 @@
         "type": "object",
         "title": "AlignBody"
       },
+      "AuthSettings": {
+        "properties": {
+          "registration": {
+            "type": "string",
+            "title": "Registration",
+            "description": "approval (admin approves sign-ups), open, or closed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "registration"
+        ],
+        "title": "AuthSettings"
+      },
       "Body_add_job_files_jobs__job_id__files_post": {
         "properties": {
           "files": {
@@ -4797,6 +5659,20 @@
               }
             ],
             "title": "Workers"
+          },
+          "prefetch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefetch",
+            "description": "Files read into memory ahead of the workers (0 = off)"
           },
           "name": {
             "anyOf": [
@@ -4889,6 +5765,32 @@
             ],
             "title": "Pdf Page",
             "description": "PDF pages: '1', '2-4', '3-' or 'all'"
+          },
+          "batch": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch",
+            "description": "Exam or olympiad name: sheets sent with the same name and template are collected in one job (review, results and export per exam)"
+          },
+          "batch_label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Label",
+            "description": "How the exam's source is shown in the Jobs tab (default 'camera / single uploads')"
           }
         },
         "type": "object",
@@ -5162,6 +6064,76 @@
         "type": "object",
         "title": "CorrectionBody"
       },
+      "Credentials": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 40,
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Password"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display",
+            "description": "Full name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "Credentials"
+      },
+      "DecodeBody": {
+        "properties": {
+          "box": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Box",
+            "description": "[x, y, w, h] in the view's pixels"
+          },
+          "view": {
+            "type": "string",
+            "title": "View",
+            "description": "Pixels of: aligned (and color) or original",
+            "default": "aligned"
+          },
+          "zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone",
+            "description": "The barcode/QR zone the box is for (picks QR or 1-D)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "box"
+        ],
+        "title": "DecodeBody"
+      },
       "ExportFilters": {
         "properties": {
           "template_id": {
@@ -5352,6 +6324,84 @@
         ],
         "title": "ItemRef"
       },
+      "ManualAlignBody": {
+        "properties": {
+          "points": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Points",
+            "description": "Clicked [x, y] in original pixels"
+          },
+          "kind": {
+            "type": "string",
+            "pattern": "^(corners|index)$",
+            "title": "Kind",
+            "default": "corners"
+          },
+          "names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Names",
+            "description": "Index point per click (kind=index)"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User"
+          }
+        },
+        "type": "object",
+        "required": [
+          "points"
+        ],
+        "title": "ManualAlignBody"
+      },
+      "ManualValuesBody": {
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Values",
+            "description": "Output column -> typed value"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User"
+          }
+        },
+        "type": "object",
+        "required": [
+          "values"
+        ],
+        "title": "ManualValuesBody"
+      },
       "MarkBody": {
         "properties": {
           "point": {
@@ -5401,6 +6451,65 @@
           "name"
         ],
         "title": "NameBody"
+      },
+      "NewUser": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 40,
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Password"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display",
+            "description": "Full name"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "description": "admin or reviewer",
+            "default": "reviewer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "NewUser"
+      },
+      "PasswordChange": {
+        "properties": {
+          "old_password": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Old Password"
+          },
+          "new_password": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "New Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "old_password",
+          "new_password"
+        ],
+        "title": "PasswordChange"
       },
       "PreviewBody": {
         "properties": {
@@ -5620,6 +6729,76 @@
         "type": "object",
         "title": "TestBody"
       },
+      "UserUpdate": {
+        "properties": {
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role",
+            "description": "admin or reviewer"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active",
+            "description": "false = can't log in"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password",
+            "description": "New password"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display"
+          },
+          "folders": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folders",
+            "description": "Server folders a non-admin may browse and scan ([] = none)"
+          }
+        },
+        "type": "object",
+        "title": "UserUpdate"
+      },
       "ValidateBody": {
         "properties": {
           "template": {
@@ -5717,7 +6896,27 @@
         ],
         "title": "ValidationError"
       },
-      "VerifyBody": {
+      "src__api__generator_routes__VerifyBody": {
+        "properties": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Item keys to mark verified"
+          },
+          "undo": {
+            "type": "boolean",
+            "title": "Undo",
+            "description": "Un-verify the given items (all when none given)",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "VerifyBody"
+      },
+      "src__api__results_routes__VerifyBody": {
         "properties": {
           "user": {
             "anyOf": [

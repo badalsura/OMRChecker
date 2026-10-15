@@ -16,6 +16,7 @@ Contents:
 - [Automatic template generation](#automatic-template-generation)
 - [Review queue](#review-queue)
 - [Results screen](#results-screen)
+- [Double marks](#double-marks)
 - [Failed sheets](#failed-sheets)
 - [Duplicate sheets (primary key)](#duplicate-sheets-primary-key)
 - [Live camera page and camera uploads](#live-camera-page-and-camera-uploads)
@@ -89,6 +90,20 @@ Contents:
 - **Speed benchmark.**
   `python -m src.benchmark.speed --template T.json --images DIR --workers 1 8 16`
   prints sheets per second and the time per stage.
+- **Non-rigid alignment.** The spline basis of the remap grid is reused across
+  sheets: the same maps, 53 ms down to 15 ms per sheet.
+- **Timing-mark blob filter.** Mark shapes are measured for all blobs at once,
+  about 2.5× faster with identical results.
+- **Fast pass (test mode, off by default).** With
+  `speed_params.fast_pass: true` each sheet is first read at half size. The
+  result is kept only when nothing needs review, every bubble is clearly empty
+  (`fast_clear_empty`, 0.25) or clearly filled (`fast_clear_marked`, 0.6) and
+  every zone was read; anything else is read again at full size. On 800 real
+  sheets 72% were kept from the fast read, with 0 answer differences and the
+  same accuracy; time per sheet fell from 193 to 137 ms on one worker.
+  Results say which read was kept in `read_pass` (`fast` or `full`). Only
+  timing-mark templates without non-rigid alignment, border fitting, OCR or
+  image zones, a bubble model or `auto_align` use it. Python engine only.
 
 ## Jobs
 
@@ -103,6 +118,20 @@ Contents:
   [Live camera page and camera uploads](#live-camera-page-and-camera-uploads).
 - **Python 3.8 fix.** Jobs were marked failed after reading every sheet,
   because `shutdown(cancel_futures=True)` needs Python 3.9. This is fixed.
+- **Crashed or hung readers.** A reader process that crashes, or is still on
+  one sheet after `OMR_SHEET_TIMEOUT_S` seconds (300; 0 = no limit), no longer
+  ends the job. The readers are restarted, the sheets they had are read again
+  one at a time, and the one that fails on its own is stored as an error. A
+  job that still fails (the readers kept crashing) can be resumed.
+- **Rescan errors.** A button on the Jobs tab reads a job's error sheets
+  again; sheets someone already reviewed are kept. Works on completed,
+  paused, interrupted and failed jobs.
+- **No duplicates after a crash.** A sheet read again (resume after a crash,
+  rescan) replaces its earlier result instead of adding a second one.
+- **`--bulk` / `python -m src.batch`.** `--resume` keeps the sheets already in
+  `--out`, then reads the rest and the error sheets. Every result is written
+  to disk at once, and a crashed or hung sheet (`--sheet-timeout`, 300 s, with
+  2+ workers) becomes an error row instead of ending the run.
 
 ## Template editor
 
@@ -204,6 +233,24 @@ Contents:
   sheet was registered. The Original view draws the page outline. The
   alignment line no longer shows "residual NaN px".
 
+## Double marks
+
+Two optional `review_params` settings (0 = off), also under **Review
+thresholds** in the template editor:
+
+- **`keep_darker_gap`** ("Keep darker mark when ahead by"): when two or more
+  bubbles are marked and the darkest is filled this much more than the next,
+  only the darkest counts (flag `kept_darker_mark`).
+- **`strict_double_mark`** ("Strict double marks from"): when one bubble is
+  marked, any other bubble filled at least this much also counts, so the
+  question becomes a double mark (flag `faint_second_mark`, plus
+  `multi_marked`). A field `keep_darker_gap` settled is left alone.
+
+On 800 real sheets, strict at 0.30 caught 45 missed double marks and also
+sent 76 pen dots or ticks to review; keep-darker never matched the answer key,
+which writes every double mark as `*`. Both apply to every bubble field, roll
+numbers included.
+
 ## Failed sheets
 
 A sheet that failed to register can be fixed on the Results screen in two
@@ -266,12 +313,19 @@ this station.
 | `timingMarks.indexSeed` | template | off | Use index points for the first registration guess |
 | `timingMarks.nonRigid: "tracks"` | template | — | Correct along the timing-track grid |
 | `primaryKey` | template | — | Columns that identify a sheet (duplicates) |
+| `review_params.keep_darker_gap` | config | `0` (off) | Keep only the darkest of several marks when it is clearly ahead |
+| `review_params.strict_double_mark` | config | `0` (off) | A second bubble filled this much makes a double mark |
+| `review_flags` gains `kept_darker_mark`, `faint_second_mark` | config | off | Review the fields those two settings changed |
+| `speed_params.fast_pass` (`fast_scale`, `fast_clear_empty`, `fast_clear_marked`) | config | `false` | Half-size first read (test mode) |
+| `OMR_SHEET_TIMEOUT_S` | environment | `300` | Skip a sheet still being read after this long |
+| `--resume`, `--sheet-timeout` | `--bulk` / `src.batch` | — | Continue a stopped run; skip a hung sheet |
 
 ## New and changed API calls
 
 | Call | What it does |
 |---|---|
-| `POST /jobs/{id}/pause`, `POST /jobs/{id}/resume` | Pause and resume a job |
+| `POST /jobs/{id}/pause`, `POST /jobs/{id}/resume` | Pause and resume a job; resume also takes failed jobs |
+| `POST /jobs/{id}/rescan-errors` | Read a job's error sheets again; returns `rescan_files` |
 | `PATCH /jobs/{id}` | Also takes `label` |
 | `POST /scans` | Takes `batch` (exam name, collects sheets in one job) and `batch_label`; returns `job_id` |
 | `GET/POST /scans/{id}/manual-align` | Align a failed sheet by clicked points |
@@ -301,6 +355,17 @@ this station.
   settings (quick tunnel, tunnel token, or API token + hostname) with Copy
   buttons for both addresses, and Quit. See
   [packaging/README.md](../packaging/README.md#the-launcher-window).
+
+## Online installer for Windows
+
+A small `OMRChecker-setup-<version>.exe` installs OMR Checker like a normal
+program (Start menu, optional desktop icon, uninstaller). While installing it
+downloads the program, the OCR models and the tools from the GitHub release
+and checks each file's SHA-256; on a PC without internet, put the three zips
+next to Setup.exe. Data stays in `%LOCALAPPDATA%\OMRChecker\omr_data`, so
+upgrades and uninstalls never touch it. Build one by running **Build Windows
+portable exe** with `installer_release` set, or by pushing a `v*` tag. See
+[packaging/README.md](../packaging/README.md#online-installer).
 
 ## Server folders per user
 

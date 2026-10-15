@@ -216,3 +216,27 @@ test("live preview reports alignment and sharpness without reading", async () =>
   assert.equal(guide.blocks.length, blocks.length);
   guide.page.forEach(([x, y]) => assert.ok(x >= 0 && x <= flat.width && y >= 0 && y <= flat.height));
 });
+
+test("double-mark rules match src/core.py resolve_double_marks", () => {
+  const resolve = (fills, marked, params) => {
+    const details = fills.map((f, i) => ({ fill_ratio: f, marked: !!marked[i] }));
+    const bubbles = ["A", "B", "C", "D"];
+    const detected = bubbles.filter((_, i) => marked[i]);
+    const flags = I.resolveDoubleMarks(bubbles, details, detected, params);
+    return [detected, flags, details];
+  };
+  // Off by default
+  assert.deepEqual(resolve([0.9, 0.4, 0, 0], [1, 1, 0, 0], {}).slice(0, 2), [["A", "B"], []]);
+  // Keep darker only when clearly ahead
+  assert.deepEqual(resolve([0.9, 0.55, 0, 0], [1, 1, 0, 0], { keep_darker_gap: 0.3 }).slice(0, 2), [["A"], ["kept_darker_mark"]]);
+  assert.deepEqual(resolve([0.9, 0.7, 0, 0], [1, 1, 0, 0], { keep_darker_gap: 0.3 }).slice(0, 2), [["A", "B"], []]);
+  // Strict: a faint second bubble makes a double mark, nothing marked stays empty
+  assert.deepEqual(resolve([0.32, 0.9, 0, 0], [0, 1, 0, 0], { strict_double_mark: 0.3 }).slice(0, 2), [["A", "B"], ["faint_second_mark"]]);
+  assert.deepEqual(resolve([0.32, 0.1, 0, 0], [0, 0, 0, 0], { strict_double_mark: 0.3 }).slice(0, 2), [[], []]);
+  // A field keep-darker settled is left alone, and the dropped mark is not a missed mark
+  const [detected, flags, details] = resolve([0.9, 0.55, 0.31, 0], [1, 1, 0, 0], { keep_darker_gap: 0.3, strict_double_mark: 0.3 });
+  assert.deepEqual([detected, flags], [["A"], ["kept_darker_mark"]]);
+  const params = { min_marked_fill_ratio: 0.25, max_unmarked_fill_ratio: 0.5, min_confidence: 0, review_flags: [] };
+  const field = I.summarizeField("q1", "A", details.map((d) => ({ ...d, confidence: 1 })), 1, false, params, flags);
+  assert.deepEqual(field.flags, ["kept_darker_mark"]);
+});

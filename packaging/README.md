@@ -17,6 +17,7 @@ OMRChecker.exe                                 # API + GUI on http://127.0.0.1:8
 OMRChecker.exe --host 0.0.0.0 --port 8000      # serve the LAN (other PCs, phones, the Python/Java/Go clients)
 OMRChecker.exe --api-key SECRET                # require X-API-Key on every API call
 OMRChecker.exe --bulk D:\scans --template D:\exam\template.json --out D:\results --workers 8
+OMRChecker.exe --bulk D:\scans --template D:\exam\template.json --out D:\results --workers 8 --resume
 OMRChecker.exe --selftest                      # headless check, exit code 0 = OK
 OMRChecker.exe --version
 ```
@@ -30,7 +31,10 @@ OMRChecker.exe --version
 * `--bulk` writes `results.csv` and `results.jsonl`; rows with
   `status = needs_review` / `error` or a non-empty `needs_review` column are the
   ones to check by hand (or load the folder as a job in the GUI to use the
-  review screen).
+  review screen). Each row is written as soon as its sheet is read, so a
+  stopped run loses nothing: run it again with `--resume` to read the rest and
+  the error sheets. With 2+ workers a sheet that crashes or hangs (over
+  `--sheet-timeout`, 300 s) becomes an error row instead of ending the run.
 * The in-browser reader (`web/omr-browser`) is bundled and served at `/browser/`.
 
 ### The launcher window
@@ -331,6 +335,9 @@ cannot be shown.
   ~1,310 sheets/min with the default `save_images=review` (61% of these noisy
   phone photos were flagged, so their images were written). Expect roughly 2x
   on an 8-core PC. Measure yours with `clients/python/api_benchmark.py`.
+* Bulk jobs in the GUI survive a reader process that crashes or hangs: the
+  sheet is stored as an error (limit `OMR_SHEET_TIMEOUT_S`, 300 s) and the job
+  goes on. **Rescan errors** on the Jobs tab reads those sheets again.
 * Exclude `omr_data\` and the exe folder from real-time antivirus scanning;
   scanning every written result file is the usual bottleneck on Windows.
 * Exports stream from the index, so even millions of rows use little memory.

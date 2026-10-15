@@ -36,6 +36,8 @@
         min_marked_fill_ratio: 0.25,
         max_unmarked_fill_ratio: 0.6,
         min_marked_bubbles: 0,
+        keep_darker_gap: 0,
+        strict_double_mark: 0,
         review_flags: ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees"],
       },
       ml_params: { bubble_model_path: null, icr_model_path: null },
@@ -2767,6 +2769,46 @@
       for (var j = 0; j < n; j++) s += (arr[j] - m) * (arr[j] - m);
       return Math.sqrt(s / n);
     }
+    // Optional double-mark rules (review_params, 0 = off); port of
+    // ImageInstanceOps.resolve_double_marks. Updates details and detected.
+    function resolveDoubleMarks(fieldBubbles, details, detected, params) {
+      var flags = [];
+      var gap = params.keep_darker_gap || 0, strict = params.strict_double_mark || 0;
+      if (!detected.length || !(gap || strict)) return flags;
+      var marked = [];
+      details.forEach(function (d, i) {
+        if (d.marked) marked.push(i);
+      });
+      if (gap && marked.length > 1) {
+        // Stable sort, darkest first, like Python's sorted(reverse=True)
+        var ranked = marked.slice().sort(function (a, b) {
+          return details[b].fill_ratio - details[a].fill_ratio || a - b;
+        });
+        if (details[ranked[0]].fill_ratio - details[ranked[1]].fill_ratio >= gap) {
+          ranked.slice(1).forEach(function (i) {
+            details[i].marked = false;
+            details[i].dropped_lighter_mark = true;
+          });
+          marked = ranked.slice(0, 1);
+          flags.push("kept_darker_mark");
+        }
+      }
+      if (strict && !flags.length) {
+        details.forEach(function (d, i) {
+          if (!d.marked && d.fill_ratio >= strict) {
+            d.marked = true;
+            d.faint_second_mark = true;
+            marked.push(i);
+            flags.push("faint_second_mark");
+          }
+        });
+      }
+      detected.length = 0;
+      fieldBubbles.forEach(function (b, i) {
+        if (marked.indexOf(i) >= 0) detected.push(b);
+      });
+      return flags;
+    }
     function summarizeField(label, value, bubbles, markedCount, lowConfidence, params, extraFlags) {
       var flags = {};
       (extraFlags || []).forEach(function (f) {
@@ -2778,7 +2820,7 @@
       var confidence = bubbles.length ? Infinity : 0.0;
       bubbles.forEach(function (b) {
         if (b.marked && b.fill_ratio < params.min_marked_fill_ratio) flags.weak_mark = 1;
-        if (!b.marked && b.fill_ratio > params.max_unmarked_fill_ratio) flags.possible_missed_mark = 1;
+        if (!b.marked && !b.dropped_lighter_mark && b.fill_ratio > params.max_unmarked_fill_ratio) flags.possible_missed_mark = 1;
         if (b.model_disagrees) flags.model_disagrees = 1;
         confidence = Math.min(confidence, b.confidence);
       });
@@ -3282,11 +3324,13 @@
               details.push(detail);
               if (marked) detected.push(bubble);
             });
+            var doubleMarkFlags = resolveDoubleMarks(field.bubbles, details, detected, rp);
+            var fieldExtra = doubleMarkFlags.length ? (extra || []).concat(doubleMarkFlags) : extra;
             detected.forEach(function (b) {
               omrResponse[b.label] = b.label in omrResponse ? omrResponse[b.label] + b.value : b.value;
             });
             if (!detected.length) omrResponse[field.label] = block.emptyValue;
-            fieldDetails[field.label] = summarizeField(field.label, omrResponse[field.label], details, detected.length, lowConfidence, rp, extra);
+            fieldDetails[field.label] = summarizeField(field.label, omrResponse[field.label], details, detected.length, lowConfidence, rp, fieldExtra);
             stripNo++;
           });
         });
@@ -5686,6 +5730,8 @@
       // Low-level building blocks (exported for tests and advanced use)
       _internals: {
         parseTemplate: parseTemplate,
+        resolveDoubleMarks: resolveDoubleMarks,
+        summarizeField: summarizeField,
         joinGroup: joinGroup,
         columnState: columnState,
         makeImage: makeImage,
