@@ -216,6 +216,8 @@ class JobManager:
                 "pdf_params": options.get("pdf_params"),
             },
             "name": options.get("name") or "",
+            # Who started the job (the person the sheets are "scanned by")
+            "created_by": options.get("created_by"),
             # Folder prefix rewrites used when re-reading this job's files later
             "path_remap": list(options.get("path_remap") or []),
             "total_files": 0,

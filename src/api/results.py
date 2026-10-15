@@ -552,6 +552,7 @@ class ResultsService:
             audit = self.audit_rows(result, events, user, source)
             self.finish_edit(result, resolved)
             self.ctx.index.add_corrections(audit)
+            log_review(self, result, events, user, source)
             training = [e for e in events if e[4] == "corrected"]
         if result.get("verified") and training:
             write_training_records(
@@ -561,6 +562,21 @@ class ResultsService:
                 self.aligned_for_training(scan_id),
             )
         return result, info
+
+    def log_activity(self, result, action, user, detail=None):
+        """One row of the who-did-what log for this sheet."""
+        self.ctx.index.add_activity(
+            [
+                {
+                    "scan_id": result.get("scan_id"),
+                    "job_id": result.get("job_id"),
+                    "template_id": result.get("template_id"),
+                    "action": action,
+                    "user": user or DEFAULT_USER,
+                    "detail": detail,
+                }
+            ]
+        )
 
     def audit_rows(self, result, events, user, source):
         now = time.time()
@@ -622,10 +638,12 @@ class ResultsService:
         with self.ctx.scan_lock(scan_id):
             result = self.load(scan_id)
             if not verified:
-                result.pop("verified", None)
+                was = result.pop("verified", None)
                 self.save(result)
                 self.ctx.index.set_scan_state(result)
                 self.ctx.index.set_outcomes(scan_id, [])
+                if was:
+                    self.log_activity(result, "unverified", user)
                 return result, []
             first_time = not result.get("verified")
             info = self.template_info(result)
@@ -638,6 +656,9 @@ class ResultsService:
                 raise ResultsError(str(error), 422) from None
             result["verified"] = {"by": user, "at": time.time()}
             self.finish_edit(result, resolved)
+            self.log_activity(
+                result, "verified", user, {"accepted": resolved} if resolved else None
+            )
         if first_time:
             # Corrections made before verification become training samples now
             done = {e[1] for e in events}
@@ -776,6 +797,16 @@ class ResultsService:
                         "at": time.time(),
                     }
                 ]
+            )
+            self.log_activity(
+                record,
+                "regraded",
+                user,
+                {
+                    "template_overrides": template_overrides or {},
+                    "config_overrides": config_overrides or {},
+                    "changed": [c["name"] for c in changes],
+                },
             )
         self.renders.drop(scan_id)
         if scanned.aligned_image is not None:
@@ -1188,3 +1219,18 @@ def geometry_overlay(geometry):
         "source_size": geometry.get("source_size"),
         "views": ["dropout", "print"],
     }
+
+
+def log_review(service, result, events, user, source):
+    """Activity rows for one review submission: values changed and values
+    accepted as read."""
+    corrected = [e[1] for e in events if e[2] != e[3]]
+    accepted = [e[1] for e in events if e[2] == e[3]]
+    if corrected:
+        service.log_activity(
+            result, "corrected", user, {"fields": corrected, "source": source}
+        )
+    if accepted:
+        service.log_activity(
+            result, "reviewed", user, {"fields": accepted, "source": source}
+        )

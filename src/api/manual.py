@@ -115,7 +115,13 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             )
             saved = template.pre_processors, template.alignment
             template.pre_processors = []
-            template.alignment = {**saved[1], "page_outline": False}
+            # The clicked corners already place the page: no turn, mirror or outline
+            template.alignment = {
+                **(saved[1] or {}),
+                "page_outline": False,
+                "rotate": 0,
+                "flip": None,
+            }
             try:
                 scanned = engine.scan(warped, result.get("file_id") or "sheet")
             finally:
@@ -159,6 +165,7 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
         service.save(record)
         service.ctx.index.add_scans([{**summarize(record), "read_review": None}])
         service.renders.drop(scan_id)
+        service.log_activity(record, "aligned", user, {"kind": kind, "names": names or None})
     return record
 
 
@@ -187,4 +194,5 @@ def manual_values(service, scan_id, values, user=None):
         result["corrected"] = True
         service.save(result)
         service.ctx.index.add_scans([{**summarize(result), "read_review": None}])
+        service.log_activity(result, "typed", user, {"values": typed})
     return result

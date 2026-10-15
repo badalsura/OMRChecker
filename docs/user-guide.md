@@ -16,7 +16,8 @@ sections that contain all the words you type, for example `double mark`,
 | Check the sheets the program was unsure about | 2. Review queue (and the flag table there) |
 | Get a CSV / Excel file of the answers | 2. Export |
 | Look at one sheet, correct a bubble, verify it | 3. Results screen |
-| Re-read a sheet with other settings, or a sheet read upside down or a row off | 3. Results screen → Regrade, Place the page by hand |
+| Re-read a sheet with other settings, or a sheet read upside down, mirrored or a row off | 3. Results screen → Regrade, Place the page by hand |
+| See who scanned, reviewed, changed, regraded or verified a sheet; check and verify changed sheets in bulk | 3. Results screen → Who did what, Check changes |
 | Make or change a template (blocks, bubbles, roll number, barcode) | 4. Templates and the template editor |
 | Choose an alignment method (timing tracks, index points, corner markers) | 4. → Alignment |
 | Tune how dark a mark must be, double marks, light pencil | 5. → Review thresholds |
@@ -1120,6 +1121,8 @@ You correct a check by typing its output value in the **Fields** list. A value t
 
 **Changes (*n*)** opens to show every edit on this sheet, newest first: the field, old value → new value, who made it and when. The last 50 changes are shown here. Every correction, verification, regrade, manual alignment and deletion is also written to the server's audit log with the user's name.
 
+**Who did what** opens the sheet's activity, newest first: who **scanned** it, who **reviewed** it (accepted values as read, in the queue, on this screen or in bulk), who **changed values**, who **regraded** it (with the settings), who **aligned it by hand** or **typed the values**, and who **verified** it or took the verification back, each with the time. Actions taken before this log existed are not listed. For sheets read in a job, "scanned" is the person who started the job.
+
 After a regrade, a line at the bottom reads "Regraded by *name* with {…}" and shows the settings that were used.
 
 ### Verifying a sheet
@@ -1191,6 +1194,7 @@ Each control starts at **Template setting** (or **As scanned**), which means "us
 | Control | Choices | What it does | When to use it |
 |---|---|---|---|
 | **Turn the sheet** (`alignment.rotate`) | As scanned · 90° clockwise · Upside down (180°) · 90° anticlockwise | Turns the scan before reading. | A sheet fed upside down or sideways that was read wrongly. |
+| **Mirror the sheet (after the turn)** (`alignment.flip`) | Not mirrored · Left to right · Top to bottom | Mirrors the scan (after any turn) before reading. | A scan saved mirrored (some phone apps and scanners), or a sheet photographed through the paper. |
 | **Colour removal** (`colorDropout`) | Template setting · Plain grey · Red channel (removes red print) · Green channel · Blue channel · Brightest channel (removes any colour) | Chooses how coloured print is removed before reading. | Pink or red printed sheets where the print was read as marks (try **Red channel** or **Brightest channel**), or where colour removal also removed coloured-pen marks (try **Plain grey**). |
 | **Bubble threshold** (`threshold_params.mode`) | Template setting · Adaptive (per sheet) · Fixed level | Adaptive works out the dark/light cut for each sheet. Fixed uses one level for every sheet. | Use **Fixed level** for a sheet where the adaptive cut picked up smudges or missed light marks. |
 | **Fixed level (0–255)** (`threshold_params.fixed_threshold`) | empty = template setting; 1–254 (hint 120) | With **Fixed level**, the grey level that counts as marked. Higher counts lighter marks as filled. | Light pencil: raise it. Smudges read as marks: lower it. Too high and erasures and shadows count as answers; too low and real marks are missed. |
@@ -1221,10 +1225,27 @@ When both a control and the JSON set the same value, the JSON wins. If the sheet
 | Button | What it does |
 |---|---|
 | **Preview** | Re-reads the sheet without saving. A table lists each value or flag that would change (Field · Now · Regraded · Flags), or says "No value or flag changes." The canvas shows the new read, and the status line says "REGRADE PREVIEW (not saved)". While a preview is shown you cannot edit values. The side panel has **Apply** and **Discard** for the preview. |
-| **Apply** | Re-reads the sheet and replaces the stored read. The old read is kept in the sheet's history, and a message says how many values changed. Verification is removed, because the values may have changed: check and verify the sheet again. |
+| **Apply** | Re-reads the sheet and saves the new read and its settings onto the sheet at once: the values, the image, the list row and the review queue all show the regraded read, and opening the sheet (or the Regrade dialog) again later shows the saved values and settings. The old read is kept in the sheet's history, and a message says how many values changed. Verification is removed, because the values may have changed: check and verify the sheet again (or let an administrator do it in [Check changes](#check-changes-who-did-what)). |
 | **Place the page by hand…** | Closes the dialog and starts [placing the page by hand](#place-the-page-by-hand). |
 
 A regrade needs the original scan file. If the file was moved, set a [path remap](#the-path-remap-dialog) first. If the file's contents changed since it was read, the regrade is refused, so a different picture is never read under the old sheet's name.
+
+### Check changes (who did what)
+
+**Check changes** (Results toolbar) lists every sheet people changed after scanning that is not verified since its last change. A change is: values corrected, values accepted in review, a regrade, an alignment by hand or typed values. It uses the **Template** and **Job** picked in the Results filters.
+
+Each row shows:
+
+- the sheet's file, status and when it was last changed,
+- **Scanned:** who scanned it, and **Changed:** everyone who changed it, with what they did,
+- the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it,
+- **Open** (shows the sheet on the Results screen) and **Verify**.
+
+Above the table: a box to show only the changes of one person, **include sheets already verified** (to look back at checked sheets), and **‹ Newer** / **Older ›** for more pages (25 sheets each). **Verify ticked** verifies the ticked sheets and **Verify all on this page** every unverified sheet shown; both ask first. Verifying accepts the sheet's values as they are now, flagged ones included, exactly like **Verify ✓**. A verified sheet leaves the list until someone changes it again. Sheets that can't be verified (a failed sheet with no values) are named in the message.
+
+When sign-in is on, only administrators can verify from this screen; reviewers can still look at it. Without sign-in everyone can.
+
+The same information is available to programs: `GET /activity/sheets`, `GET /scans/{id}/activity`, `GET /activity` and `POST /activity/verify`.
 
 ### The Accuracy dialog
 
@@ -1517,6 +1538,8 @@ The **Block alignment** group on the Page panel switches block-level corrections
 | **Border search distance (px)** | `alignment.rectify_search_px` | 20 (2–100) | How far a block border may sit from where the template expects it. | Raise for sheets that are badly off; lower if a neighbouring box is picked up by mistake. |
 | **Check bubbles fit after a block correction** | `alignment.verify_bubble_fit` | on | Rejects a block correction when the printed bubbles fit worse after it than before. | Keep it on. Turning it off can hide misaligned blocks. |
 | **Find the page outline (phone photos)** | `alignment.page_outline` | off | Finds the page's four corners and flattens the photo before alignment. Flatbed scans without a visible page edge are left unchanged. | Phone photos with background around the paper. |
+| **Turn every sheet** | `alignment.rotate` | As scanned | Turns every sheet 90°, 180° or 270° before anything else. | A whole batch fed sideways or upside down. For a few mixed sheets use **Detect upside-down sheets** (timing tracks); for one sheet use Regrade › Turn the sheet. |
+| **Mirror every sheet** | `alignment.flip` | No mirror | Mirrors every sheet after the turn: **Left to right** or **Top to bottom**. | A batch saved mirrored. For one sheet use Regrade › Mirror the sheet. A mirrored sheet without this setting fails alignment or reads wrong answers. |
 | **Preview block borders…** button | | | Opens the Block borders dialog (below). | |
 
 The template can also turn every sheet by 90, 180 or 270 degrees before reading (`alignment.rotate`). This has no form control; set it in Edit JSON if a whole batch is always fed turned.
@@ -1548,6 +1571,7 @@ Before any bubble is read, each scan is turned, shifted and stretched so that it
 |---|---|---|
 | **None (sheets are already straight)** | Scans that are already perfectly straight and cropped to the page. | Nothing. Any shift in the scan shifts every bubble. |
 | **Timing tracks** | Forms with rows of solid black marks along the edges (most machine-read forms). The most precise and robust choice. | The tracks drawn in the track editor (or at least 4 index points). |
+| **Index points only (no timing tracks)** | Forms without timing tracks that have a few distinct printed marks: corner squares of any size, dots, L-shaped corners. Works like corner markers, but each mark keeps its own size and shape and no marker picture is needed. | 4 or more index points (5 or more lets a wrong match be caught). Choosing it keeps index points already set, or fills in the marks the generator suggested; add more with **+ Add index point**. The panel shows how many points there are and warns below 4. Search radius and Max leftover error work as for tracks. |
 | **Corner markers** | Forms with four identical printed squares or symbols near the corners. | A picture of the marker, uploaded with the template files. |
 | **Page edges** | Scans that show background around the paper. | A visible paper edge. |
 | **Match a reference image (features)** | Forms without marks, scanned fairly straight. | A reference image of the form. |

@@ -223,6 +223,7 @@ const NON_RIGID = [
 const ALIGN_METHODS = [
   ["", "None (sheets are already straight)"],
   ["TimingMarkAlignment", "Timing tracks"],
+  ["IndexPoints", "Index points only (no timing tracks)"],
   ["CropOnMarkers", "Corner markers"],
   ["CropPage", "Page edges"],
   ["FeatureBasedAlignment", "Match a reference image (features)"],
@@ -259,12 +260,26 @@ export function renderAlignment(ed) {
   const list = doc.preProcessors || [];
   const index = list.findIndex((p) => ALIGN_NAMES.includes(p.name));
   const proc = index >= 0 ? list[index] : null;
+  // "Index points only" is TimingMarkAlignment without tracks
+  const indexOnly = (p) => p?.name === "TimingMarkAlignment" && !Object.keys(p.options?.tracks || {}).length && (ed.indexOnly ?? (p.options?.indexPoints || []).length > 0);
+  const shownMethod = indexOnly(proc) ? "IndexPoints" : proc?.name || "";
   ed.alignStash = ed.alignStash || {};
   const setMethod = (name) =>
     ed.edit(() => {
       const next = (doc.preProcessors || []).slice();
-      if (proc) ed.alignStash[proc.name] = JSON.parse(JSON.stringify(proc));
-      const created = name ? ed.alignStash[name] || { name, options: defaultOptions(name, ed) } : null;
+      if (proc) ed.alignStash[shownMethod] = JSON.parse(JSON.stringify(proc));
+      ed.indexOnly = name === "IndexPoints";
+      let created = name ? ed.alignStash[name] || { name, options: defaultOptions(name, ed) } : null;
+      if (name === "IndexPoints" && !ed.alignStash[name]) {
+        // Keep index points already set; else the marks the generator suggested
+        const kept = proc?.name === "TimingMarkAlignment" ? proc.options?.indexPoints || [] : [];
+        const suggested = ed.detail?.report?.alignment?.suggested_points || [];
+        const points = (kept.length ? kept : suggested).map((p) => JSON.parse(JSON.stringify(p)));
+        created = { name: "TimingMarkAlignment", options: { tracks: {}, markDimensions: proc?.options?.markDimensions || [20, 10], ...(points.length ? { indexPoints: points } : {}) } };
+      } else if (name === "TimingMarkAlignment" && !ed.alignStash[name] && shownMethod === "IndexPoints") {
+        // Tracks added on top of the index points already set
+        created = JSON.parse(JSON.stringify(proc));
+      }
       if (index >= 0) {
         if (created) next[index] = created;
         else next.splice(index, 1);
@@ -273,7 +288,9 @@ export function renderAlignment(ed) {
         next.push(created);
       }
       doc.preProcessors = next;
-      if (name === "TimingMarkAlignment" && !Object.keys(created.options.tracks || {}).length) {
+      if (name === "IndexPoints" && (created.options.indexPoints || []).length < 4) {
+        toast("Index points only: add 4 or more index points (+ Add index point below); 5 or more lets a wrong match be caught", "", 6000);
+      } else if (name === "TimingMarkAlignment" && !Object.keys(created.options.tracks || {}).length) {
         toast("Timing tracks: draw the tracks (track editor) or paste them into the preProcessors JSON before saving", "", 6000);
       }
     });
@@ -292,9 +309,16 @@ export function renderAlignment(ed) {
     input.addEventListener("change", () => setOpt(key, input.value.trim() || null));
     return labeled(label, input, "align");
   };
-  const body = [labeled("Alignment method", select(ALIGN_METHODS, proc?.name || "", setMethod), "align")];
+  const body = [labeled("Alignment method", select(ALIGN_METHODS, shownMethod, setMethod), "align")];
   const others = list.filter((p) => !ALIGN_NAMES.includes(p.name)).map((p) => p.name);
-  if (proc?.name === "TimingMarkAlignment") {
+  if (shownMethod === "IndexPoints") {
+    const n = (o.indexPoints || []).length;
+    body.push(
+      el("div", { class: n >= 4 ? "muted small" : "chip error" }, `${n} index point(s)${n < 4 ? ": at least 4 are needed" : n < 5 ? ": 5 or more lets a wrong match be caught" : ""}. Add or edit them with the tools below.`),
+      num("Search radius", "searchRadius", "default"),
+      num("Max leftover error", "maxResidual", "default")
+    );
+  } else if (proc?.name === "TimingMarkAlignment") {
     const tracks = Object.entries(o.tracks || {});
     body.push(
       el("div", { class: "muted small" }, tracks.length ? `Tracks: ${tracks.map(([n, t]) => `${n} (${(t.marks || []).length} marks)`).join(", ")} · mark ${(o.markDimensions || []).join(" × ")} px` : "No tracks defined yet."),

@@ -79,6 +79,14 @@ class RegradeBody(BaseModel):
     user: Optional[str] = None
 
 
+class BulkVerifyBody(BaseModel):
+    scan_ids: List[str] = Field(..., min_length=1, max_length=500)
+
+
+# Activity that changes a sheet after scanning (what an administrator checks)
+CHANGE_ACTIONS = ("corrected", "reviewed", "regraded", "aligned", "typed")
+
+
 class RemapBody(BaseModel):
     rules: List[Any] = Field(
         default_factory=list,
@@ -371,6 +379,123 @@ def register(app, ctx, secured):
             offset=offset,
         )
         return {"items": items, "total": total}
+
+    def scanned_by(record):
+        """Who scanned the sheet and when (a job's starter, or the upload's)."""
+        rows, _ = ctx.index.list_activity(
+            scan_id=record.get("scan_id"), action="scanned", limit=1
+        )
+        if rows:
+            return {"by": rows[0]["user"], "at": rows[0]["at"]}
+        job = ctx.jobs.get(record["job_id"]) if record.get("job_id") else None
+        if job:
+            return {"by": job.get("created_by"), "at": job.get("created_at")}
+        return {"by": None, "at": record.get("created_at")}
+
+    def sheet_changes(record):
+        """The settings and values people changed on a sheet."""
+        regrade = record.get("regrade") or {}
+        return {
+            "scanned": scanned_by(record),
+            "regrade": {
+                "by": regrade.get("by"),
+                "at": regrade.get("at"),
+                "template_overrides": regrade.get("template_overrides") or {},
+                "config_overrides": regrade.get("config_overrides") or {},
+            }
+            if regrade
+            else None,
+            "manual_alignment": record.get("manual_alignment"),
+            "manual_entry": record.get("manual_entry"),
+            "verified": record.get("verified") or None,
+            "values": (record.get("audit") or [])[-50:],
+        }
+
+    @app.get("/scans/{scan_id}/activity", tags=["results"], dependencies=secured)
+    def scan_activity(scan_id: str, limit: int = Query(200, ge=1, le=1000)):
+        """Who scanned, reviewed, corrected, regraded, aligned, typed and
+        verified this sheet, newest first, with its changed settings and values."""
+        try:
+            record = service.load(scan_id)
+        except ResultsError as error:
+            fail(error)
+        items, total = ctx.index.list_activity(scan_id=scan_id, limit=limit)
+        return {"items": items, "total": total, **sheet_changes(record)}
+
+    @app.get("/activity", tags=["results"], dependencies=secured)
+    def activity_log(
+        template_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+        user: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = Query(100, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
+    ):
+        """Every action people took on sheets and jobs, newest first."""
+        items, total = ctx.index.list_activity(
+            template_id=template_id,
+            job_id=job_id,
+            user=user,
+            action=action,
+            limit=limit,
+            offset=offset,
+        )
+        return {"items": items, "total": total}
+
+    @app.get("/activity/sheets", tags=["results"], dependencies=secured)
+    def changed_sheets(
+        template_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+        user: Optional[str] = None,
+        include_checked: bool = Query(
+            False, description="Also sheets verified after their last change"
+        ),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+    ):
+        """Sheets people changed after scanning (corrected, reviewed, regraded,
+        aligned or typed by hand), each with its changed settings and values,
+        for an administrator to check and verify."""
+        rows, total = ctx.index.changed_sheets(
+            CHANGE_ACTIONS,
+            template_id=template_id,
+            job_id=job_id,
+            user=user,
+            include_checked=include_checked,
+            limit=limit,
+            offset=offset,
+        )
+        items = []
+        for row in rows:
+            row["users"] = sorted(set((row["users"] or "").split(",")) - {""})
+            row["actions"] = sorted(set((row["actions"] or "").split(",")) - {""})
+            try:
+                record = service.load(row["scan_id"])
+            except ResultsError:
+                continue
+            row.update(sheet_changes(record))
+            row["responses"] = record.get("responses") or {}
+            items.append(row)
+        return {"items": items, "total": total}
+
+    @app.post("/activity/verify", tags=["results"], dependencies=secured)
+    def verify_sheets(body: BulkVerifyBody, request: Request):
+        """Verify many changed sheets at once (administrators, when sign-in is on)."""
+        signed_in = getattr(request.state, "user", None)
+        if signed_in and signed_in.get("role") != "admin":
+            raise HTTPException(403, "Only an administrator can verify sheets in bulk")
+        user = user_of(request)
+        done, failed = [], []
+        for scan_id in dict.fromkeys(body.scan_ids):
+            try:
+                record = service.load(scan_id)
+                if record.get("status") == "error" and not record.get("manual_values"):
+                    raise ResultsError("The sheet has no values to verify", 422)
+                service.verify(scan_id, user)
+                done.append(scan_id)
+            except ResultsError as error:
+                failed.append({"scan_id": scan_id, "error": str(error)})
+        return {"verified": done, "failed": failed}
 
     @app.get("/settings/path-remap", tags=["results"], dependencies=secured)
     def get_path_remap():

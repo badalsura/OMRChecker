@@ -117,6 +117,22 @@ class ImageInstanceOps:
             companions[key] = cv2.rotate(companions[key], self.TURNS[degrees])
         return turned
 
+    def flip_sheet(self, image, how, companions=None):
+        """Mirror a sheet left to right or top to bottom (alignment "flip"), e.g.
+        a scan saved mirrored or a sheet photographed through the paper."""
+        h, w = image.shape[:2]
+        code, matrix = {
+            "horizontal": (1, [[-1, 0, w - 1], [0, 1, 0]]),
+            "vertical": (0, [[1, 0, 0], [0, -1, h - 1]]),
+        }[how]
+        flipped = cv2.flip(image, code)
+        recorder = self.geometry_recorder
+        if recorder is not None:
+            recorder.warp(matrix, (w, h), affine=True)
+        for key in list(companions or {}):
+            companions[key] = cv2.flip(companions[key], code)
+        return flipped
+
     def apply_preprocessors(self, file_path, in_omr, template, companions=None):
         """
         Register the sheet. companions ({key: image of the same size}, e.g. colour
@@ -129,6 +145,9 @@ class ImageInstanceOps:
         turn = int(self.alignment_option(template, "rotate", 0) or 0) % 360
         if turn:
             in_omr = self.turn_sheet(in_omr, turn, companions)
+        flip = self.alignment_option(template, "flip", None)
+        if flip in ("horizontal", "vertical"):
+            in_omr = self.flip_sheet(in_omr, flip, companions)
         if self.alignment_option(template, "page_outline", False):
             in_omr = self.flatten_page_outline(in_omr, companions, file_path)
         # resize to conform to template, unless registration works on the original

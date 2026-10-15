@@ -3,6 +3,7 @@
 // or typing, verify it, regrade it with overrides, and read the accuracy.
 import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, state, toast, url } from "./api.js";
 import { scoreSummary } from "./score_view.js";
+import { historyBox, showActivity } from "./activity.js";
 
 const PAGE = 100;
 const r = {
@@ -262,6 +263,12 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
     const sheetChanged = !r.data || r.data.scan_id !== data.scan_id;
     r.data = data;
     r.image = image;
+    const row = r.items.find((i) => i.id === data.scan_id);
+    if (row) {
+      row.verified = data.verified ? 1 : 0;
+      row.corrected = data.corrected ? 1 : 0;
+      row.status = data.status;
+    }
     // On another sheet the selection carries over only to a field that needs a
     // look there too; otherwise the last sheet's highlight would follow along
     const kept = r.selected && findItem(r.selected);
@@ -1143,6 +1150,7 @@ function renderSide() {
       )
     );
   }
+  side.append(historyBox(d.scan_id));
   renderViewNotes();
   if (d.regrade) side.append(el("div", { class: "muted small" }, `Regraded by ${d.regrade.by} with `, el("code", {}, JSON.stringify({ ...d.regrade.template_overrides, ...d.regrade.config_overrides }))));
   $("res-verify").textContent = verified ? "Unverify" : "Verify ✓";
@@ -1214,6 +1222,7 @@ export function bindToolbar() {
     safeStorage("set", "omr_res_advance", r.autoAdvance ? "1" : "0");
   });
   $("res-regrade").addEventListener("click", showRegrade);
+  $("res-activity").addEventListener("click", () => showActivity(currentFilters()));
   $("res-delete").addEventListener("click", deleteScan);
   // View control: aligned / full colour / original, side by side, borders
   $("res-mode").value = r.mode;
@@ -1666,6 +1675,7 @@ const REGRADE_EXAMPLE = '{"colorDropout": {"enabled": false}}';
 const ON_OFF = [[true, "On"], [false, "Off"]];
 const REGRADE_OPTIONS = [
   { label: "Turn the sheet", where: "t", path: ["alignment", "rotate"], choices: [[90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]], unset: "As scanned" },
+  { label: "Mirror the sheet (after the turn)", where: "t", path: ["alignment", "flip"], choices: [["horizontal", "Left to right"], ["vertical", "Top to bottom"]], unset: "Not mirrored" },
   { label: "Colour removal", where: "t", path: ["colorDropout"], choices: [["grey", "Plain grey"], ["red", "Red channel (removes red print)"], ["green", "Green channel"], ["blue", "Blue channel"], ["max", "Brightest channel (removes any colour)"]] },
   { label: "Bubble threshold", where: "c", path: ["threshold_params", "mode"], choices: [["adaptive", "Adaptive (per sheet)"], ["fixed", "Fixed level"]] },
   { label: "Fixed level (0–255)", where: "c", path: ["threshold_params", "fixed_threshold"], number: { min: 1, max: 254, placeholder: "120" } },
@@ -1766,9 +1776,8 @@ function showRegrade() {
       const data = await api(`/scans/${r.data.scan_id}/regrade`, { method: "POST", json: body });
       if (apply) {
         dialog.close();
-        toast(`Regraded · ${data.changes.length} value(s) changed`, "ok");
-        r.views = {};
-        await open(r.data.scan_id, { keepView: true });
+        toast(`Regraded and saved · ${data.changes.length} value(s) changed`, "ok");
+        await afterRegrade(r.data.scan_id);
         return;
       }
       const image = await loadImage(fresh(data.image_url));
@@ -1826,6 +1835,16 @@ function showRegrade() {
   );
 }
 
+// An applied regrade is the sheet's stored read from now on: show it, refresh
+// its list row and let the review queue drop what it loaded before
+async function afterRegrade(scanId) {
+  r.views = {};
+  await open(scanId, { keepView: true });
+  load(r.offset, true);
+  emit("review-changed");
+  emit("sheet-changed", scanId);
+}
+
 function changesTable(changes) {
   if (!changes.length) return el("p", { class: "muted" }, "No value or flag changes.");
   return el(
@@ -1854,11 +1873,10 @@ function previewBox() {
           const body = { ...r.preview.body, apply: true };
           try {
             await api(`/scans/${r.data.scan_id}/regrade`, { method: "POST", json: body });
-            toast("Regrade applied", "ok");
+            toast("Regrade applied and saved", "ok");
             const backdrop = document.querySelector(".modal-backdrop");
             if (backdrop) backdrop.remove();
-            r.views = {};
-        await open(r.data.scan_id, { keepView: true });
+            await afterRegrade(r.data.scan_id);
           } catch (error) {
             toast(error.message, "error");
           }

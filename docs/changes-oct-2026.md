@@ -259,6 +259,21 @@ Contents:
   sheet was registered. The Original view draws the page outline. The
   alignment line no longer shows "residual NaN px".
 
+- **Mirror in Regrade.** Regrade › **Mirror the sheet (after the turn)**:
+  left to right or top to bottom (`alignment.flip`). The template editor's
+  Alignment panel has **Turn every sheet** and **Mirror every sheet**.
+- **Regrade saves at once.** After **Apply** the sheet's list row and the
+  review queue show the new read too (they kept the old status and values
+  until reloaded).
+- **Who did what.** Every action on a sheet is logged with the person:
+  scanned, reviewed (accepted as read), values changed, regraded, aligned or
+  typed by hand, verified, verification taken back. The side panel's **Who did
+  what** shows it per sheet.
+- **Check changes.** A Results toolbar screen listing the sheets people
+  changed and nobody verified since, with who did what, the changed settings
+  and the changed values; **Verify** per sheet, **Verify ticked** and
+  **Verify all on this page** (administrators when sign-in is on).
+
 ## Double marks
 
 Two optional `review_params` settings (0 = off), also under **Review
@@ -353,6 +368,8 @@ this station.
 | `review_flags` gains `border_slide` | config | on | Review a block a printed border would move too far |
 | `ml_params.bubble_model_role` | config | `second_opinion` | Learned model as second opinion or decider |
 | `alignment.rotate` | template | 0 | Turn every sheet 90/180/270° before reading |
+| `alignment.flip` | template | none | Then mirror it: `horizontal` or `vertical` |
+| Alignment method **Index points only** | template editor | — | TimingMarkAlignment with no tracks and 4+ `indexPoints` |
 | `timingMarks.earlyStop` | template | on | Faster orientation search |
 | `timingMarks.indexSeed` | template | off | Use index points for the first registration guess |
 | `timingMarks.nonRigid: "tracks"` | template | — | Correct along the timing-track grid |
@@ -375,7 +392,9 @@ this station.
 | `GET/POST /scans/{id}/manual-align` | Align a sheet by clicked points or a hand placement; GET also returns the template's `timing_marks`, `mark_size` and `bubbles` to draw |
 | `POST /scans/{id}/manual-values` | Type the values of a failed sheet |
 | `POST /scans/{id}/decode` | Decode a barcode/QR inside a box drawn on the sheet |
-| `POST /scans/{id}/regrade` | Template overrides may include `alignment.rotate` |
+| `POST /scans/{id}/regrade` | Template overrides may include `alignment.rotate` and `alignment.flip` |
+| `GET /scans/{id}/activity`, `GET /activity` | Who scanned, reviewed, changed, regraded, aligned, typed and verified |
+| `GET /activity/sheets`, `POST /activity/verify` | Changed sheets not verified since, and bulk verify |
 | `GET /review`, `/review/counts`, bulk accept | Take a `flag` filter |
 | `GET /review/summary` | Adds `by_flag` and `by_job` |
 | `GET /results?view=` | Adds `unflagged`; `flagged` leaves out verified sheets |

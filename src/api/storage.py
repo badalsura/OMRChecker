@@ -169,6 +169,20 @@ CREATE TABLE IF NOT EXISTS corrections (
 );
 CREATE INDEX IF NOT EXISTS ix_corrections_scan ON corrections(scan_id, id);
 CREATE INDEX IF NOT EXISTS ix_corrections_at ON corrections(at);
+-- Who did what: scanned, reviewed, corrected, regraded, aligned or typed by
+-- hand, verified (one row per action; value changes are in corrections)
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id TEXT,
+    job_id TEXT,
+    template_id TEXT,
+    action TEXT NOT NULL,
+    user TEXT,
+    detail TEXT,
+    at REAL
+);
+CREATE INDEX IF NOT EXISTS ix_activity_scan ON activity(scan_id, id);
+CREATE INDEX IF NOT EXISTS ix_activity_at ON activity(at);
 -- Per field outcome of fully verified sheets: drives the accuracy readout
 CREATE TABLE IF NOT EXISTS field_outcomes (
     scan_id TEXT NOT NULL,
@@ -859,6 +873,102 @@ class ScanIndex:
         total = self._query(f"SELECT COUNT(*) AS n FROM corrections {where}", params)[
             0
         ]["n"]
+        return items, total
+
+    def add_activity(self, rows):
+        """rows: dicts with action, user, at and optional scan_id, job_id,
+        template_id, detail (any JSON value)."""
+        if not rows:
+            return
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO activity (scan_id, job_id, template_id, action, user, "
+                "detail, at) VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        r.get("scan_id"),
+                        r.get("job_id"),
+                        r.get("template_id"),
+                        r["action"],
+                        r.get("user"),
+                        None if r.get("detail") is None else json.dumps(r["detail"]),
+                        r.get("at") or time.time(),
+                    )
+                    for r in rows
+                ],
+            )
+            self.conn.commit()
+
+    def list_activity(
+        self,
+        scan_id=None,
+        job_id=None,
+        template_id=None,
+        user=None,
+        action=None,
+        limit=100,
+        offset=0,
+    ):
+        where, params = self._filters(
+            scan_id=scan_id,
+            job_id=job_id,
+            template_id=template_id,
+            user=user,
+            action=action,
+        )
+        items = self._query(
+            "SELECT id, scan_id, job_id, template_id, action, user, detail, at "
+            f"FROM activity {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        for item in items:
+            item["detail"] = json.loads(item["detail"]) if item["detail"] else None
+        total = self._query(f"SELECT COUNT(*) AS n FROM activity {where}", params)[0]["n"]
+        return items, total
+
+    def changed_sheets(
+        self,
+        actions,
+        template_id=None,
+        job_id=None,
+        user=None,
+        include_checked=False,
+        limit=50,
+        offset=0,
+    ):
+        """Sheets people changed after scanning, newest change first. Unless
+        include_checked, only those not verified since their last change."""
+        clauses = [f"a.action IN ({','.join('?' * len(actions))})"]
+        params = list(actions)
+        for column, value in (
+            ("a.template_id", template_id),
+            ("a.job_id", job_id),
+            ("a.user", user),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        having = ""
+        if not include_checked:
+            having = (
+                "HAVING s.verified = 0 OR (verified_at IS NOT NULL "
+                "AND changed_at > verified_at)"
+            )
+        base = (
+            "SELECT s.id AS scan_id, s.file_name, s.status, s.verified, s.job_id, "
+            "s.template_id, s.seq, MAX(a.at) AS changed_at, COUNT(a.id) AS changes, "
+            "GROUP_CONCAT(DISTINCT a.user) AS users, "
+            "GROUP_CONCAT(DISTINCT a.action) AS actions, "
+            "(SELECT MAX(v.at) FROM activity v WHERE v.scan_id = s.id "
+            "AND v.action = 'verified') AS verified_at "
+            "FROM activity a JOIN scans s ON s.id = a.scan_id "
+            f"WHERE {' AND '.join(clauses)} GROUP BY s.id {having}"
+        )
+        items = self._query(
+            f"{base} ORDER BY changed_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        total = self._query(f"SELECT COUNT(*) AS n FROM ({base})", params)[0]["n"]
         return items, total
 
     def set_outcomes(self, scan_id, rows):

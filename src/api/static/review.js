@@ -35,7 +35,11 @@ export function initReview() {
   document.getElementById("rv-order").addEventListener("change", () => load());
   // The queue loads when the tab opens (no "Load queue" press needed)
   document.querySelector('.tabs button[data-tab="review"]').addEventListener("click", () => {
-    if (q.since === null && !q.loading) setTimeout(() => load(), 0);
+    if ((q.since === null || q.stale) && !q.loading) setTimeout(() => load(), 0);
+  });
+  // A sheet regraded elsewhere: items loaded before show its old values
+  on("sheet-changed", (scanId) => {
+    if (q.buffer.slice(q.pos).some((item) => item.scan_id === scanId)) q.stale = true;
   });
   document.getElementById("rv-accept-bulk").addEventListener("click", acceptBulk);
   on("templates", refreshNames);
@@ -248,7 +252,7 @@ function readFilters() {
 }
 
 async function load() {
-  Object.assign(q, { buffer: [], pos: 0, seen: new Set(), skipped: new Set(), done: 0, exhausted: false, since: null, newCount: 0, doneAtCount: 0, othersSkipped: [] });
+  Object.assign(q, { buffer: [], pos: 0, seen: new Set(), skipped: new Set(), done: 0, exhausted: false, since: null, stale: false, newCount: 0, doneAtCount: 0, othersSkipped: [] });
   q.filters = readFilters();
   await fetchMore();
   show();

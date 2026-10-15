@@ -26,6 +26,10 @@ const HELP = {
   rectify_search_px: "How far (pixels) a block border may sit from where the template expects it.",
   verify_bubble_fit:
     "Reject a block correction when the printed bubbles fit worse after it than before. Keep this on: turning it off can hide misaligned blocks.",
+  rotate:
+    "Turn every sheet by this much before anything else, for a batch fed in sideways or upside down. Detect upside-down sheets (timing tracks) handles a few mixed sheets; this is for a whole batch. One sheet can be turned in Results › Regrade.",
+  flip:
+    "Mirror every sheet after the turn: left to right, or top to bottom. For scans saved mirrored (some phone apps and scanners) or sheets photographed through the paper. One sheet can be mirrored in Results › Regrade.",
   page_outline:
     "For phone photos: find the page's four corners and flatten the photo before alignment. Flatbed scans without a visible page edge are left unchanged.",
   outerBorderPadding:
@@ -98,6 +102,13 @@ export function alignmentSection(editor) {
     ].map(([v, t]) => el("option", { value: v, selected: (current().rectify_print_image || "auto") === v }, t))
   );
   printSel.addEventListener("change", () => setKey("rectify_print_image", printSel.value, "auto"));
+  const choice = (key, options) => {
+    const box = el("select", {}, options.map(([v, t]) => el("option", { value: JSON.stringify(v), selected: JSON.stringify(current()[key] ?? options[0][0]) === JSON.stringify(v) }, t)));
+    box.addEventListener("change", () => setKey(key, JSON.parse(box.value), options[0][0]));
+    return box;
+  };
+  const turnSel = choice("rotate", [[0, "As scanned"], [90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]]);
+  const flipSel = choice("flip", [[null, "No mirror"], ["horizontal", "Left to right"], ["vertical", "Top to bottom"]]);
   const search = el("input", { type: "number", min: "2", max: "100", step: "1", value: current().rectify_search_px ?? "", placeholder: "20" });
   search.addEventListener("change", () => {
     if (search.value === "") return setKey("rectify_search_px", undefined);
@@ -115,6 +126,8 @@ export function alignmentSection(editor) {
     helpField("Border search distance (px)", search, HELP.rectify_search_px),
     check("Check bubbles fit after a block correction", "verify_bubble_fit", true),
     check("Find the page outline (phone photos)", "page_outline", false),
+    helpField("Turn every sheet", turnSel, HELP.rotate),
+    helpField("Mirror every sheet", flipSel, HELP.flip),
     el(
       "div",
       { class: "row gap" },

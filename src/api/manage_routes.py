@@ -396,6 +396,10 @@ def register(app, ctx, secured):
                 )
             service.finish_edit(result, resolved)
             ctx.index.add_corrections(rows)
+            if resolved:
+                service.log_activity(
+                    result, "reviewed", user, {"fields": resolved, "source": BULK_SOURCE}
+                )
         return len(resolved)
 
     def current(result, name):

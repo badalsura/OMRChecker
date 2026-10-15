@@ -54,7 +54,7 @@ from src.api import exports as exports_module
 from src.api import jobs as jobs_module
 from src.api import editor_routes, fs_routes, generator_routes, manage_routes, ocr_routes, results_routes, views_routes
 from src.api import template_ops_routes
-from src.api.results import DEFAULT_USER, ResultsService
+from src.api.results import DEFAULT_USER, ResultsService, log_review
 from src.api.review import (
     ReviewError,
     apply_review,
@@ -586,6 +586,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     # ------------------------------------------------------------------
     @app.post("/scans", tags=["scans"], dependencies=secured)
     def create_scans(
+        request: Request,
         template_id: str = Form(...),
         files: List[UploadFile] = File(..., description="Images or PDFs"),
         save_images: str = Form(SAVE_ALL),
@@ -608,6 +609,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         ),
     ):
         """Read sheets synchronously. Use /jobs for large batches."""
+        scanned_by = request_user(request, None, DEFAULT_USER)
         require_template(template_id)
         pdf_params = editor_routes.parse_pdf_params(pdf_dpi, pdf_page)
         if len(files) > settings.sync_max_files:
@@ -651,6 +653,18 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
         ctx.index.add_scans(stored)
+        ctx.index.add_activity(
+            [
+                {
+                    "scan_id": result.get("scan_id"),
+                    "job_id": job_id,
+                    "template_id": template_id,
+                    "action": "scanned",
+                    "user": scanned_by,
+                }
+                for result in stored
+            ]
+        )
         if job_id:
             ctx.jobs.finish_batch(job_id, len(files))
         return {
@@ -765,6 +779,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             ctx.index.update_after_review(result, resolved)
             ctx.index.sync_review_items(result)
             ctx.index.add_corrections(audit)
+            log_review(ctx.results, result, events, reviewer, "queue")
         records = write_training_records(
             ctx.data.training, result, events, ctx.aligned_image(scan_id, result)
         )
@@ -1008,8 +1023,20 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 "prefetch": prefetch,
                 "name": name,
                 "pdf_params": pdf_params,
+                "created_by": request_user(request, None, DEFAULT_USER),
             },
             start=False,
+        )
+        ctx.index.add_activity(
+            [
+                {
+                    "job_id": job["id"],
+                    "template_id": template_id,
+                    "action": "scanned",
+                    "user": job.get("created_by"),
+                    "detail": {"job": name or "", "folder": folder or None},
+                }
+            ]
         )
         uploaded = [
             save_upload(upload, ctx.jobs.inputs_dir(job["id"]))

@@ -379,6 +379,82 @@ def test_regrade_turns_an_upside_down_sheet(tmp_path, spec):
         assert client.get(f"/scans/{scan_id}/render").status_code == 200
 
 
+def test_regrade_mirrors_a_flipped_sheet(tmp_path, spec):
+    """alignment.flip mirrors the sheet (after any turn) before reading."""
+    image, truth = sheet(spec, 32)
+    questions = [f"q{i}" for i in range(1, 21)]
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, cv2.flip(image, 1))["scan_id"]
+        client.post(
+            f"/scans/{scan_id}/regrade",
+            json={"template_overrides": {"alignment": {"flip": "horizontal"}}, "apply": True},
+        )
+        stored = client.get(f"/scans/{scan_id}").json()
+        assert [stored["responses"][q] for q in questions] == [
+            truth["answers"][q] for q in questions
+        ]
+        client.app.state.ctx.results.renders.items.clear()
+        assert client.get(f"/scans/{scan_id}/render").status_code == 200
+
+
+def test_who_did_what_and_bulk_verify(tmp_path, spec):
+    image, _ = sheet(spec, 33, q1="A")
+    other, _ = sheet(spec, 34)
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        response = client.post(
+            "/scans",
+            data={"template_id": template_id},
+            files=[
+                ("files", ("a.png", png_bytes(image), "image/png")),
+                ("files", ("b.png", png_bytes(other), "image/png")),
+            ],
+            headers={"X-User": "asha"},
+        )
+        changed, untouched = [s["scan_id"] for s in response.json()["scans"]]
+        client.post(
+            f"/scans/{changed}/corrections",
+            json={"changes": {"q1": "C"}},
+            headers={"X-User": "bob"},
+        )
+        overrides = {"alignment": {"rotate": 0}}
+        client.post(
+            f"/scans/{changed}/regrade",
+            json={"template_overrides": overrides, "apply": True},
+            headers={"X-User": "carol"},
+        )
+        log = client.get(f"/scans/{changed}/activity").json()
+        assert [(i["action"], i["user"]) for i in log["items"]] == [
+            ("regraded", "carol"),
+            ("corrected", "bob"),
+            ("scanned", "asha"),
+        ]
+        assert log["items"][1]["detail"]["fields"] == ["q1"]
+        assert log["scanned"]["by"] == "asha"
+        assert log["regrade"]["template_overrides"] == overrides
+
+        sheets = client.get("/activity/sheets").json()
+        assert [i["scan_id"] for i in sheets["items"]] == [changed]
+        item = sheets["items"][0]
+        assert item["users"] == ["bob", "carol"]
+        assert item["actions"] == ["corrected", "regraded"]
+        assert item["responses"]["q1"] == "C"
+        assert {v["name"] for v in item["values"]} == {"q1"}
+
+        done = client.post(
+            "/activity/verify", json={"scan_ids": [changed]}, headers={"X-User": "admin"}
+        ).json()
+        assert done == {"verified": [changed], "failed": []}
+        assert client.get("/activity/sheets").json()["total"] == 0
+        assert client.get("/activity/sheets?include_checked=true").json()["total"] == 1
+        assert client.get(f"/scans/{changed}/activity").json()["items"][0]["action"] == "verified"
+        # A change after the check puts the sheet back on the list
+        client.post(f"/scans/{changed}/corrections", json={"changes": {"q1": "B"}})
+        assert client.get("/activity/sheets").json()["total"] == 1
+        assert client.get(f"/scans/{untouched}/activity").json()["total"] == 1
+
+
 def test_decode_a_box_drawn_around_a_code(tmp_path, spec):
     """Drag to scan: a box on the aligned page decodes the original there."""
     image, _ = sheet(spec, 32)

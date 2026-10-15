@@ -92,7 +92,7 @@ export const HELP = {
   "review:Min marked bubbles per sheet": "Flag the whole sheet when fewer bubbles are marked (catches pens removed by colour dropout). 0 = off.",
   "review:Flags that send a field to review": "Which problems put a field in the review queue. Unticked flags are still shown in the results.",
   // alignment
-  "align:Alignment method": "How each sheet is lined up with the template before reading. Timing tracks or corner markers are the most precise.",
+  "align:Alignment method": "How each sheet is lined up with the template before reading. Timing tracks or corner markers are the most precise. Index points only: 4 or more distinct printed marks (squares, dots, corner markers of any size) matched without timing tracks; 5 or more lets a wrong match be caught.",
   "align:Search radius": "How far (template px) a mark may sit from where the template expects it.",
   "align:Minimum matched marks": "Fewer matched timing marks than this rejects the sheet.",
   "align:Max leftover error": "Mean distance (template px) between the fitted and found marks above which the sheet is rejected.",
