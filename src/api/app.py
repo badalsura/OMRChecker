@@ -1072,8 +1072,20 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             job = ctx.jobs.get(job_id)
             if job is None:
                 raise HTTPException(404, f"Job '{job_id}' not found")
-            raise HTTPException(409, f"Job is {job['state']}; only a paused or interrupted job can be resumed")
+            raise HTTPException(409, f"Job is {job['state']}; only a paused, interrupted or failed job can be resumed")
         return ctx.jobs.get(job_id)
+
+    @app.post("/jobs/{job_id}/rescan-errors", tags=["jobs"], dependencies=secured)
+    def rescan_job_errors(job_id: str):
+        """Read the job's error sheets again; reviewed sheets are kept."""
+        done = ctx.jobs.rescan_errors(job_id)
+        if done is None:
+            job = ctx.jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404, f"Job '{job_id}' not found")
+            raise HTTPException(409, f"Job is {job['state']}; error sheets can be read again once it has stopped")
+        job, files = done
+        return {**ctx.jobs.get(job_id), "rescan_files": files}
 
     @app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=secured)
     def cancel_job(job_id: str):

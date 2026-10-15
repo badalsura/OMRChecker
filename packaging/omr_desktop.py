@@ -3,7 +3,7 @@ Portable desktop launcher for the OMR engine (entry point of the Windows exe).
 
     OMRChecker.exe                         start the API + web GUI, open the browser
     OMRChecker.exe --no-browser --port 8000 --host 0.0.0.0
-    OMRChecker.exe --bulk D:\\scans --template exam\\template.json [--out D:\\out] [--workers 8]
+    OMRChecker.exe --bulk D:\\scans --template exam\\template.json [--out D:\\out] [--workers 8] [--resume]
     OMRChecker.exe --selftest              headless check: synthetic sheet, barcode, process pool
     OMRChecker.exe --version
 
@@ -527,6 +527,10 @@ def run_bulk(args):
             argv += [flag, value]
     if args.save_images:
         argv.append("--save-images")
+    if args.resume:
+        argv.append("--resume")
+    if args.sheet_timeout is not None:
+        argv += ["--sheet-timeout", str(args.sheet_timeout)]
     print(f"Results -> {out}", flush=True)
     return batch_main(argv)
 
@@ -690,6 +694,16 @@ def parse_args(argv=None):
     bulk.add_argument("--bubble-model")
     bulk.add_argument("--icr-model")
     bulk.add_argument("--save-images", action="store_true")
+    bulk.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue a stopped --bulk run in --out (error sheets are read again)",
+    )
+    bulk.add_argument(
+        "--sheet-timeout",
+        type=float,
+        help="Skip a sheet still being read after this many seconds (default 300)",
+    )
     return parser.parse_args(argv)
 
 

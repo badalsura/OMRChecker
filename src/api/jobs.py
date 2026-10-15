@@ -5,6 +5,11 @@ written to disk by the workers and indexed in SQLite in batches.
 
 A job is resumable: its file list is stored next to its JSON, and on restart
 the runner skips files that already have results.
+
+A reader process that crashes or hangs (settings.sheet_timeout_s) does not end
+the job: the pool is restarted, the sheets that were being read are read again
+one at a time, and the one that crashes or hangs on its own is stored as an
+error so the rest of the job carries on.
 """
 
 import multiprocessing
@@ -18,6 +23,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     wait,
 )
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 from src.api.storage import new_id, read_json, write_json_atomic
@@ -27,6 +33,7 @@ from src.api.worker import (
     get_process_engine,
     job_task,
     scan_and_store,
+    store_failed,
     summarize,
     template_version,
     worker_init,
@@ -50,6 +57,8 @@ PAUSED = "paused"
 DEFAULT_PREFETCH = 64
 PREFETCH_READERS = 4
 ACTIVE_STATES = {QUEUED, RUNNING}
+# A job stops (failed, resumable) after this many reader pool restarts
+MAX_POOL_RESTARTS = 20
 
 
 def _read_bytes(path):
@@ -120,6 +129,8 @@ class JobManager:
         self.resume_after = set()
         self.pool = None
         self.pool_workers = None
+        # Process-pool entry point for one file (tests swap it)
+        self.task_fn = job_task
         self.thread = None
         self.stopping = threading.Event()
 
@@ -169,6 +180,21 @@ class JobManager:
                 max_workers=workers, mp_context=context, initializer=worker_init
             )
         return self.pool
+
+    def _reset_pool(self):
+        """Kill the reader processes (one crashed or hangs) and drop the pool."""
+        pool, self.pool = self.pool, None
+        if pool is None:
+            return
+        for process in list((getattr(pool, "_processes", None) or {}).values()):
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        try:
+            pool.shutdown(wait=False)
+        except Exception:
+            pass
 
     # ---- API -----------------------------------------------------------
     def create(self, template_id, files, source, options=None, start=True):
@@ -338,7 +364,8 @@ class JobManager:
             return job
 
     def resume(self, job_id):
-        """Queue a paused or interrupted job again; it skips sheets already read."""
+        """Queue a paused, interrupted or failed job again; it skips sheets
+        already read."""
         live = self.live.get(job_id)
         if live is not None:
             if live["state"] != PAUSED:
@@ -347,10 +374,31 @@ class JobManager:
             self.resume_after.add(job_id)
             return live
         job = self.get(job_id)
-        if job is None or job.get("state") not in (PAUSED, INTERRUPTED):
+        if job is None or job.get("state") not in (PAUSED, INTERRUPTED, FAILED):
             return None
         self.enqueue(job)
         return job
+
+    def rescan_errors(self, job_id):
+        """Read the job's error sheets again (sheets a person already reviewed
+        are kept). A paused, interrupted or failed job also reads the rest.
+        Returns (job, number of files queued) or None when not allowed."""
+        if job_id in self.live:
+            return None
+        job = self.get(job_id)
+        if (
+            job is None
+            or job.get("source") == BATCH
+            or job.get("state") not in (COMPLETED, PAUSED, INTERRUPTED, FAILED)
+        ):
+            return None
+        seqs = self.index.error_seqs(job_id)
+        if not seqs and job.get("state") == COMPLETED:
+            return job, 0
+        self.index.delete_job_seqs(job_id, seqs)
+        job["errors"] = []
+        self.enqueue(job)
+        return job, len(seqs)
 
     def cancel(self, job_id):
         job = self.live.get(job_id)
@@ -521,6 +569,11 @@ class JobManager:
         else:
             pool = self._get_pool(workers)
             in_flight = {}
+            # Sheets in flight when the pool broke, read again one at a time
+            suspects = deque()
+            isolated, restarts = False, 0
+            timeout = self.settings.sheet_timeout_s
+            running_since = {}
             max_in_flight = workers * 4
             prefetch = int(job["options"].get("prefetch") or 0)
             reader = None
@@ -533,25 +586,84 @@ class JobManager:
             exhausted = False
             while True:
                 stop = self._halted(job)
-                while not stop and not exhausted and len(in_flight) < max_in_flight:
-                    task = next(tasks_iter, None)
-                    if task is None:
-                        exhausted = True
-                        break
-                    in_flight[pool.submit(job_task, task)] = task
-                if not in_flight:
-                    break
-                finished, _ = wait(
-                    list(in_flight), timeout=1, return_when=FIRST_COMPLETED
-                )
-                for future in finished:
-                    task = in_flight.pop(future)
+                broken = hung = False
+
+                def submit(task):
                     try:
-                        summaries = future.result()
-                    except Exception as error:
-                        summaries = []
-                        job["errors"].append(f"{task['file_name']}: {error}")
-                    record(summaries, task)
+                        in_flight[pool.submit(self.task_fn, task)] = task
+                        return True
+                    except BrokenProcessPool:
+                        suspects.appendleft(task)
+                        return False
+
+                if stop or (isolated and in_flight):
+                    pass  # winding down, or waiting on the one sheet read alone
+                elif suspects:
+                    isolated = True
+                    broken = not submit(suspects.popleft())
+                else:
+                    isolated = False
+                    while not exhausted and len(in_flight) < max_in_flight:
+                        task = next(tasks_iter, None)
+                        if task is None:
+                            exhausted = True
+                        elif not submit(task):
+                            broken = True
+                        else:
+                            continue
+                        break
+                if not broken:
+                    if not in_flight:
+                        if stop or (exhausted and not suspects):
+                            break
+                        continue
+                    finished, _ = wait(
+                        list(in_flight), timeout=1, return_when=FIRST_COMPLETED
+                    )
+                    for future in finished:
+                        task = in_flight.pop(future)
+                        running_since.pop(future, None)
+                        try:
+                            summaries = future.result()
+                        except BrokenProcessPool:
+                            in_flight[future] = task
+                            broken = True
+                            continue
+                        except Exception as error:
+                            summaries = []
+                            job["errors"].append(f"{task['file_name']}: {error}")
+                        record(summaries, task)
+                    if timeout and not broken:
+                        now = time.time()
+                        for future in in_flight:
+                            if future.running():
+                                since = running_since.setdefault(future, now)
+                                if now - since > timeout:
+                                    broken = hung = True
+                                    break
+                if broken:
+                    lost = list(in_flight.values())
+                    in_flight.clear()
+                    running_since.clear()
+                    self._reset_pool()
+                    if isolated and len(lost) == 1:
+                        why = (
+                            f"took longer than {timeout:g} s" if hung else "crashed the reader"
+                        )
+                        logger.warning(f"Job {job['id']}: {lost[0]['file_name']} {why}")
+                        record(
+                            store_failed(lost[0], f"Reading this sheet {why}; it was skipped"),
+                            lost[0],
+                        )
+                    else:
+                        suspects.extend(lost)
+                    restarts += 1
+                    if restarts > MAX_POOL_RESTARTS:
+                        raise RuntimeError(
+                            "The reader processes kept crashing; Resume continues the job"
+                        )
+                    pool = self._get_pool(workers)
+                    continue
                 if stop:
                     for future in list(in_flight):
                         if future.cancel():

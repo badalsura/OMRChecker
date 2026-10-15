@@ -130,8 +130,11 @@ export async function refreshJobs() {
           ["queued", "running"].includes(job.state)
             ? el("button", { class: "small", title: "Finish the sheets being read, then stop; Resume reads the rest", onclick: () => jobAction(job, "pause") }, "Pause")
             : null,
-          ["paused", "interrupted"].includes(job.state)
+          ["paused", "interrupted", "failed"].includes(job.state)
             ? el("button", { class: "small primary", title: "Read the remaining sheets", onclick: () => jobAction(job, "resume") }, "Resume")
+            : null,
+          counts.error && ["completed", "paused", "interrupted", "failed"].includes(job.state) && job.source !== "batch"
+            ? el("button", { class: "small", title: "Read the sheets that ended in an error again (reviewed sheets are kept)", onclick: () => jobAction(job, "rescan-errors") }, "Rescan errors")
             : null,
           ["queued", "running", "uploading", "paused", "interrupted"].includes(job.state)
             ? el("button", { class: "small danger", onclick: () => cancelJob(job) }, "Cancel")
@@ -151,7 +154,7 @@ export async function refreshJobs() {
 async function jobAction(job, action) {
   try {
     await api(`/jobs/${job.id}/${action}`, { method: "POST" });
-    toast(action === "pause" ? "Pausing: sheets being read finish first" : "Job resumed", "ok");
+    toast(action === "pause" ? "Pausing: sheets being read finish first" : action === "rescan-errors" ? "Reading the error sheets again" : "Job resumed", "ok");
   } catch (error) {
     toast(error.message, "error", 6000);
   }

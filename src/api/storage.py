@@ -457,6 +457,24 @@ class ScanIndex:
         rows = self._query("SELECT DISTINCT seq FROM scans WHERE job_id=?", (job_id,))
         return {row["seq"] for row in rows}
 
+    def error_seqs(self, job_id):
+        """Files of a job that ended in an error, except files with a page a
+        person already reviewed."""
+        rows = self._query(
+            "SELECT seq, MAX(status='error') AS failed, MAX(reviewed) AS seen "
+            "FROM scans WHERE job_id=? GROUP BY seq",
+            (job_id,),
+        )
+        return {row["seq"] for row in rows if row["failed"] and not row["seen"]}
+
+    def delete_job_seqs(self, job_id, seqs):
+        """Drop every page of these files of a job from the index."""
+        seqs = set(seqs)
+        if not seqs:
+            return
+        rows = self._query("SELECT id, seq FROM scans WHERE job_id=?", (job_id,))
+        self.delete_scans(row["id"] for row in rows if row["seq"] in seqs)
+
     def status_counts(self, job_id=None, template_id=None):
         where, params = self._filters(job_id=job_id, template_id=template_id)
         rows = self._query(
