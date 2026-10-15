@@ -47,6 +47,7 @@ from src.api.worker import (
     template_hash,
     template_version,
 )
+from src.api.undo import UndoStack, same_image
 from src.readers.image_zone import save_zone_images
 
 DEFAULT_USER = "local"
@@ -246,8 +247,59 @@ class ResultsService:
             raise ResultsError(f"Scan '{scan_id}' not found", 404)
         return result
 
-    def save(self, result):
-        write_json_atomic(self.result_path(result["scan_id"]), result)
+    def save(self, result, action=None, user=None):
+        """Store a result. With action (what a person did), the stored one is
+        kept first so the change can be undone."""
+        path = self.result_path(result["scan_id"])
+        if action:
+            previous = read_json(path)
+            if previous is not None:
+                UndoStack(path.parent).push(previous, action, user or DEFAULT_USER)
+        write_json_atomic(path, result)
+
+    def undo(self, scan_id, user=None, direction="undo"):
+        """Undo (or redo) the last change of a sheet. Returns (result, step)."""
+        user = user or DEFAULT_USER
+        with self.ctx.scan_lock(scan_id):
+            current = self.load(scan_id)
+            stack = UndoStack(self.result_path(scan_id).parent)
+            restored, step = stack.move(current, user, direction)
+            if restored is None:
+                raise ResultsError(f"Nothing to {direction} on this sheet", 409)
+            write_json_atomic(self.result_path(scan_id), restored)
+            self.ctx.index.add_scans([{**summarize(restored), "read_review": None}])
+            self.ctx.index.set_scan_state(restored)
+            self.ctx.index.sync_review_items(restored)
+            self.ctx.index.set_outcomes(
+                scan_id, outcome_rows(restored) if restored.get("verified") else []
+            )
+            if not same_image(current, restored):
+                self.renders.drop(scan_id)
+                self.renders.drop(f"{scan_id}:preview")
+                cache = getattr(self, "view_renders", None)
+                if cache is not None:
+                    cache.drop(scan_id)
+                self.redraw_aligned(scan_id, restored)
+            self.log_activity(
+                restored,
+                "undone" if direction == "undo" else "redone",
+                user,
+                {"step": step["action"], "by": step.get("by")},
+            )
+        return restored, step
+
+    def redraw_aligned(self, scan_id, result):
+        """Rewrite the stored aligned image after an undo changed the geometry."""
+        aligned = self.ctx.data.scan_dir(scan_id) / "aligned.png"
+        if not result.get("has_images") or not aligned.exists():
+            return
+        try:
+            image = self.render(scan_id)["image"]
+        except Exception:  # the stored image stays; previews re-read the source
+            return
+        cv2.imwrite(str(aligned), image, PNG_FAST)
+        with self.ctx.image_cache_guard:
+            self.ctx.image_cache.pop(str(aligned), None)
 
     def global_remap(self):
         stored = read_json(self.ctx.data.settings_file, {}) or {}
@@ -509,7 +561,10 @@ class ResultsService:
     # ---- overlay -------------------------------------------------------------
     def overlay(self, result, template_info=None):
         info = template_info or self.template_info(result)
-        return overlay_payload(result, info)
+        payload = overlay_payload(result, info)
+        # The last change that can be undone / redone ({action, by, at} or None)
+        payload["undo"] = UndoStack(self.result_path(result["scan_id"]).parent).labels()
+        return payload
 
     # ---- corrections ---------------------------------------------------------
     def correct(
@@ -550,7 +605,8 @@ class ResultsService:
             except ReviewError as error:
                 raise ResultsError(str(error), 422) from None
             audit = self.audit_rows(result, events, user, source)
-            self.finish_edit(result, resolved)
+            changed = any(e[2] != e[3] for e in events)
+            self.finish_edit(result, resolved, "correction" if changed else "accept", user)
             self.ctx.index.add_corrections(audit)
             log_review(self, result, events, user, source)
             training = [e for e in events if e[4] == "corrected"]
@@ -615,7 +671,7 @@ class ResultsService:
             )
         return rows
 
-    def finish_edit(self, result, resolved):
+    def finish_edit(self, result, resolved, action="correction", user=None):
         """Recompute responses/score/status and persist file + index."""
         template_id = result.get("template_id")
         try:
@@ -624,7 +680,7 @@ class ResultsService:
         except ResultsError:
             result["status"] = "needs_review" if result.get("review") else "ok"
         result["corrected"] = is_corrected(result)
-        self.save(result)
+        self.save(result, action, user)
         self.ctx.index.set_scan_state(result)
         # Rules may raise or settle items after an edit; mirror result["review"]
         self.ctx.index.sync_review_items(result)
@@ -639,7 +695,7 @@ class ResultsService:
             result = self.load(scan_id)
             if not verified:
                 was = result.pop("verified", None)
-                self.save(result)
+                self.save(result, "unverify" if was else None, user)
                 self.ctx.index.set_scan_state(result)
                 self.ctx.index.set_outcomes(scan_id, [])
                 if was:
@@ -655,7 +711,7 @@ class ResultsService:
             except ReviewError as error:
                 raise ResultsError(str(error), 422) from None
             result["verified"] = {"by": user, "at": time.time()}
-            self.finish_edit(result, resolved)
+            self.finish_edit(result, resolved, "verify", user)
             self.log_activity(
                 result, "verified", user, {"accepted": resolved} if resolved else None
             )
@@ -764,6 +820,8 @@ class ResultsService:
             )
             del history[:-20]
             scan_dir = self.ctx.data.scan_dir(scan_id)
+            # Kept before the zone crops are rewritten, so undo brings them back
+            UndoStack(scan_dir).push(result, "regrade", user)
             save_zone_images(scanned.zone_images, scan_dir / "zones")
             if result.get("has_images") and scanned.aligned_image is not None:
                 cv2.imwrite(

@@ -133,6 +133,26 @@ class ImageInstanceOps:
             companions[key] = cv2.flip(companions[key], code)
         return flipped
 
+    def straighten_sheet(self, image, degrees, companions=None):
+        """Turn a sheet by a small angle, clockwise for positive degrees
+        (alignment "straighten"), for a scan fed in slightly skewed."""
+        h, w = image.shape[:2]
+        matrix = cv2.getRotationMatrix2D(((w - 1) / 2.0, (h - 1) / 2.0), -degrees, 1.0)
+        white = (255, 255, 255) if image.ndim == 3 else 255
+        straight = cv2.warpAffine(
+            image, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=white
+        )
+        recorder = self.geometry_recorder
+        if recorder is not None:
+            recorder.warp(matrix, (w, h), affine=True, border=255)
+        for key in list(companions or {}):
+            other = companions[key]
+            fill = (255, 255, 255) if other.ndim == 3 else 255
+            companions[key] = cv2.warpAffine(
+                other, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=fill
+            )
+        return straight
+
     def apply_preprocessors(self, file_path, in_omr, template, companions=None):
         """
         Register the sheet. companions ({key: image of the same size}, e.g. colour
@@ -148,6 +168,9 @@ class ImageInstanceOps:
         flip = self.alignment_option(template, "flip", None)
         if flip in ("horizontal", "vertical"):
             in_omr = self.flip_sheet(in_omr, flip, companions)
+        straighten = float(self.alignment_option(template, "straighten", 0) or 0)
+        if abs(straighten) >= 0.01:
+            in_omr = self.straighten_sheet(in_omr, straighten, companions)
         if self.alignment_option(template, "page_outline", False):
             in_omr = self.flatten_page_outline(in_omr, companions, file_path)
         # resize to conform to template, unless registration works on the original

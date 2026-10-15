@@ -775,7 +775,8 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                     recompute(result, engine)
             else:
                 result["status"] = "needs_review" if result.get("review") else "ok"
-            write_json_atomic(ctx.data.scan_dir(scan_id) / "result.json", result)
+            changed = any(e[2] != e[3] for e in events)
+            ctx.results.save(result, "correction" if changed else "accept", reviewer)
             ctx.index.update_after_review(result, resolved)
             ctx.index.sync_review_items(result)
             ctx.index.add_corrections(audit)

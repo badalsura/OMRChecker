@@ -12,6 +12,8 @@ const ACTIONS = {
   typed: "Typed the values",
   verified: "Verified",
   unverified: "Took back the verification",
+  undone: "Undid",
+  redone: "Redid",
 };
 const PAGE = 25;
 
@@ -35,6 +37,7 @@ function detailText(item) {
     const changed = (d.changed || []).length;
     return `${settingsText(d)}${changed ? ` · ${changed} value(s) changed` : ""}`;
   }
+  if (item.action === "undone" || item.action === "redone") return `${d.step || "a change"}${d.by ? ` by ${d.by}` : ""}`;
   if (item.action === "aligned") return d.kind === "index" ? `index points ${(d.names || []).join(", ")}` : "page corners";
   if (item.action === "typed") return Object.entries(d.values || {}).map(([k, v]) => `${k}=${shown(v)}`).join(", ");
   if (d.fields) return d.fields.join(", ") + (d.source === "bulk" ? " (bulk)" : "");

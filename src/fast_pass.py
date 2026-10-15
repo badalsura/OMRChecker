@@ -102,7 +102,7 @@ def unsupported_reason(template_json, tuning_config, engine):
     alignment = template_json.get("alignment") or {}
     if any(
         alignment.get(key)
-        for key in ("rectify_on_border", "block_perspective", "page_outline", "rotate", "flip")
+        for key in ("rectify_on_border", "block_perspective", "page_outline", "rotate", "flip", "straighten")
     ):
         return "alignment options"
     for block in (template_json.get("fieldBlocks") or {}).values():

@@ -262,6 +262,13 @@ Contents:
 - **Mirror in Regrade.** Regrade › **Mirror the sheet (after the turn)**:
   left to right or top to bottom (`alignment.flip`). The template editor's
   Alignment panel has **Turn every sheet** and **Mirror every sheet**.
+- **Undo and redo on a sheet.** Results toolbar **↶ Undo** / **↷ Redo**
+  (Ctrl+Z, Ctrl+Y) take back or redo the open sheet's last change, regrades
+  and hand alignments included (last 20 changes per sheet).
+- **Image settings in Regrade.** An Image group with Turn, Mirror,
+  **Straighten** (`alignment.straighten`, small angle) and **Line the image up
+  by** (template's alignment, page edges only, or nothing), with a picture of
+  the scan as it will be read.
 - **Regrade saves at once.** After **Apply** the sheet's list row and the
   review queue show the new read too (they kept the old status and values
   until reloaded).
@@ -369,6 +376,7 @@ this station.
 | `ml_params.bubble_model_role` | config | `second_opinion` | Learned model as second opinion or decider |
 | `alignment.rotate` | template | 0 | Turn every sheet 90/180/270° before reading |
 | `alignment.flip` | template | none | Then mirror it: `horizontal` or `vertical` |
+| `alignment.straighten` | template | 0 | Then turn it by a small angle (degrees, clockwise +) |
 | Alignment method **Index points only** | template editor | — | TimingMarkAlignment with no tracks and 4+ `indexPoints` |
 | `timingMarks.earlyStop` | template | on | Faster orientation search |
 | `timingMarks.indexSeed` | template | off | Use index points for the first registration guess |
@@ -393,6 +401,7 @@ this station.
 | `POST /scans/{id}/manual-values` | Type the values of a failed sheet |
 | `POST /scans/{id}/decode` | Decode a barcode/QR inside a box drawn on the sheet |
 | `POST /scans/{id}/regrade` | Template overrides may include `alignment.rotate` and `alignment.flip` |
+| `POST /scans/{id}/undo`, `POST /scans/{id}/redo` | Undo or redo the sheet's last change; sheet payloads carry `undo: {undo, redo}` |
 | `GET /scans/{id}/activity`, `GET /activity` | Who scanned, reviewed, changed, regraded, aligned, typed and verified |
 | `GET /activity/sheets`, `POST /activity/verify` | Changed sheets not verified since, and bulk verify |
 | `GET /review`, `/review/counts`, bulk accept | Take a `flag` filter |

@@ -398,6 +398,30 @@ def test_regrade_mirrors_a_flipped_sheet(tmp_path, spec):
         assert client.get(f"/scans/{scan_id}/render").status_code == 200
 
 
+def test_regrade_straightens_a_skewed_sheet(tmp_path, spec):
+    """alignment.straighten turns the scan by a small angle (clockwise +)."""
+    image, truth = sheet(spec, 36)
+    h, w = image.shape[:2]
+    # Fed 2.5 degrees anticlockwise
+    matrix = cv2.getRotationMatrix2D(((w - 1) / 2.0, (h - 1) / 2.0), 2.5, 1.0)
+    skewed = cv2.warpAffine(image, matrix, (w, h), borderValue=255)
+    questions = [f"q{i}" for i in range(1, 21)]
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, skewed)["scan_id"]
+        overrides = {"alignment": {"straighten": 2.5}, "preProcessors": []}
+        client.post(
+            f"/scans/{scan_id}/regrade",
+            json={"template_overrides": overrides, "apply": True},
+        )
+        stored = client.get(f"/scans/{scan_id}").json()
+        assert [stored["responses"][q] for q in questions] == [
+            truth["answers"][q] for q in questions
+        ]
+        client.app.state.ctx.results.renders.items.clear()
+        assert client.get(f"/scans/{scan_id}/render").status_code == 200
+
+
 def test_who_did_what_and_bulk_verify(tmp_path, spec):
     image, _ = sheet(spec, 33, q1="A")
     other, _ = sheet(spec, 34)
@@ -453,6 +477,47 @@ def test_who_did_what_and_bulk_verify(tmp_path, spec):
         client.post(f"/scans/{changed}/corrections", json={"changes": {"q1": "B"}})
         assert client.get("/activity/sheets").json()["total"] == 1
         assert client.get(f"/scans/{untouched}/activity").json()["total"] == 1
+
+
+def test_undo_and_redo_a_sheet(tmp_path, spec):
+    image, _ = sheet(spec, 35, q1="A", q2="B")
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, image)["scan_id"]
+        assert client.post(f"/scans/{scan_id}/undo").status_code == 409
+        client.post(f"/scans/{scan_id}/corrections", json={"changes": {"q1": "C"}})
+        overrides = {"fieldBlocks": {"MCQ_1": {"bubbleValues": ["D", "C", "B", "A"]}}}
+        regraded = client.post(
+            f"/scans/{scan_id}/regrade",
+            json={"template_overrides": overrides, "apply": True, "keep_corrections": False},
+        ).json()
+        assert regraded["undo"]["undo"]["action"] == "regrade"
+        assert client.get(f"/scans/{scan_id}").json()["responses"]["q2"] == "C"
+
+        body = client.post(f"/scans/{scan_id}/undo").json()
+        assert body["undone"]["action"] == "regrade"
+        stored = client.get(f"/scans/{scan_id}").json()
+        assert stored["responses"]["q1"] == "C" and stored["responses"]["q2"] == "B"
+        assert "regrade" not in stored or not stored["regrade"]
+        assert body["undo"]["undo"]["action"] == "correction"
+        assert body["undo"]["redo"]["action"] == "regrade"
+        assert client.get(f"/scans/{scan_id}/render").status_code == 200
+
+        client.post(f"/scans/{scan_id}/undo")
+        assert client.get(f"/scans/{scan_id}").json()["responses"]["q1"] == "A"
+        client.post(f"/scans/{scan_id}/redo")
+        assert client.get(f"/scans/{scan_id}").json()["responses"]["q1"] == "C"
+        redone = client.post(f"/scans/{scan_id}/redo").json()
+        assert redone["redone"]["action"] == "regrade"
+        assert client.get(f"/scans/{scan_id}").json()["regrade"]["template_overrides"] == overrides
+        # A new change clears what could be redone
+        client.post(f"/scans/{scan_id}/undo")
+        client.post(f"/scans/{scan_id}/verify")
+        assert client.post(f"/scans/{scan_id}/redo").status_code == 409
+        client.post(f"/scans/{scan_id}/undo")
+        assert not client.get(f"/scans/{scan_id}").json().get("verified")
+        actions = [i["action"] for i in client.get(f"/scans/{scan_id}/activity").json()["items"]]
+        assert actions[0] == "undone" and "redone" in actions
 
 
 def test_decode_a_box_drawn_around_a_code(tmp_path, spec):

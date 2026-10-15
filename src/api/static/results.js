@@ -1153,6 +1153,7 @@ function renderSide() {
   side.append(historyBox(d.scan_id));
   renderViewNotes();
   if (d.regrade) side.append(el("div", { class: "muted small" }, `Regraded by ${d.regrade.by} with `, el("code", {}, JSON.stringify({ ...d.regrade.template_overrides, ...d.regrade.config_overrides }))));
+  syncUndo();
   $("res-verify").textContent = verified ? "Unverify" : "Verify ✓";
   $("res-verify").classList.toggle("primary", !verified);
 }
@@ -1167,6 +1168,11 @@ function onKey(e) {
     return;
   }
   const k = e.key;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (k.toLowerCase() === "z" || k.toLowerCase() === "y")) {
+    e.preventDefault();
+    return undoStep(k.toLowerCase() === "y" || e.shiftKey ? "redo" : "undo");
+  }
+  if (e.ctrlKey || e.metaKey) return;
   if (k === "Escape" && r.scan) return stopScan();
   if (r.place && placeKey(e)) return e.preventDefault();
   if (k === "j" || k === "ArrowDown" || k === "ArrowRight") step(1);
@@ -1222,6 +1228,8 @@ export function bindToolbar() {
     safeStorage("set", "omr_res_advance", r.autoAdvance ? "1" : "0");
   });
   $("res-regrade").addEventListener("click", showRegrade);
+  $("res-undo").addEventListener("click", () => undoStep("undo"));
+  $("res-redo").addEventListener("click", () => undoStep("redo"));
   $("res-activity").addEventListener("click", () => showActivity(currentFilters()));
   $("res-delete").addEventListener("click", deleteScan);
   // View control: aligned / full colour / original, side by side, borders
@@ -1673,15 +1681,18 @@ const REGRADE_EXAMPLE = '{"colorDropout": {"enabled": false}}';
 // The main settings a sheet is usually re-read with; anything else goes in
 // the JSON boxes under Advanced. "t": template override, "c": config override
 const ON_OFF = [[true, "On"], [false, "Off"]];
+const PAGE_EDGES = [{ name: "CropPage", options: { morphKernel: [10, 10] } }];
 const REGRADE_OPTIONS = [
-  { label: "Turn the sheet", where: "t", path: ["alignment", "rotate"], choices: [[90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]], unset: "As scanned" },
-  { label: "Mirror the sheet (after the turn)", where: "t", path: ["alignment", "flip"], choices: [["horizontal", "Left to right"], ["vertical", "Top to bottom"]], unset: "Not mirrored" },
+  { group: "image", label: "Turn the sheet", where: "t", path: ["alignment", "rotate"], choices: [[90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]], unset: "As scanned" },
+  { group: "image", label: "Mirror the sheet (after the turn)", where: "t", path: ["alignment", "flip"], choices: [["horizontal", "Left to right"], ["vertical", "Top to bottom"]], unset: "Not mirrored" },
+  { group: "image", label: "Straighten (degrees, + = clockwise)", where: "t", path: ["alignment", "straighten"], number: { min: -45, max: 45, step: 0.1, placeholder: "0" } },
+  { group: "image", label: "Line the image up by", where: "t", path: ["preProcessors"], choices: [[PAGE_EDGES, "Page edges only"], [[], "Nothing: fit the whole image to the page"]], unset: "The template's alignment" },
   { label: "Colour removal", where: "t", path: ["colorDropout"], choices: [["grey", "Plain grey"], ["red", "Red channel (removes red print)"], ["green", "Green channel"], ["blue", "Blue channel"], ["max", "Brightest channel (removes any colour)"]] },
   { label: "Bubble threshold", where: "c", path: ["threshold_params", "mode"], choices: [["adaptive", "Adaptive (per sheet)"], ["fixed", "Fixed level"]] },
   { label: "Fixed level (0–255)", where: "c", path: ["threshold_params", "fixed_threshold"], number: { min: 1, max: 254, placeholder: "120" } },
   { label: "Mark sensitivity (lower counts fainter marks)", where: "c", path: ["threshold_params", "MIN_JUMP"], number: { min: 1, max: 255, placeholder: "25" } },
   { label: "Even out shadows", where: "c", path: ["threshold_params", "flatten_background"], choices: ON_OFF },
-  { label: "Find the page outline (phone photos)", where: "t", path: ["alignment", "page_outline"], choices: ON_OFF },
+  { group: "image", label: "Find the page outline (phone photos)", where: "t", path: ["alignment", "page_outline"], choices: ON_OFF },
   { label: "Fit blocks to their printed borders", where: "t", path: ["alignment", "rectify_on_border"], choices: ON_OFF },
   { label: "Per-block perspective", where: "t", path: ["alignment", "block_perspective"], choices: ON_OFF },
 ];
@@ -1729,12 +1740,13 @@ function showRegrade() {
   const rest = { t: JSON.parse(JSON.stringify(last.template_overrides || {})), c: JSON.parse(JSON.stringify(last.config_overrides || {})) };
   const controls = REGRADE_OPTIONS.map((option) => {
     const value = pathGet(rest[option.where], option.path);
-    const known = option.number ? typeof value === "number" : option.choices.some(([v]) => v === value);
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const known = option.number ? typeof value === "number" : option.choices.some(([v]) => same(v, value));
     if (value !== undefined && known) pathDelete(rest[option.where], option.path);
     const current = known ? value : undefined;
     let input;
     if (option.number) {
-      input = el("input", { type: "number", min: option.number.min, max: option.number.max, placeholder: `template setting (${option.number.placeholder})`, value: current === undefined ? "" : String(current) });
+      input = el("input", { type: "number", min: option.number.min, max: option.number.max, step: option.number.step || 1, placeholder: `template setting (${option.number.placeholder})`, value: current === undefined ? "" : String(current) });
     } else {
       input = el("select", {}, el("option", { value: "" }, option.unset || "Template setting"), option.choices.map(([v, text]) => el("option", { value: JSON.stringify(v) }, text)));
       input.value = current === undefined ? "" : JSON.stringify(current);
@@ -1750,6 +1762,47 @@ function showRegrade() {
     });
     return out;
   };
+  // Thumbnail of the original scan with the turn, mirror and straighten applied
+  const thumb = el("canvas", { width: 220, height: 300 });
+  const control = (path) => controls.find(({ option }) => option.path.join(".") === path).input;
+  const drawThumb = (img) => {
+    if (!img) return;
+    const turn = Number(control("alignment.rotate").value ? JSON.parse(control("alignment.rotate").value) : 0);
+    const flip = control("alignment.flip").value ? JSON.parse(control("alignment.flip").value) : null;
+    const tilt = Number(control("alignment.straighten").value || 0);
+    const sideways = turn === 90 || turn === 270;
+    const w = sideways ? img.naturalHeight : img.naturalWidth;
+    const h = sideways ? img.naturalWidth : img.naturalHeight;
+    const scale = Math.min(220 / w, 300 / h);
+    thumb.width = Math.round(w * scale);
+    thumb.height = Math.round(h * scale);
+    const g = thumb.getContext("2d");
+    g.fillStyle = "#fff";
+    g.fillRect(0, 0, thumb.width, thumb.height);
+    g.save();
+    g.translate(thumb.width / 2, thumb.height / 2);
+    // The reader turns, then mirrors, then straightens; canvas calls apply
+    // to the picture in reverse order
+    g.rotate((tilt * Math.PI) / 180);
+    if (flip) g.scale(flip === "horizontal" ? -1 : 1, flip === "vertical" ? -1 : 1);
+    g.rotate((turn * Math.PI) / 180);
+    g.drawImage(img, (-img.naturalWidth * scale) / 2, (-img.naturalHeight * scale) / 2, img.naturalWidth * scale, img.naturalHeight * scale);
+    g.restore();
+  };
+  let original = r.views.original && r.views.original.image;
+  ["alignment.rotate", "alignment.flip", "alignment.straighten"].forEach((path) => control(path).addEventListener("input", () => drawThumb(original)));
+  ["alignment.rotate", "alignment.flip"].forEach((path) => control(path).addEventListener("change", () => drawThumb(original)));
+  (async () => {
+    if (!original) {
+      try {
+        const meta = await api(`/scans/${r.data.scan_id}/views/original`);
+        original = await loadImage(url(meta.image_url));
+      } catch (e) {
+        return;
+      }
+    }
+    drawThumb(original);
+  })();
   const jsonText = (obj) => (Object.keys(obj).length ? JSON.stringify(obj, null, 1) : "");
   const templateBox = el("textarea", { rows: 5, placeholder: REGRADE_EXAMPLE }, jsonText(rest.t));
   const configBox = el("textarea", { rows: 3, placeholder: '{"review_params": {"min_confidence": 0.3}}' }, jsonText(rest.c));
@@ -1806,8 +1859,16 @@ function showRegrade() {
     el(
       "div",
       {},
-      el("p", { class: "muted small" }, "Re-reads the original file with these settings. Preview first; Apply replaces the stored read (the old one is kept in the history) and re-applies your corrections."),
-      el("div", { class: "regrade-grid" }, controls.map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
+      el("p", { class: "muted small" }, "Re-reads the original scan with these settings: the image settings change the scan itself before it is read, the reading settings how it is read. The template is not changed. Preview first; Apply saves the new read on the sheet (Undo takes it back) and re-applies your corrections."),
+      el("h4", { class: "regrade-head" }, "Image: turn, mirror, straighten and line up the scan"),
+      el(
+        "div",
+        { class: "regrade-image" },
+        el("div", { class: "regrade-grid" }, controls.filter(({ option }) => option.group === "image").map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
+        el("div", { class: "regrade-thumb" }, thumb, el("div", { class: "muted small" }, "The original scan as it will be fed to the reader"))
+      ),
+      el("h4", { class: "regrade-head" }, "Reading settings"),
+      el("div", { class: "regrade-grid" }, controls.filter(({ option }) => option.group !== "image").map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
       advanced,
       el("label", { class: "small" }, keep, " keep my corrections"),
       " ",
@@ -1833,6 +1894,35 @@ function showRegrade() {
     ],
     { wide: true }
   );
+}
+
+// Undo / redo the open sheet's last change (any change: values, accepts,
+// verification, regrade, hand alignment, typed values)
+const UNDO_NAMES = { correction: "value change", accept: "accept", "bulk accept": "bulk accept", verify: "verification", unverify: "unverify", regrade: "regrade", "hand alignment": "hand alignment", "typed values": "typed values" };
+
+function syncUndo() {
+  const u = (r.data && !r.preview && r.data.undo) || {};
+  const label = (step, verb, keys) => (step ? `${verb} ${UNDO_NAMES[step.action] || step.action} by ${step.by} (${keys})` : `Nothing to ${verb.toLowerCase()} on this sheet`);
+  $("res-undo").disabled = !u.undo;
+  $("res-redo").disabled = !u.redo;
+  $("res-undo").title = label(u.undo, "Undo", "Ctrl+Z");
+  $("res-redo").title = label(u.redo, "Redo", "Ctrl+Y");
+}
+
+async function undoStep(direction) {
+  if (!r.data || r.busy) return;
+  if (r.preview) return toast("Apply or discard the regrade preview first", "", 2500);
+  const u = r.data.undo || {};
+  if (!u[direction]) return toast(`Nothing to ${direction} on this sheet`, "", 1500);
+  const scanId = r.data.scan_id;
+  try {
+    const data = await api(`/scans/${scanId}/${direction}`, { method: "POST" });
+    const step = data.undone || data.redone;
+    toast(`${direction === "undo" ? "Undone" : "Redone"}: ${UNDO_NAMES[step.action] || step.action}`, "ok", 2000);
+    await afterRegrade(scanId);
+  } catch (error) {
+    toast(error.message, "error", 5000);
+  }
 }
 
 // An applied regrade is the sheet's stored read from now on: show it, refresh

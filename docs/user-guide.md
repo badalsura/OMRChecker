@@ -1125,6 +1125,15 @@ You correct a check by typing its output value in the **Fields** list. A value t
 
 After a regrade, a line at the bottom reads "Regraded by *name* with {…}" and shows the settings that were used.
 
+### Undo and redo
+
+**↶ Undo** and **↷ Redo** on the toolbar (Ctrl+Z, Ctrl+Y) work on the open sheet. Undo takes back the sheet's last change, whoever made it and wherever it was made: a value changed or accepted (here, in the Review queue or by bulk accept), a verification or unverify, a regrade, a hand alignment or typed values. A regrade or hand alignment is undone completely: the earlier values, settings, image and zone crops come back. Pointing at a button shows what it will undo or redo and who made that change, for example "Undo regrade by meena".
+
+- Each sheet keeps its last 20 changes. Undoing again goes further back.
+- Redo is possible until a new change is made on the sheet.
+- Undo and redo are written to the sheet's **Who did what** list ("Undid" / "Redid", with the change and the person).
+- While a regrade preview is shown, apply or discard it first.
+
 ### Verifying a sheet
 
 **Verify ✓** (V or Enter) means "a person has checked every value on this sheet and it is right". It:
@@ -1189,12 +1198,19 @@ When the red, blue and grey boxes sit on the printed marks, click **Regrade with
 
 **Regrade…** (R) re-reads the original scan file of this one sheet with changed settings. The template itself is not changed. The dialog title is "Regrade this sheet".
 
-Each control starts at **Template setting** (or **As scanned**), which means "use what the template says". Only the controls you change are applied.
+The dialog has two groups:
+
+- **Image: turn, mirror, straighten and line up the scan.** These change the scan itself before it is read. A picture on the right shows the original scan as it will be fed to the reader, and it follows the Turn, Mirror and Straighten choices as you change them.
+- **Reading settings.** These change how the bubbles are read.
+
+Each control starts at **Template setting** (or **As scanned**, **Not mirrored**, **The template's alignment**), which means "use what the template says". Only the controls you change are applied.
 
 | Control | Choices | What it does | When to use it |
 |---|---|---|---|
 | **Turn the sheet** (`alignment.rotate`) | As scanned · 90° clockwise · Upside down (180°) · 90° anticlockwise | Turns the scan before reading. | A sheet fed upside down or sideways that was read wrongly. |
 | **Mirror the sheet (after the turn)** (`alignment.flip`) | Not mirrored · Left to right · Top to bottom | Mirrors the scan (after any turn) before reading. | A scan saved mirrored (some phone apps and scanners), or a sheet photographed through the paper. |
+| **Straighten (degrees, + = clockwise)** (`alignment.straighten`) | empty = 0; −45 to 45, in steps of 0.1 | Turns the scan by a small angle after the turn and mirror. The corners the turn uncovers are filled white. | A sheet fed in skewed that the template's alignment does not straighten (for example with **Line the image up by: Nothing**). With timing tracks or index points the alignment straightens the page by itself. |
+| **Line the image up by** (`preProcessors`) | The template's alignment · Page edges only · Nothing: fit the whole image to the page | Replaces the template's alignment for this sheet. **Page edges only** finds the paper's outline. **Nothing** stretches the whole (turned, mirrored, straightened) scan onto the page. Clean-up steps the template sets in JSON are left out too. | A sheet whose marks are damaged or covered so the template's alignment fails or lands wrong. For an exact placement use **Place the page by hand…**. |
 | **Colour removal** (`colorDropout`) | Template setting · Plain grey · Red channel (removes red print) · Green channel · Blue channel · Brightest channel (removes any colour) | Chooses how coloured print is removed before reading. | Pink or red printed sheets where the print was read as marks (try **Red channel** or **Brightest channel**), or where colour removal also removed coloured-pen marks (try **Plain grey**). |
 | **Bubble threshold** (`threshold_params.mode`) | Template setting · Adaptive (per sheet) · Fixed level | Adaptive works out the dark/light cut for each sheet. Fixed uses one level for every sheet. | Use **Fixed level** for a sheet where the adaptive cut picked up smudges or missed light marks. |
 | **Fixed level (0–255)** (`threshold_params.fixed_threshold`) | empty = template setting; 1–254 (hint 120) | With **Fixed level**, the grey level that counts as marked. Higher counts lighter marks as filled. | Light pencil: raise it. Smudges read as marks: lower it. Too high and erasures and shadows count as answers; too low and real marks are missed. |
@@ -1225,7 +1241,7 @@ When both a control and the JSON set the same value, the JSON wins. If the sheet
 | Button | What it does |
 |---|---|
 | **Preview** | Re-reads the sheet without saving. A table lists each value or flag that would change (Field · Now · Regraded · Flags), or says "No value or flag changes." The canvas shows the new read, and the status line says "REGRADE PREVIEW (not saved)". While a preview is shown you cannot edit values. The side panel has **Apply** and **Discard** for the preview. |
-| **Apply** | Re-reads the sheet and saves the new read and its settings onto the sheet at once: the values, the image, the list row and the review queue all show the regraded read, and opening the sheet (or the Regrade dialog) again later shows the saved values and settings. The old read is kept in the sheet's history, and a message says how many values changed. Verification is removed, because the values may have changed: check and verify the sheet again (or let an administrator do it in [Check changes](#check-changes-who-did-what)). |
+| **Apply** | Re-reads the sheet and saves the new read and its settings onto the sheet at once (**Undo** takes it back): the values, the image, the list row and the review queue all show the regraded read, and opening the sheet (or the Regrade dialog) again later shows the saved values and settings. The old read is kept in the sheet's history, and a message says how many values changed. Verification is removed, because the values may have changed: check and verify the sheet again (or let an administrator do it in [Check changes](#check-changes-who-did-what)). |
 | **Place the page by hand…** | Closes the dialog and starts [placing the page by hand](#place-the-page-by-hand). |
 
 A regrade needs the original scan file. If the file was moved, set a [path remap](#the-path-remap-dialog) first. If the file's contents changed since it was read, the regrade is refused, so a different picture is never read under the old sheet's name.
@@ -1288,6 +1304,8 @@ Shortcuts work while the Results tab is open, no dialog is open, and you are not
 | **J**, **↓** or **→** | Next sheet |
 | **K**, **↑** or **←** | Previous sheet |
 | **V** or **Enter** | Verify (or unverify) the sheet |
+| **Ctrl+Z** | Undo the open sheet's last change |
+| **Ctrl+Y** or **Ctrl+Shift+Z** | Redo the change Undo took back |
 | **N** or **Tab** | Select the next flagged field on this sheet |
 | **Shift+N** or **Shift+Tab** | Select the previous flagged field |
 | **E** | Edit the selected field (puts the cursor in its value box) |

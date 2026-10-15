@@ -284,6 +284,25 @@ def register(app, ctx, secured):
             fail(error)
         return overlay_response(result)
 
+    @app.post("/scans/{scan_id}/undo", tags=["results"], dependencies=secured)
+    def scan_undo(scan_id: str, request: Request):
+        """Undo the sheet's last change (correction, accept, verification,
+        regrade, hand alignment, typed values), whoever made it."""
+        try:
+            result, step = service.undo(scan_id, user_of(request))
+        except ResultsError as error:
+            fail(error)
+        return overlay_response(result, undone=step)
+
+    @app.post("/scans/{scan_id}/redo", tags=["results"], dependencies=secured)
+    def scan_redo(scan_id: str, request: Request):
+        """Redo the change the last undo took back."""
+        try:
+            result, step = service.undo(scan_id, user_of(request), "redo")
+        except ResultsError as error:
+            fail(error)
+        return overlay_response(result, redone=step)
+
     @app.post("/scans/{scan_id}/regrade", tags=["results"], dependencies=secured)
     def scan_regrade(scan_id: str, body: RegradeBody, request: Request):
         """

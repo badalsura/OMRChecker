@@ -2934,6 +2934,88 @@
         }
       }
     },
+    "/scans/{scan_id}/undo": {
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan Undo",
+        "description": "Undo the sheet's last change (correction, accept, verification,\nregrade, hand alignment, typed values), whoever made it.",
+        "operationId": "scan_undo_scans__scan_id__undo_post",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scans/{scan_id}/redo": {
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Scan Redo",
+        "description": "Redo the change the last undo took back.",
+        "operationId": "scan_redo_scans__scan_id__redo_post",
+        "parameters": [
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scans/{scan_id}/regrade": {
       "post": {
         "tags": [

@@ -121,6 +121,7 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
                 "page_outline": False,
                 "rotate": 0,
                 "flip": None,
+                "straighten": 0,
             }
             try:
                 scanned = engine.scan(warped, result.get("file_id") or "sheet")
@@ -162,7 +163,7 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             "by": user,
         }
         record["corrected"] = is_corrected(record)
-        service.save(record)
+        service.save(record, "hand alignment", user)
         service.ctx.index.add_scans([{**summarize(record), "read_review": None}])
         service.renders.drop(scan_id)
         service.log_activity(record, "aligned", user, {"kind": kind, "names": names or None})
@@ -192,7 +193,7 @@ def manual_values(service, scan_id, values, user=None):
         result["reviewed"] = True
         result["status"] = "ok"
         result["corrected"] = True
-        service.save(result)
+        service.save(result, "typed values", user)
         service.ctx.index.add_scans([{**summarize(result), "read_review": None}])
         service.log_activity(result, "typed", user, {"values": typed})
     return result

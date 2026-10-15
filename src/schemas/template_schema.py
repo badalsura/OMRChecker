@@ -71,6 +71,8 @@ ALIGNMENT_SCHEMA = {
         "rotate": {"enum": [0, 90, 180, 270]},
         # Then mirror it: "horizontal" swaps left and right, "vertical" top and bottom
         "flip": {"enum": [None, "horizontal", "vertical"]},
+        # Then turn it by a small angle (degrees, clockwise) for a skewed feed
+        "straighten": {"type": "number", "minimum": -45, "maximum": 45},
     },
 }
 

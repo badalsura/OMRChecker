@@ -394,7 +394,7 @@ def register(app, ctx, secured):
                         )
                     }
                 )
-            service.finish_edit(result, resolved)
+            service.finish_edit(result, resolved, "bulk accept", user)
             ctx.index.add_corrections(rows)
             if resolved:
                 service.log_activity(
