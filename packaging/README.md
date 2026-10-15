@@ -8,6 +8,7 @@ bulk reader, with nothing to install on the target PC.
 | `dist\OMRChecker\OMRChecker.exe` (+ files) | **Recommended.** Portable folder; zip it and copy anywhere. Starts fast, and bulk worker processes start fast. |
 | `dist\OMRChecker-portable-win64.zip` | The folder above, zipped. |
 | `dist\OMRChecker-onefile.exe` | A single exe. Every start (and every worker process) unpacks itself to `%TEMP%`, so it is slower for bulk jobs. |
+| `OMRChecker-setup-<version>.exe` | **Online installer** (from the GitHub release, see [below](#online-installer)). Small; downloads the program, models and tools while installing. |
 
 ## Using it
 
@@ -241,6 +242,41 @@ GitHub Actions (`.github/workflows/build-windows.yml`) does the same on every
 Note: GitHub's runners are Windows Server 2022, so CI proves the build and the
 self test, not Windows 7 itself; run `OMRChecker.exe --selftest` once on a real
 Windows 7 machine before rolling out.
+
+### Online installer
+
+A normal installed program instead of the portable folder: Start menu entry,
+optional desktop icon, uninstaller in Windows Settings. `Setup.exe` is small;
+while installing it downloads three files from the GitHub release, checks each
+one's SHA-256 and unpacks it into the program folder:
+
+| Download | Contents |
+| --- | --- |
+| `OMRChecker-app.zip` | the program itself (Python runtime, engine, web GUI) |
+| `OMRChecker-ocr-models.zip` | Tesseract and PaddleOCR models, `ocr_build.json` |
+| `OMRChecker-tools.zip` | `tesseract\`, `cloudflared\` |
+
+* Installs to `C:\Program Files\OMRChecker` for all users (admin), or, if
+  the user chooses "only for me", to their own programs folder.
+* Data always goes to `%LOCALAPPDATA%\OMRChecker\omr_data` (the installer
+  writes `installed.ini` next to the exe to say so), so upgrading or
+  uninstalling never touches scans, templates or settings.
+* Without internet, put the three zips next to `Setup.exe`; they are used
+  instead of the downloads.
+* Running a newer `Setup.exe` upgrades in place.
+* Setup refuses a folder that already holds other files, because uninstalling
+  removes the whole program folder.
+
+To publish one, push a `v*` tag, or run the workflow with **installer_release**
+set to a tag such as `v1.0.0`. The `installer` job splits the tested onedir
+build into the three zips, builds `Setup.exe` with Inno Setup 6.7.1
+(`packaging/installer/OMRChecker.iss`), publishes all four files as that
+**public** GitHub release, then installs from the release on the runner,
+runs `--selftest` and uninstalls again.
+
+Windows 7: GitHub only accepts TLS 1.2. Windows 7 SP1 has TLS 1.2 but older,
+unpatched systems may not use it for downloads, so the download may fail there
+(not tested). Use the three zips next to `Setup.exe` on such PCs.
 
 ### Linux / source
 

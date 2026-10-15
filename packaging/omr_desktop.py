@@ -98,9 +98,14 @@ def writable(folder):
         return False
 
 
+# Written by the installer (packaging/installer/OMRChecker.iss): data then
+# lives in %LOCALAPPDATA%, never in the program folder the uninstaller removes
+INSTALLED = (APP_DIR / "installed.ini").is_file()
+
+
 def default_data_dir():
     portable = APP_DIR / "omr_data"
-    if writable(portable):
+    if not INSTALLED and writable(portable):
         return portable
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".local" / "share")
     return Path(base) / APP_NAME / "omr_data"

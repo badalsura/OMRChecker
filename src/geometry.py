@@ -134,10 +134,31 @@ def tps_displacement(tps, points):
     weights = np.asarray(tps["weights"], dtype=np.float64)
     points = np.asarray(points, dtype=np.float32).reshape(-1, 2)
     n = len(control)
+    k, p = _tps_basis(points, control)
+    return k @ weights[:n] + p @ weights[n:]
+
+
+def _tps_basis(points, control):
     distances = np.linalg.norm(points[:, None] - control[None], axis=2)
     k = _tps_kernel(distances)
     p = np.hstack([np.ones((len(points), 1)), points])
-    return k @ weights[:n] + p @ weights[n:]
+    return k, p
+
+
+# Spline basis of the remap grid per (page size, grid step, control points).
+# The control points are the template's mark positions, the same on every
+# sheet of a template, so only the weights change from sheet to sheet.
+_GRID_BASIS = {}
+_FULL_GRID = {}
+
+
+def _cached(cache, key, make, limit):
+    value = cache.get(key)
+    if value is None:
+        if len(cache) >= limit:
+            cache.pop(next(iter(cache)))
+        value = cache[key] = make()
+    return value
 
 
 def tps_maps(tps):
@@ -147,8 +168,20 @@ def tps_maps(tps):
     grid_x = np.arange(0, page_w + step, step, dtype=np.float32)
     grid_y = np.arange(0, page_h + step, step, dtype=np.float32)
     gx, gy = np.meshgrid(grid_x, grid_y)
-    grid = np.stack([gx.ravel(), gy.ravel()], axis=1)
-    displacement = tps_displacement(tps, grid)
+    if "grid" in tps:
+        grid = np.stack([gx.ravel(), gy.ravel()], axis=1)
+        displacement = tps_displacement(tps, grid)
+    else:
+        control = np.asarray(tps["points"], dtype=np.float32)
+        weights = np.asarray(tps["weights"], dtype=np.float64)
+
+        def basis():
+            grid = np.stack([gx.ravel(), gy.ravel()], axis=1)
+            return _tps_basis(grid, control)
+
+        key = (page_w, page_h, step, control.tobytes())
+        k, p = _cached(_GRID_BASIS, key, basis, 4)
+        displacement = k @ weights[: len(control)] + p @ weights[len(control):]
     dx = cv2.resize(
         displacement[:, 0].reshape(gx.shape),
         (page_w, page_h),
@@ -159,8 +192,13 @@ def tps_maps(tps):
         (page_w, page_h),
         interpolation=cv2.INTER_LINEAR,
     )
-    map_x, map_y = np.meshgrid(
-        np.arange(page_w, dtype=np.float32), np.arange(page_h, dtype=np.float32)
+    map_x, map_y = _cached(
+        _FULL_GRID,
+        (page_w, page_h),
+        lambda: np.meshgrid(
+            np.arange(page_w, dtype=np.float32), np.arange(page_h, dtype=np.float32)
+        ),
+        2,
     )
     return map_x + dx.astype(np.float32), map_y + dy.astype(np.float32)
 
