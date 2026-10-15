@@ -90,6 +90,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 mimetypes.add_type("application/wasm", ".wasm")
 mimetypes.add_type("text/javascript", ".mjs")
 BROWSER_DIR = Path(__file__).resolve().parents[2] / "web" / "omr-browser"
+# The user guide behind the Help button (bundled in the exe the same way)
+GUIDE_FILE = Path(__file__).resolve().parents[2] / "docs" / "user-guide.md"
 API_VERSION = "1.0"
 
 
@@ -1223,6 +1225,17 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             "publisher": brand["publisher"],
             "icon_url": "/branding/icon.png" if icon_path() else None,
         }
+
+    @app.get("/help", include_in_schema=False)
+    def user_guide_page():
+        """The user guide with a contents list and search (docs/user-guide.md)."""
+        return FileResponse(STATIC_DIR / "help.html")
+
+    @app.get("/guide.md", include_in_schema=False)
+    def user_guide_text():
+        if not GUIDE_FILE.is_file():
+            raise HTTPException(404, "The user guide is not installed")
+        return FileResponse(GUIDE_FILE, media_type="text/markdown; charset=utf-8")
 
     @app.get("/branding/icon.png", include_in_schema=False)
     @app.get("/favicon.ico", include_in_schema=False)

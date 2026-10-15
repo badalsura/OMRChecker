@@ -26,7 +26,7 @@ OMRChecker.exe --version
   `omr_data\` next to the exe. If that folder is read-only (e.g. under
   `C:\Program Files`) it falls back to `%LOCALAPPDATA%\OMRChecker\omr_data`.
   `--data-dir` overrides both.
-* A small window shows the URL with **Open GUI**, **Copy URL** and **Quit**.
+* A small window shows the URL with **Open GUI**, **Copy** and **Quit**.
   Closing it stops the server. `--no-window` runs as a plain console server.
 * `--bulk` writes `results.csv` and `results.jsonl`; rows with
   `status = needs_review` / `error` or a non-empty `needs_review` column are the

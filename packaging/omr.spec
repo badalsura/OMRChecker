@@ -58,6 +58,8 @@ datas = []
 datas += tree("src/api/static", "src/api/static")
 # Name and icon (branding/branding.json, icon.png): the GUI and launcher read them
 datas += tree("branding", "branding")
+# The user guide behind the Help button
+datas += [(str(ROOT / "docs" / "user-guide.md"), "docs")]
 datas += tree("src/schemas", "src/schemas")
 datas += tree("src/defaults", "src/defaults")
 # Client-side (in-browser) reader, if built: served at /browser

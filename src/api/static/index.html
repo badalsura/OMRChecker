@@ -23,6 +23,7 @@
     <div class="topbar-right">
       <button id="user-btn" class="ghost small" title="Your name, recorded with every correction">User</button>
       <button id="api-key-btn" class="ghost small" title="Set the API key">API key</button>
+      <a href="/help" target="_blank" class="ghost small" title="What every screen and option does, with search">Help</a>
       <a href="/docs" target="_blank" class="ghost small">API docs</a>
     </div>
   </header>
@@ -197,7 +198,7 @@
             <div class="help-line small muted">Copies the sheets from this computer to the server. Use it when the server is another machine, or for a few hundred sheets.</div>
           </div>
           <div class="source-box" data-help>
-            <strong>…or a folder on the server <span class="help-i" tabindex="0" title="Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.">ⓘ</span></strong>
+            <strong>…or a folder on the server <span class="help-i" tabindex="0" title="Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running this program (on the portable app, that is this PC) or on a network drive it can reach.">ⓘ</span></strong>
             <div class="row gap wrap">
               <input id="job-folder" placeholder="D:\scans\batch-01" size="40" spellcheck="false" autocomplete="off">
               <button id="job-browse" class="small" type="button" title="Pick a folder on the server">Browse…</button>
@@ -207,7 +208,7 @@
               <label class="small"><input id="job-recursive" type="checkbox" checked> Include subfolders <span class="help-i" tabindex="0" title="Also read the sheets in every folder inside this one. Untick to read only the files directly in this folder.">ⓘ</span></label>
               <span id="job-folder-check" class="small muted"></span>
             </div>
-            <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.</div>
+            <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running this program (on the portable app, that is this PC) or on a network drive it can reach.</div>
             <div class="small muted">Examples: Windows <code>D:\scans\batch-01</code> · network share <code>\\server\scans\batch-01</code> · Linux <code>/srv/scans/batch-01</code></div>
           </div>
         </div>

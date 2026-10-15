@@ -26,10 +26,11 @@ const REVIEW_FLAGS = [
   ["possible_missed_mark", "possible missed mark"],
   ["model_disagrees", "bubble model disagrees"],
   ["rectify_failed", "printed border not found"],
+  ["border_slide", "printed border would move the block a lot"],
   ["kept_darker_mark", "double mark settled by darker bubble"],
   ["faint_second_mark", "faint second mark"],
 ];
-const DEFAULT_REVIEW_FLAGS = ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees"];
+const DEFAULT_REVIEW_FLAGS = ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees", "border_slide"];
 const BARCODE_ENGINES = ["zxing", "builtin", "opencv", "pyzbar"];
 
 const labeled = (label, control, ctx) => help(el("label", { class: "field" }, label, control), label, ctx);

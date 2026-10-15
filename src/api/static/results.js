@@ -1171,6 +1171,7 @@ function onKey(e) {
   else if (k === "-") zoom(1 / 1.25);
   else if (k === "o") {
     r.overlay = !r.overlay;
+    $("res-overlay").checked = r.overlay;
     draw();
   } else if (k === "b") setViewOption("borders", !r.borders);
   else if (k === "s") setViewOption("side", !r.side);
