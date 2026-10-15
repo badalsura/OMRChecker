@@ -7,7 +7,10 @@
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" type="image/png" href="/branding/icon.png">
   <style>
-    body { margin: 0; }
+    /* app.css fixes the body to the window height, which would let the
+       sticky header and contents scroll away after the first screen */
+    html, body { height: auto; }
+    body { margin: 0; display: block; }
     .help-top { position: sticky; top: 0; z-index: 2; display: flex; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
     .help-top .brand-icon { width: 22px; height: 22px; border-radius: 5px; }
     .help-top h1 { font-size: 16px; margin: 0; white-space: nowrap; }
@@ -21,6 +24,7 @@
     .help-toc a.l3 { padding-left: 16px; color: var(--muted); }
     .help-toc a.hidden, .help-doc .hidden { display: none; }
     .help-doc { flex: 1; min-width: 0; max-width: 980px; padding: 8px 32px 80px; line-height: 1.55; font-size: 14.5px; }
+    .help-doc h1, .help-doc h2, .help-doc h3, .help-doc h4 { scroll-margin-top: 64px; }
     .help-doc h2 { margin-top: 36px; padding-bottom: 6px; border-bottom: 2px solid var(--border); }
     .help-doc h3 { margin-top: 28px; }
     .help-doc h4 { margin-top: 20px; }
