@@ -3,7 +3,7 @@ Portable desktop launcher for the OMR engine (entry point of the Windows exe).
 
     OMRChecker.exe                         start the API + web GUI, open the browser
     OMRChecker.exe --no-browser --port 8000 --host 0.0.0.0
-    OMRChecker.exe --bulk D:\\scans --template exam\\template.json [--out D:\\out] [--workers 8]
+    OMRChecker.exe --bulk D:\\scans --template exam\\template.json [--out D:\\out] [--workers 8] [--resume]
     OMRChecker.exe --selftest              headless check: synthetic sheet, barcode, process pool
     OMRChecker.exe --version
 
@@ -25,6 +25,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+# Folder name of the data (%LOCALAPPDATA%\\OMRChecker) and the exe: never
+# renamed with the branding, or existing results would seem to vanish
 APP_NAME = "OMRChecker"
 LAUNCHER_VERSION = "1.0.0"
 PREFERRED_PORT = 8765
@@ -97,6 +99,22 @@ def writable(folder):
     except OSError:
         return False
 
+
+
+
+def _read_branding():
+    """branding/branding.json (see src/branding.py); the exe keeps it next to the program."""
+    try:
+        return json.loads((BRANDING_DIR / "branding.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+BRANDING_DIR = RESOURCE_DIR / "branding"
+BRANDING = _read_branding()
+# The name people see (window title, messages); APP_NAME stays the folder name
+# of the data and the exe so a rename never moves anyone's results
+DISPLAY_NAME = BRANDING.get("name") or "UNIC OMR Scanner"
 
 # Written by the installer (packaging/installer/OMRChecker.iss): data then
 # lives in %LOCALAPPDATA%, never in the program folder the uninstaller removes
@@ -277,7 +295,13 @@ def show_window(station):
         root = tk.Tk()
     except tk.TclError:  # no display
         return False
-    root.title(f"{APP_NAME} {LAUNCHER_VERSION}")
+    root.title(f"{DISPLAY_NAME} {LAUNCHER_VERSION}")
+    icon = BRANDING_DIR / BRANDING.get("icon", "icon.png")
+    if icon.is_file():
+        try:
+            root.iconphoto(True, tk.PhotoImage(file=str(icon)))
+        except tk.TclError:
+            pass
     root.resizable(False, False)
     grey = "#555"
 
@@ -322,7 +346,7 @@ def show_window(station):
             port = int(port_var.get())
             assert 1 <= port <= 65535
         except (ValueError, AssertionError):
-            messagebox.showerror(APP_NAME, "Enter a port between 1 and 65535")
+            messagebox.showerror(DISPLAY_NAME, "Enter a port between 1 and 65535")
             return
         host = "0.0.0.0" if lan_var.get() else "127.0.0.1"
 
@@ -527,6 +551,10 @@ def run_bulk(args):
             argv += [flag, value]
     if args.save_images:
         argv.append("--save-images")
+    if args.resume:
+        argv.append("--resume")
+    if args.sheet_timeout is not None:
+        argv += ["--sheet-timeout", str(args.sheet_timeout)]
     print(f"Results -> {out}", flush=True)
     return batch_main(argv)
 
@@ -646,7 +674,7 @@ def selftest(workers=2):
 # --------------------------------------------------------------------- main
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        prog=APP_NAME, description="OMR engine: web GUI, API and bulk reader"
+        prog=APP_NAME, description=f"{DISPLAY_NAME}: web GUI, API and bulk reader"
     )
     parser.add_argument("--version", action="store_true")
     parser.add_argument(
@@ -690,13 +718,23 @@ def parse_args(argv=None):
     bulk.add_argument("--bubble-model")
     bulk.add_argument("--icr-model")
     bulk.add_argument("--save-images", action="store_true")
+    bulk.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue a stopped --bulk run in --out (error sheets are read again)",
+    )
+    bulk.add_argument(
+        "--sheet-timeout",
+        type=float,
+        help="Skip a sheet still being read after this many seconds (default 300)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     if args.version:
-        print(f"{APP_NAME} {LAUNCHER_VERSION} (Python {sys.version.split()[0]})")
+        print(f"{DISPLAY_NAME} {LAUNCHER_VERSION} (Python {sys.version.split()[0]})")
         return 0
     configure_environment()
     if args.selftest:

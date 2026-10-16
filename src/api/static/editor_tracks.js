@@ -22,6 +22,7 @@ const MODES = {
 const METHODS = [
   ["tracks", "Timing tracks", "Rows of solid marks along the edges; the most robust choice when the form has them."],
   ["markers", "Corner markers", "Four same-size solid squares near the corners, used like a short track."],
+  ["index", "Index points only", "Four or more distinct printed marks (squares, dots, corner markers of any size) matched on their own, without timing tracks."],
   ["page", "Page edges", "The paper's outline; for scans with background around the page."],
   ["image", "Reference image", "Match the whole printed form to the reference image (ECC)."],
   ["none", "None", "The scans are already straight and cropped to the page."],
@@ -84,7 +85,11 @@ function alignmentReport(ed) {
 function currentMethod(ed) {
   const names = (ed.doc.preProcessors || []).map((p) => p.name);
   const t = timing(ed);
-  if (t) return Object.keys(t.options?.tracks || {}).join() === "corners" ? "markers" : "tracks";
+  if (t) {
+    const names = Object.keys(t.options?.tracks || {});
+    if (!names.length && (ed.indexOnly ?? (t.options?.indexPoints || []).length > 0)) return "index";
+    return names.join() === "corners" ? "markers" : "tracks";
+  }
   if (names.includes("CropOnMarkers")) return "markers";
   if (names.includes("CropPage")) return "page";
   if (names.includes("EccAlignment") || names.includes("FeatureBasedAlignment")) return "image";

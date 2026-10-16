@@ -119,6 +119,7 @@ export async function refreshJobs() {
         el("td", {}, counts.needs_review || 0),
         el("td", {}, counts.error || 0),
         el("td", {}, job.throughput_per_s ?? ""),
+        el("td", { title: "Time spent reading, start-up of the readers included (pauses not counted)" }, fmtDuration(job.elapsed_s)),
         el("td", {}, job.state === "running" ? fmtDuration(job.eta_s) : ""),
         el(
           "td",
@@ -130,8 +131,11 @@ export async function refreshJobs() {
           ["queued", "running"].includes(job.state)
             ? el("button", { class: "small", title: "Finish the sheets being read, then stop; Resume reads the rest", onclick: () => jobAction(job, "pause") }, "Pause")
             : null,
-          ["paused", "interrupted"].includes(job.state)
+          ["paused", "interrupted", "failed"].includes(job.state)
             ? el("button", { class: "small primary", title: "Read the remaining sheets", onclick: () => jobAction(job, "resume") }, "Resume")
+            : null,
+          counts.error && ["completed", "paused", "interrupted", "failed"].includes(job.state) && job.source !== "batch"
+            ? el("button", { class: "small", title: "Read the sheets that ended in an error again (reviewed sheets are kept)", onclick: () => jobAction(job, "rescan-errors") }, "Rescan errors")
             : null,
           ["queued", "running", "uploading", "paused", "interrupted"].includes(job.state)
             ? el("button", { class: "small danger", onclick: () => cancelJob(job) }, "Cancel")
@@ -140,7 +144,7 @@ export async function refreshJobs() {
       )
     );
   }
-  if (!data.jobs.length) body.append(el("tr", {}, el("td", { colspan: 10, class: "muted" }, "No jobs yet")));
+  if (!data.jobs.length) body.append(el("tr", {}, el("td", { colspan: 11, class: "muted" }, "No jobs yet")));
   if (active && document.getElementById("tab-jobs").classList.contains("active")) {
     pollTimer = setTimeout(refreshJobs, 1500);
   }
@@ -151,7 +155,7 @@ export async function refreshJobs() {
 async function jobAction(job, action) {
   try {
     await api(`/jobs/${job.id}/${action}`, { method: "POST" });
-    toast(action === "pause" ? "Pausing: sheets being read finish first" : "Job resumed", "ok");
+    toast(action === "pause" ? "Pausing: sheets being read finish first" : action === "rescan-errors" ? "Reading the error sheets again" : "Job resumed", "ok");
   } catch (error) {
     toast(error.message, "error", 6000);
   }

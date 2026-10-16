@@ -626,6 +626,10 @@ def test_failed_sheet_aligned_by_hand_or_typed(tmp_path, spec):
         targets = client.get(f"/scans/{sid}/manual-align").json()
         pw, ph = targets["page_size"]
         assert [pw, ph] == [blank.shape[1], blank.shape[0]]
+        # The layout to place the page by hand: marks and bubbles, template px
+        assert len(targets["timing_marks"]) == sum(len(t["marks"]) for t in options["tracks"].values())
+        assert targets["mark_size"] == [float(w), float(h)]
+        assert targets["bubbles"] and all(len(b) == 4 for b in targets["bubbles"])
         assert client.get(f"/scans/{sid}/views/original").status_code == 200
         corners = [[0, 0], [pw - 1, 0], [pw - 1, ph - 1], [0, ph - 1]]
         bad = client.post(f"/scans/{sid}/manual-align", json={"points": [[0], [1], [2], [3]]})
@@ -781,3 +785,22 @@ def test_single_uploads_grouped_by_exam(tmp_path, spec):
         assert client.patch(f"/jobs/{first['job_id']}", json={"label": "Phones"}).json()["label"] == "Phones"
         assert client.delete(f"/jobs/{first['job_id']}").status_code == 200
         assert client.get("/scans").json()["total"] == 1
+
+
+def test_branding_name_and_icon_are_open(tmp_path):
+    from src.branding import load_branding
+
+    with make_client(tmp_path) as client:
+        brand = client.get("/branding").json()
+        assert brand["name"] == load_branding()["name"]
+        icon = client.get(brand["icon_url"])
+        assert icon.status_code == 200 and icon.headers["content-type"] == "image/png"
+        logo = client.get(brand["logo_url"])
+        assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
+
+
+def test_user_guide_page_and_text(tmp_path):
+    with make_client(tmp_path) as client:
+        assert "help.js" in client.get("/help").text
+        guide = client.get("/guide.md")
+        assert guide.status_code == 200 and "## 3. Results screen" in guide.text

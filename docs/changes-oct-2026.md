@@ -16,6 +16,7 @@ Contents:
 - [Automatic template generation](#automatic-template-generation)
 - [Review queue](#review-queue)
 - [Results screen](#results-screen)
+- [Double marks](#double-marks)
 - [Failed sheets](#failed-sheets)
 - [Duplicate sheets (primary key)](#duplicate-sheets-primary-key)
 - [Live camera page and camera uploads](#live-camera-page-and-camera-uploads)
@@ -61,6 +62,27 @@ Contents:
   `timingMarks.indexSeed` uses the index points for the first guess;
   `nonRigid: "tracks"` corrects along the timing-track grid. Both are stored
   and replayed exactly.
+- **A track paired one mark off is repaired.** Timing tracks repeat, so on
+  a sheet cut short or fed unevenly one track could pair every mark with its
+  neighbour while the other paired correctly. The fit then sheared the page,
+  every mark still matched with a low residual, and one side of the sheet was
+  read a row off (on the "Jhansi Mid Test Fast Run" job: 35 of 6344 sheets,
+  20 of them with no registration flag; healthy sheets shear under 0.006,
+  these about 0.02). When index points are missing or the fit shears more
+  than 0.012, each track is now re-paired up to one mark either way and the
+  fit finding the most index points, then without shear, wins. Sheets with
+  every index point found and no shear skip this. Also in the browser reader
+  (shear only, it does not use index points).
+- **Fast pass works with "Bend to fit the marks"** (Exact and Smooth curve),
+  and has its own editor panel (Options › Fast pass). On 199 Jhansi sheets
+  with each mode, 163 were kept from the half-size read and all 163 matched
+  the full read.
+- **`nonRigid: "tracks"` lands every mark on its template place.** It also
+  corrects side to side: a vertical track's marks drifting left or right are
+  followed when there is no horizontal track (and the other way round). The
+  template editor's "Bend to fit the marks" is now a choice: Off, Exact
+  (`"tracks"`), Smooth curve (`true`) or Curve when marks cover the page
+  (`"auto"`).
 - **Learned bubble model is a second opinion.** By default the threshold read
   decides; when the model disagrees, or sees an erased mark, the bubble goes
   to review (`ml_params.bubble_model_role`, `"decide"` to let the model
@@ -89,6 +111,20 @@ Contents:
 - **Speed benchmark.**
   `python -m src.benchmark.speed --template T.json --images DIR --workers 1 8 16`
   prints sheets per second and the time per stage.
+- **Non-rigid alignment.** The spline basis of the remap grid is reused across
+  sheets: the same maps, 53 ms down to 15 ms per sheet.
+- **Timing-mark blob filter.** Mark shapes are measured for all blobs at once,
+  about 2.5× faster with identical results.
+- **Fast pass (test mode, off by default).** With
+  `speed_params.fast_pass: true` each sheet is first read at half size. The
+  result is kept only when nothing needs review, every bubble is clearly empty
+  (`fast_clear_empty`, 0.25) or clearly filled (`fast_clear_marked`, 0.6) and
+  every zone was read; anything else is read again at full size. On 800 real
+  sheets 72% were kept from the fast read, with 0 answer differences and the
+  same accuracy; time per sheet fell from 193 to 137 ms on one worker.
+  Results say which read was kept in `read_pass` (`fast` or `full`). Only
+  timing-mark templates without non-rigid alignment, border fitting, OCR or
+  image zones, a bubble model or `auto_align` use it. Python engine only.
 
 ## Jobs
 
@@ -103,6 +139,25 @@ Contents:
   [Live camera page and camera uploads](#live-camera-page-and-camera-uploads).
 - **Python 3.8 fix.** Jobs were marked failed after reading every sheet,
   because `shutdown(cancel_futures=True)` needs Python 3.9. This is fixed.
+- **Crashed or hung readers.** A reader process that crashes, or is still on
+  one sheet after `OMR_SHEET_TIMEOUT_S` seconds (300; 0 = no limit), no longer
+  ends the job. The readers are restarted, the sheets they had are read again
+  one at a time, and the one that fails on its own is stored as an error. A
+  job that still fails (the readers kept crashing) can be resumed.
+- **Time taken.** The Jobs table has a **Time** column (`elapsed_s` in the
+  job): the time spent reading, with the start-up of the reader processes
+  included and pauses left out; a resumed job adds to it. The live Sheets/s
+  counter uses the same clock and updates every second, also while the
+  readers are still starting.
+- **Rescan errors.** A button on the Jobs tab reads a job's error sheets
+  again; sheets someone already reviewed are kept. Works on completed,
+  paused, interrupted and failed jobs.
+- **No duplicates after a crash.** A sheet read again (resume after a crash,
+  rescan) replaces its earlier result instead of adding a second one.
+- **`--bulk` / `python -m src.batch`.** `--resume` keeps the sheets already in
+  `--out`, then reads the rest and the error sheets. Every result is written
+  to disk at once, and a crashed or hung sheet (`--sheet-timeout`, 300 s, with
+  2+ workers) becomes an error row instead of ending the run.
 
 ## Template editor
 
@@ -204,6 +259,56 @@ Contents:
   sheet was registered. The Original view draws the page outline. The
   alignment line no longer shows "residual NaN px".
 
+- **Mirror in Regrade.** Regrade › **Mirror the sheet (after the turn)**:
+  left to right or top to bottom (`alignment.flip`). The template editor's
+  Alignment panel has **Turn every sheet** and **Mirror every sheet**.
+- **Undo and redo on a sheet.** Results toolbar **↶ Undo** / **↷ Redo**
+  (Ctrl+Z, Ctrl+Y) take back or redo the open sheet's last change, regrades
+  and hand alignments included (last 20 changes per sheet).
+- **Image settings in Regrade.** An Image group with Turn, Mirror,
+  **Straighten** (`alignment.straighten`, small angle) and **Line the image up
+  by** (template's alignment, page edges only, or nothing), with a picture of
+  the scan as it will be read.
+- **Regrade saves at once.** After **Apply** the sheet's list row and the
+  review queue show the new read too (they kept the old status and values
+  until reloaded).
+- **Who did what.** Every action on a sheet is logged with the person:
+  scanned, reviewed (accepted as read), values changed, regraded, aligned or
+  typed by hand, verified, verification taken back. The side panel's **Who did
+  what** shows it per sheet.
+- **Check changes.** A Results toolbar screen listing the sheets people
+  changed and nobody verified since, with who did what, the changed settings
+  and the changed values; **Verify** per sheet, **Verify ticked** and
+  **Verify all on this page** (administrators when sign-in is on).
+
+## Double marks
+
+Two optional `review_params` settings (0 = off), also under **Review
+thresholds** in the template editor:
+
+- **`keep_darker_gap`** ("Keep darker mark when ahead by"): when two or more
+  bubbles are marked and the darkest is filled this much more than the next,
+  only the darkest counts (flag `kept_darker_mark`).
+- **`strict_double_mark`** ("Strict double marks from"): when one bubble is
+  marked, any other bubble filled at least this much also counts, so the
+  question becomes a double mark (flag `faint_second_mark`, plus
+  `multi_marked`). A field `keep_darker_gap` settled is left alone.
+
+On 800 real sheets, strict at 0.30 caught 45 missed double marks and also
+sent 76 pen dots or ticks to review; keep-darker never matched the answer key,
+which writes every double mark as `*`. Both apply to every bubble field, roll
+numbers included.
+
+## Name and icon: UNIC OMR Scanner
+
+The program is now called **UNIC OMR Scanner** and has its own icon (browser
+tab, app header, sign-in page, launcher window, exe, installer and its
+shortcuts). Both live in `branding/` (`branding.json` and `icon.png`); see
+"Name and icon (branding)" in `packaging/README.md` to change them.
+`GET /branding` returns the name for other front ends. The exe, install
+folder and data folder are still called `OMRChecker`, so existing results
+stay where they are.
+
 ## Failed sheets
 
 A sheet that failed to register can be fixed on the Results screen in two
@@ -213,6 +318,14 @@ ways:
   original, then re-read.
 - **Type the values.** Enter them directly; the form is prefilled from what
   was read.
+- **Place the page by hand.** Also offered for any sheet from the Regrade
+  dialog ("Place the page by hand…"): the template's timing marks (red), index
+  points (blue) and bubbles (grey) are drawn over the original scan. Drag the
+  four corner circles to stretch, or the centre cross to move the whole page,
+  until they sit on the printed ones; arrow keys nudge by 1 px (Shift: 10),
+  "Turn 180°" / "Turn 90°" fix a sheet read the wrong way up. "Regrade with
+  this placement" reads the sheet again through it (the same call as
+  aligning by corners, so it is stored and replayed the same way).
 
 ## Duplicate sheets (primary key)
 
@@ -251,6 +364,37 @@ this station.
     "camera / single uploads".
   - **Sheet name** renames the uploaded photo; empty keeps the photo's name.
 
+## Check changes tab and handing out review work
+
+- **Check changes** is now its own tab. Administrators hand out flagged sheets to reviewers and other administrators in equal shares, see each person's progress (assigned, still to review, reviewed, verified), look at what each person changed, take sheets back, verify changed sheets, or **Send back** sheets to review (to a chosen person, with a note). Every hand-out and send-back is logged.
+- **Results** has an **Assigned to** filter (Anyone, Me, Nobody). The side panel shows who a sheet is assigned to and a warning when it was sent back.
+- With sign-in on, only administrators can verify sheets.
+- **Original as background** now shows the sheet after its turn, mirror and straighten, so a sheet regraded with Turn 180° no longer shows upside down. Hand placement works on that turned view.
+
+## Export straight to a folder, and template packages
+
+- The Export dialog has **Save to folder**: the file is written straight into a folder on the scanning computer, with no download step. Exports already went to disk on the server row by row; this only skips the copy through the browser.
+- Templates have a **Download** button that saves one *name*.omr-template.zip. Upload it on another system to import the template with its name, answer key and reference image.
+
+## Turned sheets: full colour view and hand placement
+
+- **Aligned, full colour** showed a sheet the reader had found upside down (or sideways) turned the wrong way, while **Aligned** was right. The colour scan was being turned by the found orientation and then warped by the recorded transform, which already holds that turn. It is now turned once, so both aligned views match. **Original as background** also shows such a sheet upright, and stays upright after a hand placement.
+- **Place the page by hand** has **Turn image 90°** and **Turn image 180°**, which turn the scan itself. The old buttons are now **Turn template 180°/90°**. `GET /scans/{id}/views/original` takes `turn`, and `POST /scans/{id}/manual-align` takes the same `turn`.
+
+## Following exports
+
+- **Jobs › Exports** lists every export with its progress, time taken and who ran it, with **Download**, **Cancel** and **Delete**. Exports always kept running on the server after the Export window closed; there was just no screen to follow them.
+- The Export window has **Cancel export** and says the export keeps running if the window is closed.
+- An export left running when the server stopped is marked **interrupted** at the next start. A running export can't be deleted; cancel it first.
+- **Pause** and **Resume** a running export (it carries on from where it stopped, while the server keeps running). **Run again** repeats an interrupted, cancelled or failed export.
+- `POST /exports/{id}/cancel`, `/pause`, `/resume` and `/rerun` are new.
+
+## UNIC logo
+
+- The icon (browser tab, top bar, Help page, launcher, exe, installer and shortcuts) is now the UNIC mark from the company logo, and `icon.ico` is regenerated from it.
+- The sign-in page shows the full logo with "Technological Solutions & Consulting" (`branding/logo.png`, `logo` in `branding.json`, `GET /branding` returns `logo_url`).
+- In dark mode the icon and logo sit on a white tile, so the grey and navy stay readable.
+
 ## New settings at a glance
 
 | Setting | Where | Default | What it does |
@@ -262,22 +406,41 @@ this station.
 | `review_flags` gains `border_slide` | config | on | Review a block a printed border would move too far |
 | `ml_params.bubble_model_role` | config | `second_opinion` | Learned model as second opinion or decider |
 | `alignment.rotate` | template | 0 | Turn every sheet 90/180/270° before reading |
+| `alignment.flip` | template | none | Then mirror it: `horizontal` or `vertical` |
+| `alignment.straighten` | template | 0 | Then turn it by a small angle (degrees, clockwise +) |
+| Alignment method **Index points only** | template editor | — | TimingMarkAlignment with no tracks and 4+ `indexPoints` |
 | `timingMarks.earlyStop` | template | on | Faster orientation search |
 | `timingMarks.indexSeed` | template | off | Use index points for the first registration guess |
 | `timingMarks.nonRigid: "tracks"` | template | — | Correct along the timing-track grid |
 | `primaryKey` | template | — | Columns that identify a sheet (duplicates) |
+| `review_params.keep_darker_gap` | config | `0` (off) | Keep only the darkest of several marks when it is clearly ahead |
+| `review_params.strict_double_mark` | config | `0` (off) | A second bubble filled this much makes a double mark |
+| `review_flags` gains `kept_darker_mark`, `faint_second_mark` | config | off | Review the fields those two settings changed |
+| `speed_params.fast_pass` (`fast_scale`, `fast_clear_empty`, `fast_clear_marked`) | config | `false` | Half-size first read (test mode) |
+| `OMR_SHEET_TIMEOUT_S` | environment | `300` | Skip a sheet still being read after this long |
+| `--resume`, `--sheet-timeout` | `--bulk` / `src.batch` | — | Continue a stopped run; skip a hung sheet |
 
 ## New and changed API calls
 
 | Call | What it does |
 |---|---|
-| `POST /jobs/{id}/pause`, `POST /jobs/{id}/resume` | Pause and resume a job |
+| `POST /jobs/{id}/pause`, `POST /jobs/{id}/resume` | Pause and resume a job; resume also takes failed jobs |
+| `POST /jobs/{id}/rescan-errors` | Read a job's error sheets again; returns `rescan_files` |
 | `PATCH /jobs/{id}` | Also takes `label` |
 | `POST /scans` | Takes `batch` (exam name, collects sheets in one job) and `batch_label`; returns `job_id` |
-| `GET/POST /scans/{id}/manual-align` | Align a failed sheet by clicked points |
+| `GET/POST /scans/{id}/manual-align` | Align a sheet by clicked points or a hand placement; GET also returns the template's `timing_marks`, `mark_size` and `bubbles` to draw |
 | `POST /scans/{id}/manual-values` | Type the values of a failed sheet |
 | `POST /scans/{id}/decode` | Decode a barcode/QR inside a box drawn on the sheet |
-| `POST /scans/{id}/regrade` | Template overrides may include `alignment.rotate` |
+| `POST /scans/{id}/regrade` | Template overrides may include `alignment.rotate` and `alignment.flip` |
+| `POST /scans/{id}/undo`, `POST /scans/{id}/redo` | Undo or redo the sheet's last change; sheet payloads carry `undo: {undo, redo}` |
+| `GET /scans/{id}/activity`, `GET /activity` | Who scanned, reviewed, changed, regraded, aligned, typed and verified |
+| `GET /activity/sheets`, `POST /activity/verify` | Changed sheets not verified since, and bulk verify |
+| `POST /activity/return` | Send sheets back to review, optionally to a person, with a note |
+| `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary` | Hand out flagged sheets to people in equal shares, take them back, and see each person's progress |
+| `POST /exports` | Takes `folder`: write the file straight into that server folder; the record carries `path` |
+| `POST /exports/{id}/cancel`, `/pause`, `/resume`, `/rerun` | Stop, pause, resume or repeat an export |
+| `GET /templates/{id}/package` | One .zip of the template to import elsewhere with `POST /templates` |
+| `GET /results?assigned=` | `@me`, a user name, or `__none__` for sheets nobody has |
 | `GET /review`, `/review/counts`, bulk accept | Take a `flag` filter |
 | `GET /review/summary` | Adds `by_flag` and `by_job` |
 | `GET /results?view=` | Adds `unflagged`; `flagged` leaves out verified sheets |
@@ -301,6 +464,17 @@ this station.
   settings (quick tunnel, tunnel token, or API token + hostname) with Copy
   buttons for both addresses, and Quit. See
   [packaging/README.md](../packaging/README.md#the-launcher-window).
+
+## Online installer for Windows
+
+A small `OMRChecker-setup-<version>.exe` installs OMR Checker like a normal
+program (Start menu, optional desktop icon, uninstaller). While installing it
+downloads the program, the OCR models and the tools from the GitHub release
+and checks each file's SHA-256; on a PC without internet, put the three zips
+next to Setup.exe. Data stays in `%LOCALAPPDATA%\OMRChecker\omr_data`, so
+upgrades and uninstalls never touch it. Build one by running **Build Windows
+portable exe** with `installer_release` set, or by pushing a `v*` tag. See
+[packaging/README.md](../packaging/README.md#online-installer).
 
 ## Server folders per user
 

@@ -1,6 +1,7 @@
 // Export dialog: pick a format, build an export profile (columns, names, order,
 // types), preview it and run the export on the server (CSV, XLSX, PDF, SQL).
-import { api, chip, el, modal, on, safeStorage, toast, url } from "./api.js";
+import { api, chip, el, emit, fmtDuration, fmtTime, modal, on, safeStorage, toast, url } from "./api.js";
+import { openBrowser } from "./folders.js";
 
 const TYPES = ["text", "int", "decimal", "date", "bool"];
 const META = ["file_name", "file_id", "page", "scan_id", "job_id", "template_id", "status", "score", "source_path", "verified_by", "error", "created_at"];
@@ -8,6 +9,98 @@ const DEFAULT_META = ["file_name", "page", "scan_id", "status", "score"];
 
 export function initExport() {
   on("export-open", (filters) => openExport(filters || {}));
+  on("exports-changed", refreshExports);
+  document.getElementById("exports-refresh").addEventListener("click", refreshExports);
+}
+
+// ---- Jobs tab: every export, running or done ------------------------------
+const ACTIVE = ["queued", "running", "paused"];
+let exportsTimer = null;
+
+export async function refreshExports() {
+  clearTimeout(exportsTimer);
+  const body = document.querySelector("#exports-table tbody");
+  if (!body) return;
+  let data;
+  try {
+    data = await api("/exports?limit=50");
+  } catch (error) {
+    return;
+  }
+  body.innerHTML = "";
+  let active = false;
+  for (const record of data.exports) {
+    const running = ACTIVE.includes(record.state);
+    active = active || running;
+    const pct = record.total ? Math.min(100, Math.round((100 * (record.rows || 0)) / record.total)) : 0;
+    const end = record.finished_at || (running ? Date.now() / 1000 : null);
+    const start = record.started_at || record.created_at;
+    const actions = [];
+    if (record.state === "completed") {
+      actions.push(el("a", { class: "button small primary", href: url(record.download_url), download: record.file_name }, "Download"));
+    }
+    if (record.state === "paused") {
+      actions.push(el("button", { class: "small primary", title: "Carry on from where it stopped", onclick: () => exportAction(record, "resume") }, "Resume"));
+    } else if (running) {
+      actions.push(el("button", { class: "small", title: "Stop for now and carry on later with Resume (while the server keeps running)", onclick: () => exportAction(record, "pause") }, "Pause"));
+    }
+    if (["interrupted", "cancelled", "failed"].includes(record.state) && record.request) {
+      actions.push(el("button", { class: "small primary", title: "Start the same export again: same sheets, format, columns and folder", onclick: () => exportAction(record, "rerun") }, "Run again"));
+    }
+    if (running) {
+      actions.push(el("button", { class: "small danger", onclick: () => cancelExport(record) }, "Cancel"));
+    } else {
+      actions.push(el("button", { class: "small danger ghost", title: record.path ? "Remove from this list; the file in your folder stays" : "Delete this export and its file", onclick: () => deleteExport(record) }, "Delete"));
+    }
+    body.append(
+      el(
+        "tr",
+        {},
+        el("td", {}, el("div", {}, record.file_name), record.path ? el("div", { class: "mono small muted" }, record.path) : null, record.error && record.state !== "cancelled" ? el("div", { class: "small fs-warn" }, record.error) : null),
+        el("td", { class: "small" }, `${record.format.toUpperCase()} · ${scopeText(record.filters || {})}`),
+        el("td", {}, chip(record.state, record.state === "completed" ? "ok" : record.state === "failed" || record.state === "interrupted" ? "error" : record.state === "paused" ? "paused" : "")),
+        el("td", {}, running ? el("div", { class: "progress" + (record.state === "paused" ? " paused" : "") }, el("div", { style: { width: `${pct}%` } })) : null, el("span", { class: "small muted" }, `${record.rows || 0} / ${record.total} rows`)),
+        el("td", { class: "muted small" }, fmtTime(record.created_at)),
+        el("td", { class: "muted small" }, end && start ? fmtDuration(end - start) : ""),
+        el("td", { class: "muted small" }, record.user || ""),
+        el("td", { class: "actions" }, ...actions)
+      )
+    );
+  }
+  if (!data.exports.length) body.append(el("tr", {}, el("td", { colspan: 8, class: "muted" }, "No exports yet: use Export… in the Results tab")));
+  if (active && document.getElementById("tab-jobs").classList.contains("active")) {
+    exportsTimer = setTimeout(refreshExports, 1500);
+  }
+}
+
+async function cancelExport(record) {
+  if (!confirm(`Stop the export ${record.file_name}? The part written so far is removed.`)) return;
+  try {
+    await api(`/exports/${record.id}/cancel`, { method: "POST" });
+    toast("Export cancelled");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+  refreshExports();
+}
+
+async function exportAction(record, action) {
+  try {
+    await api(`/exports/${record.id}/${action}`, { method: "POST" });
+    if (action === "rerun") toast("Export started again", "ok");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+  refreshExports();
+}
+
+async function deleteExport(record) {
+  try {
+    await api(`/exports/${record.id}`, { method: "DELETE" });
+  } catch (error) {
+    toast(error.message, "error");
+  }
+  refreshExports();
 }
 
 function scopeText(filters) {
@@ -187,7 +280,15 @@ async function openExport(filters) {
     renderMeta();
   };
 
-  const request = (extra) => ({ format: formatSelect.value, filters, profile: profile(), sql_url: formatSelect.value === "sql" ? s.sql.url : undefined, ...extra });
+  // Save straight into a folder on the server (the scanning PC) instead of the export store
+  const folderInput = el("input", { class: "mono", placeholder: "Leave empty to download from the browser", value: safeStorage("get", "omr_export_folder") || "", style: { minWidth: "22em" } });
+  const folderRow = el(
+    "div",
+    { class: "row gap wrap" },
+    el("label", { class: "field inline", title: "The file is written straight into this folder on the computer running the scanner, so large exports need no download" }, "Save to folder ", folderInput),
+    el("button", { class: "small", onclick: () => openBrowser(folderInput.value, (path) => (folderInput.value = path)) }, "Browse…")
+  );
+  const request = (extra) => ({ format: formatSelect.value, filters, profile: profile(), sql_url: formatSelect.value === "sql" ? s.sql.url : undefined, folder: folderInput.value.trim() || undefined, ...extra });
 
   const preview = async () => {
     previewBox.innerHTML = "Loading…";
@@ -210,6 +311,7 @@ async function openExport(filters) {
 
   const run = async () => {
     safeStorage("set", "omr_export_format", formatSelect.value);
+    safeStorage("set", "omr_export_folder", folderInput.value.trim());
     statusBox.innerHTML = "";
     let record;
     try {
@@ -218,11 +320,25 @@ async function openExport(filters) {
       statusBox.append(el("div", { class: "res-warning error" }, error.message));
       return;
     }
+    emit("exports-changed");
     const bar = el("div", { class: "progress" }, el("div", { style: { width: "0%" } }));
     const text = el("span", { class: "muted small" }, "Exporting…");
-    statusBox.append(bar, text);
+    const cancel = el("button", { class: "small danger", onclick: async () => { try { await api(`/exports/${record.id}/cancel`, { method: "POST" }); } catch (error) { toast(error.message, "error"); } } }, "Cancel export");
+    const pause = el("button", { class: "small" }, "Pause");
+    pause.addEventListener("click", async () => {
+      const action = record.state === "paused" ? "resume" : "pause";
+      try {
+        record = await api(`/exports/${record.id}/${action}`, { method: "POST" });
+        pause.textContent = record.state === "paused" ? "Resume" : "Pause";
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    });
+    statusBox.append(bar, text, " ", pause, " ", cancel, el("div", { class: "muted small" }, "You can close this window: the export keeps running on the server. Follow it, download it or cancel it in Jobs › Exports."));
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 700));
+      // The window was closed: the Jobs tab follows the export from here
+      if (!statusBox.isConnected) return;
       try {
         record = await api(`/exports/${record.id}`);
       } catch (error) {
@@ -232,14 +348,21 @@ async function openExport(filters) {
       const pct = record.total ? Math.min(100, Math.round((100 * (record.rows || 0)) / record.total)) : 0;
       bar.firstChild.style.width = `${pct}%`;
       text.textContent = `${record.state} · ${record.rows || 0} / ${record.total} rows`;
-      if (record.state === "completed" || record.state === "failed") break;
+      pause.textContent = record.state === "paused" ? "Resume" : "Pause";
+      if (!ACTIVE.includes(record.state)) break;
     }
+    emit("exports-changed");
     statusBox.innerHTML = "";
-    if (record.state === "failed") {
-      statusBox.append(el("div", { class: "res-warning error" }, record.error));
+    if (record.state !== "completed") {
+      statusBox.append(el("div", { class: "res-warning error" }, record.error || record.state));
       return;
     }
     for (const w of record.warnings || []) statusBox.append(el("div", { class: "res-warning" }, w));
+    if (record.path) {
+      statusBox.append(el("div", { class: "res-warning preview" }, `Saved ${record.rows} rows to `, el("span", { class: "mono" }, record.path)));
+      toast("Export saved", "ok");
+      return;
+    }
     statusBox.append(el("a", { class: "button primary", href: url(record.download_url), download: record.file_name }, `Download ${record.file_name} (${record.rows} rows)`));
     toast("Export ready", "ok");
   };
@@ -310,6 +433,7 @@ async function openExport(filters) {
       { class: "exp" },
       el("div", { class: "row gap wrap" }, el("span", { class: "muted" }, "Sheets: "), chip(scopeText(filters), "ok"), el("span", { class: "spacer" }), profileSelect, el("button", { class: "small", onclick: saveProfile }, "Save profile…")),
       el("div", { class: "row gap wrap exp-format" }, el("label", { class: "field inline" }, "Format ", formatSelect), formatOptions),
+      folderRow,
       el("div", { class: "exp-cols" }, el("div", {}, el("h3", {}, "Fields"), el("div", { class: "exp-table-wrap" }, el("table", { class: "table" }, el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", {}, "Field"), el("th", {}, "Column name"), el("th", {}, "Type"), el("th", {}, ""))), fieldTable))), el("div", {}, el("h3", {}, "Sheet columns"), metaBox, el("h3", {}, "Per field"), optionBox, jsonDetails)),
       previewBox,
       statusBox

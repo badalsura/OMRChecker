@@ -191,7 +191,7 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
         else file_sha256(file_path)
     )
     for page, result in enumerate(results):
-        scan_id = new_id()
+        scan_id = job_scan_id(meta, page)
         scan_dir = scan_dir_for(scans_root, scan_id)
         scan_dir.mkdir(parents=True, exist_ok=True)
         data = result.to_dict()
@@ -247,6 +247,16 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
     return stored
 
 
+def job_scan_id(meta, page):
+    """Scan id of a page: fixed for a job's file and page, so reading a file
+    again (resume after a crash, rescan of errors) replaces its earlier result
+    instead of adding a second one; a fresh id outside jobs."""
+    job_id, seq = meta.get("job_id"), meta.get("seq")
+    if not job_id or seq is None:
+        return new_id()
+    return hashlib.sha1(f"{job_id}:{seq}:{page}".encode()).hexdigest()[:32]
+
+
 def primary_key_fields(engine):
     """Template primaryKey columns and the field labels they are built from."""
     template = getattr(engine, "template", None)
@@ -284,6 +294,31 @@ def job_task(task):
     engine = get_process_engine(task["template_dir"], task["version"])
     stored = scan_and_store(
         engine,
+        task["file_path"],
+        task,
+        task["scans_root"],
+        task["save_images"],
+        copy_input=False,
+    )
+    return [summarize(record) for record in stored]
+
+
+class _FailedRead:
+    """Stands in for the engine to store a sheet that could not be read."""
+
+    template = None
+
+    def __init__(self, message):
+        self.message = message
+
+    def scan_path(self, *args, **kwargs):
+        raise RuntimeError(self.message)
+
+
+def store_failed(task, message):
+    """Store an error result for a sheet whose reader crashed or hung."""
+    stored = scan_and_store(
+        _FailedRead(message),
         task["file_path"],
         task,
         task["scans_root"],

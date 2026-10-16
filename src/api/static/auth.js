@@ -54,7 +54,8 @@ export function showLogin(message) {
   const form = el(
     "form",
     { class: "auth-card" },
-    el("div", { class: "brand" }, el("span", { class: "dot" }), "OMR Station"),
+    el("img", { class: "auth-logo", src: "/branding/logo.png", alt: "", onerror: (e) => e.target.remove() }),
+    el("div", { class: "brand" }, el("img", { class: "brand-icon", src: "/branding/icon.png", alt: "" }), el("span", { class: "brand-name" }, document.title)),
     title,
     first ? el("p", { class: "muted small" }, "From now on everyone signs in to use this station. Programs and the SDK keep using the API key.") : null,
     el("label", { class: "field" }, "User name", name),

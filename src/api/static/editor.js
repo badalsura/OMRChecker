@@ -1421,6 +1421,7 @@ export class TemplateEditor {
         options.renderAlignment(this),
         options.renderReviewParams(this),
         options.renderModels(this),
+        options.renderSpeedParams(this),
         options.renderPdfParams(this),
         options.renderBarcodeDefaults(this),
         this.renderRawJson(raw, jsonSetter, doc)

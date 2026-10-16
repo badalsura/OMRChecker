@@ -9,6 +9,7 @@ Two ways out, both on the original image:
 """
 
 import json
+import math
 import time
 
 import cv2
@@ -19,19 +20,40 @@ from src.api.storage import is_corrected
 
 
 def align_targets(service, result):
-    """Page size and the template's index points, for the click prompts."""
+    """
+    Page size, the template's index points (for the click prompts) and its
+    layout in template pixels (to place the page by hand): timing marks as
+    [x, y] centres with their size, bubbles as [x, y, w, h].
+    """
     with service.engines.engine(result) as (engine, _):
         template = engine.template
         width, height = (int(v) for v in template.page_dimensions)
-        points = []
+        points, marks, mark_size = [], [], None
         for step in template.pre_processors:
             for point in getattr(step, "index_points", None) or []:
                 points.append(
-                    {"name": point["name"], "center": [float(v) for v in point["center"]]}
+                    {
+                        "name": point["name"],
+                        "center": [float(v) for v in point["center"]],
+                        "size": [float(v) for v in point["size"]],
+                    }
                 )
+            for track in (getattr(step, "tracks", None) or {}).values():
+                marks.extend([float(x), float(y)] for x, y in track)
+            if getattr(step, "tracks", None):
+                mark_size = [float(step.mark_w), float(step.mark_h)]
+        bubbles = []
+        for block in template.field_blocks:
+            bw, bh = (float(v) for v in block.bubble_dimensions)
+            for field_bubbles in block.traverse_bubbles:
+                # Printed positions (no per-sheet shift: that comes from a read)
+                bubbles.extend([float(b.x), float(b.y), bw, bh] for b in field_bubbles)
     return {
         "page_size": [width, height],
         "index_points": points,
+        "timing_marks": marks,
+        "mark_size": mark_size,
+        "bubbles": bubbles,
         "output_columns": service.template_info(result)["output_columns"],
     }
 
@@ -53,8 +75,19 @@ def _homography(clicks, targets):
     return matrix.astype(np.float64)
 
 
-def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None):
-    """Read the sheet again through a homography from clicked points."""
+def page_turn(page_homography, width):
+    """How far the page lies turned clockwise on the scan (0, 90, 180, 270),
+    from where the aligned page's top edge falls in the scan's pixels."""
+    inverse = np.linalg.inv(np.asarray(page_homography, np.float64))
+    ends = np.array([[0.0, 0.0, 1.0], [float(width - 1), 0.0, 1.0]]) @ inverse.T
+    (x0, y0), (x1, y1) = ends[:, :2] / ends[:, 2:3]
+    angle = math.degrees(math.atan2(y1 - y0, x1 - x0)) % 360
+    return int(round(angle / 90.0)) * 90 % 360
+
+
+def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None, turn=0):
+    """Read the sheet again through a homography from clicked points.
+    turn: the further clockwise turn of the original view they were made on."""
     from src.utils.image import ImageUtils
 
     with service.ctx.scan_lock(scan_id):
@@ -78,7 +111,6 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             if missing or not names:
                 raise ResultsError(f"Unknown index point(s): {missing or names}", 422)
             goal = [known[n] for n in names]
-        matrix = _homography(clicks, goal)
         with service.engines.engine(result) as (engine, info):
             template = engine.template
             images = ImageUtils.load_omr_image(
@@ -88,13 +120,30 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             if not images or page >= len(images):
                 raise ResultsError(f"Could not read page {page + 1} of '{path}'", 422)
             image = images[page][1]
+            # The clicks were made on the original as shown: after the sheet's
+            # turn, mirror and straighten. Back to the scan's own pixels.
+            from src.api.views_routes import apply_matrix, feed_transform
+
+            feed, _ = feed_transform(
+                service, result, image.shape[1], image.shape[0], turn
+            )
+            if feed is not None:
+                clicks = apply_matrix(np.linalg.inv(feed), clicks)
+            matrix = _homography(clicks, goal)
             white = (255, 255, 255) if image.ndim == 3 else 255
             warped = cv2.warpPerspective(
                 image, matrix, (width, height), flags=cv2.INTER_LINEAR, borderValue=white
             )
             saved = template.pre_processors, template.alignment
             template.pre_processors = []
-            template.alignment = {**saved[1], "page_outline": False}
+            # The clicked corners already place the page: no turn, mirror or outline
+            template.alignment = {
+                **(saved[1] or {}),
+                "page_outline": False,
+                "rotate": 0,
+                "flip": None,
+                "straighten": 0,
+            }
             try:
                 scanned = engine.scan(warped, result.get("file_id") or "sheet")
             finally:
@@ -127,6 +176,7 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             geometry["steps"] = [step] + list(geometry.get("steps") or [])
             geometry["source_size"] = [int(image.shape[1]), int(image.shape[0])]
             geometry["alignment_method"] = f"manual_{kind}"
+            geometry["rotation"] = page_turn(geometry["page_homography"], width)
         record["manual_alignment"] = {
             "kind": kind,
             "points": [[float(x), float(y)] for x, y in clicks],
@@ -135,9 +185,10 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             "by": user,
         }
         record["corrected"] = is_corrected(record)
-        service.save(record)
+        service.save(record, "hand alignment", user)
         service.ctx.index.add_scans([{**summarize(record), "read_review": None}])
         service.renders.drop(scan_id)
+        service.log_activity(record, "aligned", user, {"kind": kind, "names": names or None})
     return record
 
 
@@ -164,6 +215,7 @@ def manual_values(service, scan_id, values, user=None):
         result["reviewed"] = True
         result["status"] = "ok"
         result["corrected"] = True
-        service.save(result)
+        service.save(result, "typed values", user)
         service.ctx.index.add_scans([{**summarize(result), "read_review": None}])
+        service.log_activity(result, "typed", user, {"values": typed})
     return result

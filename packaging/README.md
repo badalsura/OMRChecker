@@ -17,6 +17,7 @@ OMRChecker.exe                                 # API + GUI on http://127.0.0.1:8
 OMRChecker.exe --host 0.0.0.0 --port 8000      # serve the LAN (other PCs, phones, the Python/Java/Go clients)
 OMRChecker.exe --api-key SECRET                # require X-API-Key on every API call
 OMRChecker.exe --bulk D:\scans --template D:\exam\template.json --out D:\results --workers 8
+OMRChecker.exe --bulk D:\scans --template D:\exam\template.json --out D:\results --workers 8 --resume
 OMRChecker.exe --selftest                      # headless check, exit code 0 = OK
 OMRChecker.exe --version
 ```
@@ -25,12 +26,15 @@ OMRChecker.exe --version
   `omr_data\` next to the exe. If that folder is read-only (e.g. under
   `C:\Program Files`) it falls back to `%LOCALAPPDATA%\OMRChecker\omr_data`.
   `--data-dir` overrides both.
-* A small window shows the URL with **Open GUI**, **Copy URL** and **Quit**.
+* A small window shows the URL with **Open GUI**, **Copy** and **Quit**.
   Closing it stops the server. `--no-window` runs as a plain console server.
 * `--bulk` writes `results.csv` and `results.jsonl`; rows with
   `status = needs_review` / `error` or a non-empty `needs_review` column are the
   ones to check by hand (or load the folder as a job in the GUI to use the
-  review screen).
+  review screen). Each row is written as soon as its sheet is read, so a
+  stopped run loses nothing: run it again with `--resume` to read the rest and
+  the error sheets. With 2+ workers a sheet that crashes or hangs (over
+  `--sheet-timeout`, 300 s) becomes an error row instead of ending the run.
 * The in-browser reader (`web/omr-browser`) is bundled and served at `/browser/`.
 
 ### The launcher window
@@ -207,6 +211,25 @@ newer Windows; a Win7 VM is acceptable if no PC is available):
 - [ ] Note the Windows build, browser versions and any missing updates in the
       release notes.
 
+## Name and icon (branding)
+
+The product name and icon live in one folder, `branding/`:
+
+- `branding.json`: `name` (shown in the browser tab, the app header, the
+  sign-in page, the launcher window, the installer and its shortcuts) and
+  `publisher` (installer).
+- `icon.png`: the icon (square, 256 px or larger).
+
+To rebrand, edit `branding.json` and/or replace `icon.png`, then run
+`python packaging\apply_branding.py`. It writes `icon.ico` (exe, installer,
+shortcuts) and `branding.iss` (installer name); `build_windows.bat` runs it
+too. Running from source or with an already built exe, the new name and icon
+show after a restart without rebuilding (edit `branding\` next to
+`OMRChecker.exe` in the onedir build); the exe's own file icon and
+the installer need a rebuild. `apply_branding.py --draw` redraws the default
+icon. The exe, the install folder and the data folder keep the name
+`OMRChecker`, so a rename never moves anyone's results.
+
 ## Building
 
 Build on Windows (7 SP1, 10 or 11, x64) with **Python 3.8.10 x64**
@@ -331,6 +354,9 @@ cannot be shown.
   ~1,310 sheets/min with the default `save_images=review` (61% of these noisy
   phone photos were flagged, so their images were written). Expect roughly 2x
   on an 8-core PC. Measure yours with `clients/python/api_benchmark.py`.
+* Bulk jobs in the GUI survive a reader process that crashes or hangs: the
+  sheet is stored as an error (limit `OMR_SHEET_TIMEOUT_S`, 300 s) and the job
+  goes on. **Rescan errors** on the Jobs tab reads those sheets again.
 * Exclude `omr_data\` and the exe folder from real-time antivirus scanning;
   scanning every written result file is the usual bottleneck on Windows.
 * Exports stream from the index, so even millions of rows use little memory.

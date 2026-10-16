@@ -117,6 +117,42 @@ class ImageInstanceOps:
             companions[key] = cv2.rotate(companions[key], self.TURNS[degrees])
         return turned
 
+    def flip_sheet(self, image, how, companions=None):
+        """Mirror a sheet left to right or top to bottom (alignment "flip"), e.g.
+        a scan saved mirrored or a sheet photographed through the paper."""
+        h, w = image.shape[:2]
+        code, matrix = {
+            "horizontal": (1, [[-1, 0, w - 1], [0, 1, 0]]),
+            "vertical": (0, [[1, 0, 0], [0, -1, h - 1]]),
+        }[how]
+        flipped = cv2.flip(image, code)
+        recorder = self.geometry_recorder
+        if recorder is not None:
+            recorder.warp(matrix, (w, h), affine=True)
+        for key in list(companions or {}):
+            companions[key] = cv2.flip(companions[key], code)
+        return flipped
+
+    def straighten_sheet(self, image, degrees, companions=None):
+        """Turn a sheet by a small angle, clockwise for positive degrees
+        (alignment "straighten"), for a scan fed in slightly skewed."""
+        h, w = image.shape[:2]
+        matrix = cv2.getRotationMatrix2D(((w - 1) / 2.0, (h - 1) / 2.0), -degrees, 1.0)
+        white = (255, 255, 255) if image.ndim == 3 else 255
+        straight = cv2.warpAffine(
+            image, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=white
+        )
+        recorder = self.geometry_recorder
+        if recorder is not None:
+            recorder.warp(matrix, (w, h), affine=True, border=255)
+        for key in list(companions or {}):
+            other = companions[key]
+            fill = (255, 255, 255) if other.ndim == 3 else 255
+            companions[key] = cv2.warpAffine(
+                other, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=fill
+            )
+        return straight
+
     def apply_preprocessors(self, file_path, in_omr, template, companions=None):
         """
         Register the sheet. companions ({key: image of the same size}, e.g. colour
@@ -129,6 +165,12 @@ class ImageInstanceOps:
         turn = int(self.alignment_option(template, "rotate", 0) or 0) % 360
         if turn:
             in_omr = self.turn_sheet(in_omr, turn, companions)
+        flip = self.alignment_option(template, "flip", None)
+        if flip in ("horizontal", "vertical"):
+            in_omr = self.flip_sheet(in_omr, flip, companions)
+        straighten = float(self.alignment_option(template, "straighten", 0) or 0)
+        if abs(straighten) >= 0.01:
+            in_omr = self.straighten_sheet(in_omr, straighten, companions)
         if self.alignment_option(template, "page_outline", False):
             in_omr = self.flatten_page_outline(in_omr, companions, file_path)
         # resize to conform to template, unless registration works on the original
@@ -617,6 +659,10 @@ class ImageInstanceOps:
                             -1,
                         )
 
+                double_mark_flags = self.resolve_double_marks(
+                    field_block_bubbles, bubble_details, detected_bubbles, review_params
+                )
+
                 for bubble in detected_bubbles:
                     field_label, field_value = (
                         bubble.field_label,
@@ -642,7 +688,7 @@ class ImageInstanceOps:
                     len(detected_bubbles),
                     strip_low_confidence,
                     review_params,
-                    rectify_flags(field_block, rectify_failed),
+                    (rectify_flags(field_block, rectify_failed) or []) + double_mark_flags,
                 )
 
                 if config.outputs.show_image_level >= 5:
@@ -976,6 +1022,46 @@ class ImageInstanceOps:
         return float(np.count_nonzero(inside < threshold)) / float(inside.size)
 
     @staticmethod
+    def resolve_double_marks(field_bubbles, bubble_details, detected_bubbles, params):
+        """Optional double-mark rules (review_params; 0 turns each off).
+
+        keep_darker_gap: when two or more bubbles are marked and the darkest
+        is filled this much more than the next, only the darkest counts
+        (flag kept_darker_mark).
+        strict_double_mark: when a bubble is marked, any other bubble filled
+        at least this much counts as marked too, so the field becomes
+        multi_marked (flag faint_second_mark). A field keep_darker_gap
+        settled is left as it is.
+
+        Updates bubble_details and detected_bubbles in place; returns flags.
+        """
+        flags = []
+        gap = params.get("keep_darker_gap", 0) or 0
+        strict = params.get("strict_double_mark", 0) or 0
+        if not detected_bubbles or not (gap or strict):
+            return flags
+        marked = [i for i, d in enumerate(bubble_details) if d["marked"]]
+        if gap and len(marked) > 1:
+            ranked = sorted(marked, key=lambda i: bubble_details[i]["fill_ratio"], reverse=True)
+            fills = [bubble_details[i]["fill_ratio"] for i in ranked]
+            if fills[0] - fills[1] >= gap:
+                for i in ranked[1:]:
+                    bubble_details[i]["marked"] = False
+                    bubble_details[i]["dropped_lighter_mark"] = True
+                marked = ranked[:1]
+                flags.append("kept_darker_mark")
+        if strict and not flags:
+            for i, detail in enumerate(bubble_details):
+                if not detail["marked"] and detail["fill_ratio"] >= strict:
+                    detail["marked"] = True
+                    detail["faint_second_mark"] = True
+                    marked.append(i)
+                    flags.append("faint_second_mark")
+        marked_set = set(marked)
+        detected_bubbles[:] = [b for i, b in enumerate(field_bubbles) if i in marked_set]
+        return flags
+
+    @staticmethod
     def summarize_field(
         field_label,
         value,
@@ -997,6 +1083,7 @@ class ImageInstanceOps:
                 flags.append("weak_mark")
             if (
                 not bubble["marked"]
+                and not bubble.get("dropped_lighter_mark")
                 and bubble["fill_ratio"] > params.max_unmarked_fill_ratio
             ):
                 flags.append("possible_missed_mark")

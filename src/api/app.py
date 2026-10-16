@@ -54,7 +54,7 @@ from src.api import exports as exports_module
 from src.api import jobs as jobs_module
 from src.api import editor_routes, fs_routes, generator_routes, manage_routes, ocr_routes, results_routes, views_routes
 from src.api import template_ops_routes
-from src.api.results import DEFAULT_USER, ResultsService
+from src.api.results import DEFAULT_USER, ResultsService, log_review
 from src.api.review import (
     ReviewError,
     apply_review,
@@ -90,6 +90,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 mimetypes.add_type("application/wasm", ".wasm")
 mimetypes.add_type("text/javascript", ".mjs")
 BROWSER_DIR = Path(__file__).resolve().parents[2] / "web" / "omr-browser"
+# The user guide behind the Help button (bundled in the exe the same way)
+GUIDE_FILE = Path(__file__).resolve().parents[2] / "docs" / "user-guide.md"
 API_VERSION = "1.0"
 
 
@@ -584,6 +586,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     # ------------------------------------------------------------------
     @app.post("/scans", tags=["scans"], dependencies=secured)
     def create_scans(
+        request: Request,
         template_id: str = Form(...),
         files: List[UploadFile] = File(..., description="Images or PDFs"),
         save_images: str = Form(SAVE_ALL),
@@ -606,6 +609,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         ),
     ):
         """Read sheets synchronously. Use /jobs for large batches."""
+        scanned_by = request_user(request, None, DEFAULT_USER)
         require_template(template_id)
         pdf_params = editor_routes.parse_pdf_params(pdf_dpi, pdf_page)
         if len(files) > settings.sync_max_files:
@@ -649,6 +653,18 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         finally:
             shutil.rmtree(upload_dir, ignore_errors=True)
         ctx.index.add_scans(stored)
+        ctx.index.add_activity(
+            [
+                {
+                    "scan_id": result.get("scan_id"),
+                    "job_id": job_id,
+                    "template_id": template_id,
+                    "action": "scanned",
+                    "user": scanned_by,
+                }
+                for result in stored
+            ]
+        )
         if job_id:
             ctx.jobs.finish_batch(job_id, len(files))
         return {
@@ -759,10 +775,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                     recompute(result, engine)
             else:
                 result["status"] = "needs_review" if result.get("review") else "ok"
-            write_json_atomic(ctx.data.scan_dir(scan_id) / "result.json", result)
+            changed = any(e[2] != e[3] for e in events)
+            ctx.results.save(result, "correction" if changed else "accept", reviewer)
             ctx.index.update_after_review(result, resolved)
             ctx.index.sync_review_items(result)
             ctx.index.add_corrections(audit)
+            log_review(ctx.results, result, events, reviewer, "queue")
         records = write_training_records(
             ctx.data.training, result, events, ctx.aligned_image(scan_id, result)
         )
@@ -1006,8 +1024,20 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 "prefetch": prefetch,
                 "name": name,
                 "pdf_params": pdf_params,
+                "created_by": request_user(request, None, DEFAULT_USER),
             },
             start=False,
+        )
+        ctx.index.add_activity(
+            [
+                {
+                    "job_id": job["id"],
+                    "template_id": template_id,
+                    "action": "scanned",
+                    "user": job.get("created_by"),
+                    "detail": {"job": name or "", "folder": folder or None},
+                }
+            ]
         )
         uploaded = [
             save_upload(upload, ctx.jobs.inputs_dir(job["id"]))
@@ -1072,8 +1102,20 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             job = ctx.jobs.get(job_id)
             if job is None:
                 raise HTTPException(404, f"Job '{job_id}' not found")
-            raise HTTPException(409, f"Job is {job['state']}; only a paused or interrupted job can be resumed")
+            raise HTTPException(409, f"Job is {job['state']}; only a paused, interrupted or failed job can be resumed")
         return ctx.jobs.get(job_id)
+
+    @app.post("/jobs/{job_id}/rescan-errors", tags=["jobs"], dependencies=secured)
+    def rescan_job_errors(job_id: str):
+        """Read the job's error sheets again; reviewed sheets are kept."""
+        done = ctx.jobs.rescan_errors(job_id)
+        if done is None:
+            job = ctx.jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404, f"Job '{job_id}' not found")
+            raise HTTPException(409, f"Job is {job['state']}; error sheets can be read again once it has stopped")
+        job, files = done
+        return {**ctx.jobs.get(job_id), "rescan_files": files}
 
     @app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=secured)
     def cancel_job(job_id: str):
@@ -1199,6 +1241,49 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             StaticFiles(directory=BROWSER_DIR, html=True),
             name="browser",
         )
+
+    @app.get("/branding", tags=["meta"])
+    def branding():
+        """Product name and icon (branding/branding.json); open, for the sign-in page."""
+        from src.branding import icon_path, load_branding, logo_path
+
+        brand = load_branding()
+        return {
+            "name": brand["name"],
+            "publisher": brand["publisher"],
+            "icon_url": "/branding/icon.png" if icon_path() else None,
+            "logo_url": "/branding/logo.png" if logo_path() else None,
+        }
+
+    @app.get("/help", include_in_schema=False)
+    def user_guide_page():
+        """The user guide with a contents list and search (docs/user-guide.md)."""
+        return FileResponse(STATIC_DIR / "help.html")
+
+    @app.get("/guide.md", include_in_schema=False)
+    def user_guide_text():
+        if not GUIDE_FILE.is_file():
+            raise HTTPException(404, "The user guide is not installed")
+        return FileResponse(GUIDE_FILE, media_type="text/markdown; charset=utf-8")
+
+    @app.get("/branding/icon.png", include_in_schema=False)
+    @app.get("/favicon.ico", include_in_schema=False)
+    def branding_icon():
+        from src.branding import icon_path
+
+        path = icon_path()
+        if path is None:
+            raise HTTPException(404, "No icon")
+        return FileResponse(path, media_type="image/png")
+
+    @app.get("/branding/logo.png", include_in_schema=False)
+    def branding_logo():
+        from src.branding import logo_path
+
+        path = logo_path()
+        if path is None:
+            raise HTTPException(404, "No logo")
+        return FileResponse(path, media_type="image/png")
 
     @app.get("/", include_in_schema=False)
     @app.get("/ui", include_in_schema=False)

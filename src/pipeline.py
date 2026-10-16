@@ -95,6 +95,9 @@ class ScanResult:
     print_image: Optional[np.ndarray] = None
     # Image zone crops {file name: image}; save with src.readers.image_zone.save_zone_images
     zone_images: dict = field(default_factory=dict)
+    # Test mode (speed_params.fast_pass): "fast" when the half-size read was
+    # kept, "full" when it was re-read the normal way; None when off
+    read_pass: Optional[str] = None
 
     def to_dict(self):
         out = {
@@ -117,6 +120,8 @@ class ScanResult:
             out["geometry"] = self.geometry
         if self.quality is not None:
             out["quality"] = self.quality
+        if self.read_pass is not None:
+            out["read_pass"] = self.read_pass
         return out
 
 
@@ -190,6 +195,22 @@ class OMREngine:
                 else {}
             ),
         }
+        self.fast_engine, self.fast_scale = None, None
+        if (self.tuning_config.get("speed_params") or {}).get("fast_pass"):
+            from src.fast_pass import build_fast_engine
+
+            try:
+                self.fast_engine, self.fast_scale = build_fast_engine(
+                    OMREngine,
+                    template_path,
+                    config_path,
+                    evaluation_path,
+                    config_overrides,
+                    template_overrides,
+                    self,
+                )
+            except Exception as error:
+                logger.warning(f"Fast pass off: {error}")
 
     @property
     def needs_color(self):
@@ -427,6 +448,10 @@ class OMREngine:
         data: the file's bytes when already read (file_path then names it).
         """
         file_path = Path(file_path)
+        if self.fast_engine is not None and file_path.suffix.lower() != ".pdf":
+            fast = self._fast_scan(file_path, data)
+            if fast is not None:
+                return [fast]
         images = self.load_images(file_path, pdf_params, data)
         if not images:
             return [
@@ -439,7 +464,49 @@ class OMREngine:
             except Exception as error:
                 logger.error(f"Failed to process '{name}': {error}")
                 results.append(ScanResult(name, STATUS_ERROR, error=str(error)))
+        if self.fast_engine is not None and file_path.suffix.lower() != ".pdf":
+            for result in results:
+                result.read_pass = "full"
+                if self._last_fast_ms is not None:
+                    result.timings_ms["fast_pass"] = self._last_fast_ms
         return results
+
+    _last_fast_ms = None
+
+    def _fast_scan(self, file_path, data):
+        """The half-size read of an image file when it is clear-cut, else None
+        (the caller then reads it the normal way). See src/fast_pass.py."""
+        from src import fast_pass
+
+        self._last_fast_ms = None
+        started = time.perf_counter()
+        try:
+            source_size = fast_pass.full_size(file_path, data)
+            image = fast_pass.decode_reduced(
+                file_path, data, self.fast_scale, self.needs_color
+            )
+            if source_size is None or image is None:
+                return None
+            # The fast read never keeps images: accepted sheets are "ok", and
+            # images are saved for sheets that need review (re-read in full)
+            result = self.fast_engine.scan(image, file_path.name, keep_images=False)
+            if not fast_pass.accept(result, self.tuning_config.speed_params):
+                return None
+            fast_pass.to_full_scale(
+                result,
+                self.fast_scale,
+                source_size,
+                (image.shape[1], image.shape[0]),
+                self.template.page_dimensions,
+            )
+        except Exception as error:
+            logger.warning(f"Fast pass failed for '{file_path.name}': {error}")
+            return None
+        finally:
+            self._last_fast_ms = _elapsed_ms(started)
+        result.read_pass = "fast"
+        result.timings_ms["total"] = self._last_fast_ms
+        return result
 
 
 def _elapsed_ms(start):

@@ -25,14 +25,17 @@
   #error Pass /DBaseUrl=<release download address>
 #endif
 
-#define AppName "OMR Checker"
+; AppName and AppPublisher: branding\branding.json, written out by
+; packaging\apply_branding.py. The exe, install folder and data folder keep
+; the name OMRChecker so a rename never moves anyone's results.
+#include "..\..\branding\branding.iss"
 #define AppExe "OMRChecker.exe"
 
 [Setup]
 AppId={{6C1F4E2A-5B7D-4C1B-9E52-0D9A8F3B7C41}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=OMR Checker
+AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\OMRChecker
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -50,6 +53,7 @@ OutputBaseFilename=OMRChecker-setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\..\branding\icon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 CloseApplications=yes
@@ -63,6 +67,9 @@ Type: filesandordirs; Name: "{app}\tesseract"
 Type: filesandordirs; Name: "{app}\tessdata"
 Type: filesandordirs; Name: "{app}\models"
 Type: filesandordirs; Name: "{app}\cloudflared"
+; Shortcuts of versions named "OMR Checker" (now named from branding.json)
+Type: files; Name: "{autoprograms}\OMR Checker.lnk"
+Type: files; Name: "{autodesktop}\OMR Checker.lnk"
 
 [Files]
 ; Downloaded, unless the zip is next to Setup.exe

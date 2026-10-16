@@ -3,6 +3,7 @@
 // or typing, verify it, regrade it with overrides, and read the accuracy.
 import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, state, toast, url } from "./api.js";
 import { scoreSummary } from "./score_view.js";
+import { historyBox, isAdmin } from "./activity.js";
 
 const PAGE = 100;
 const r = {
@@ -14,6 +15,7 @@ const r = {
   data: null, // overlay payload of the open sheet
   image: null,
   preview: null, // {data, image} while a regrade preview is shown
+  place: null, // {scanId, targets, quad} while the page is being placed by hand
   view: { scale: 1, x: 0, y: 0 },
   overlay: true,
   selected: null, // field/zone name
@@ -39,7 +41,7 @@ export function initResults() {
   canvas = $("res-canvas");
   ctx2d = canvas.getContext("2d");
   statusLine = $("res-status");
-  for (const id of ["res-template", "res-view", "res-name", "res-flag", "res-job"]) {
+  for (const id of ["res-template", "res-view", "res-name", "res-flag", "res-job", "res-assigned"]) {
     $(id).addEventListener("change", () => {
       if (id === "res-template" || id === "res-job") refreshFacets();
       load(0);
@@ -105,6 +107,12 @@ function isActive() {
 // ---------------------------------------------------------------------------
 // listing
 // ---------------------------------------------------------------------------
+// The signed-in account, else the name typed under User
+function me() {
+  const user = state.auth && state.auth.user;
+  return (user && user.name) || state.user || "local";
+}
+
 function currentFilters() {
   const f = {
     template_id: $("res-template").value,
@@ -113,6 +121,7 @@ function currentFilters() {
     name: $("res-name").value,
     flag: $("res-flag").value,
     file: $("res-file").value.trim(),
+    assigned: $("res-assigned").value === "@me" ? me() : $("res-assigned").value,
   };
   for (const k of Object.keys(f)) if (!f[k]) delete f[k];
   return f;
@@ -246,6 +255,7 @@ function loadImage(src) {
 
 async function open(scanId, { keepView = false, quiet = false } = {}) {
   if (r.align && r.align.scanId !== scanId) r.align = null;
+  if (r.place && r.place.scanId !== scanId) r.place = null;
   r.busy = true;
   if (!quiet) statusLine.textContent = "Rendering…";
   r.preview = null;
@@ -260,6 +270,12 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
     const sheetChanged = !r.data || r.data.scan_id !== data.scan_id;
     r.data = data;
     r.image = image;
+    const row = r.items.find((i) => i.id === data.scan_id);
+    if (row) {
+      row.verified = data.verified ? 1 : 0;
+      row.corrected = data.corrected ? 1 : 0;
+      row.status = data.status;
+    }
     // On another sheet the selection carries over only to a field that needs a
     // look there too; otherwise the last sheet's highlight would follow along
     const kept = r.selected && findItem(r.selected);
@@ -579,9 +595,26 @@ function bindCanvas() {
       r.scan.box = { kind: p.pane.kind, x0: p.x, y0: p.y, x1: p.x, y1: p.y };
       return;
     }
+    if (r.place) {
+      const p = toImage(e.clientX, e.clientY);
+      const handle = p.pane.kind === "original" ? placeHandleAt(p) : null;
+      if (handle !== null) {
+        r.place.active = handle;
+        drag = { place: handle, start: p, quad: r.place.quad.map((q) => q.slice()), pane: p.pane };
+        return;
+      }
+    }
     drag = { x: e.clientX, y: e.clientY, vx: r.view.x, vy: r.view.y, moved: false };
   });
   window.addEventListener("mousemove", (e) => {
+    if (drag && drag.place !== undefined) {
+      const p = toImage(e.clientX, e.clientY, drag.pane);
+      const dx = p.x - drag.start.x;
+      const dy = p.y - drag.start.y;
+      r.place.quad = drag.quad.map(([x, y], i) => (drag.place === "move" || drag.place === i ? [x + dx, y + dy] : [x, y]));
+      draw();
+      return;
+    }
     if (drag && drag.scan) {
       const p = toImage(e.clientX, e.clientY, drag.pane);
       r.scan.box.x1 = p.x;
@@ -616,8 +649,10 @@ function bindCanvas() {
     const was = drag;
     drag = null;
     if (was && was.scan) return decodeBox();
+    if (was && was.place !== undefined) return;
     if (!was || was.moved || e.target !== canvas) return;
     if (r.align) return alignClick(toImage(e.clientX, e.clientY));
+    if (r.place) return;
     const hit = hitTest(toImage(e.clientX, e.clientY));
     if (!hit) return;
     if (hit.kind === "bubble") {
@@ -707,6 +742,10 @@ function drawPane(pane, dpr) {
     return;
   }
   if (r.align && pane.kind === "original") drawAlignClicks(px);
+  if (r.place && pane.kind === "original") {
+    drawPlacement(px);
+    return;
+  }
   if (pane.kind === "original" && r.borders) drawPageOutline(px);
   if (r.scan && r.scan.box && r.scan.box.kind === pane.kind) drawScanBox(r.scan.box, px);
   if (!r.data) return;
@@ -1036,7 +1075,8 @@ function renderSide() {
   side.append(el("div", { id: "res-view-notes" }));
   if (r.data.drift && r.data.drift.length) side.append(el("div", { class: "res-warning" }, `Re-reading now gives different values for: ${r.data.drift.join(", ")}`));
   if (d.error) side.append(el("div", { class: "res-warning error" }, d.error));
-  if (d.status === "error" && !r.preview) side.append(failedSheetBox(d));
+  if (r.place && r.place.scanId === d.scan_id && !r.preview) side.append(placementBox());
+  else if (d.status === "error" && !r.preview) side.append(failedSheetBox(d));
   if (r.preview) side.append(previewBox());
   for (const item of d.sheet_review || []) {
     const detail = item.marked_bubbles !== undefined ? ` (${item.marked_bubbles} marked, minimum ${item.min_marked_bubbles})` : "";
@@ -1117,9 +1157,15 @@ function renderSide() {
       )
     );
   }
+  if (d.assigned_to) side.append(el("div", { class: "muted small" }, `Assigned to ${d.assigned_to.user} by ${d.assigned_to.assigned_by || "?"} · ${new Date(d.assigned_to.at * 1000).toLocaleString()}`));
+  if (d.returned && !d.verified) side.append(el("div", { class: "res-warning" }, `Sent back to review by ${d.returned.by}${d.returned.note ? `: “${d.returned.note}”` : ""}`));
+  side.append(historyBox(d.scan_id));
   renderViewNotes();
   if (d.regrade) side.append(el("div", { class: "muted small" }, `Regraded by ${d.regrade.by} with `, el("code", {}, JSON.stringify({ ...d.regrade.template_overrides, ...d.regrade.config_overrides }))));
+  syncUndo();
   $("res-verify").textContent = verified ? "Unverify" : "Verify ✓";
+  $("res-verify").disabled = !isAdmin();
+  $("res-verify").title = isAdmin() ? "Verify: every value on this sheet is checked (V)" : "An administrator does the final verification";
   $("res-verify").classList.toggle("primary", !verified);
 }
 
@@ -1133,7 +1179,13 @@ function onKey(e) {
     return;
   }
   const k = e.key;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (k.toLowerCase() === "z" || k.toLowerCase() === "y")) {
+    e.preventDefault();
+    return undoStep(k.toLowerCase() === "y" || e.shiftKey ? "redo" : "undo");
+  }
+  if (e.ctrlKey || e.metaKey) return;
   if (k === "Escape" && r.scan) return stopScan();
+  if (r.place && placeKey(e)) return e.preventDefault();
   if (k === "j" || k === "ArrowDown" || k === "ArrowRight") step(1);
   else if (k === "k" || k === "ArrowUp" || k === "ArrowLeft") step(-1);
   else if (k === "v" || (k === "Enter" && !e.target.matches("button"))) verify();
@@ -1144,6 +1196,7 @@ function onKey(e) {
   else if (k === "-") zoom(1 / 1.25);
   else if (k === "o") {
     r.overlay = !r.overlay;
+    $("res-overlay").checked = r.overlay;
     draw();
   } else if (k === "b") setViewOption("borders", !r.borders);
   else if (k === "s") setViewOption("side", !r.side);
@@ -1186,6 +1239,8 @@ export function bindToolbar() {
     safeStorage("set", "omr_res_advance", r.autoAdvance ? "1" : "0");
   });
   $("res-regrade").addEventListener("click", showRegrade);
+  $("res-undo").addEventListener("click", () => undoStep("undo"));
+  $("res-redo").addEventListener("click", () => undoStep("redo"));
   $("res-delete").addEventListener("click", deleteScan);
   // View control: aligned / full colour / original, side by side, borders
   $("res-mode").value = r.mode;
@@ -1248,6 +1303,7 @@ function failedSheetBox(d) {
       { class: "row gap wrap" },
       el("button", { class: "small primary", onclick: () => startAlign("corners") }, "Align by page corners"),
       el("button", { class: "small", onclick: () => startAlign("index") }, "Align by index points"),
+      el("button", { class: "small", onclick: () => startPlacement(d) }, "Place the page by hand"),
       el("button", { class: "small", onclick: () => typeValues(d) }, "Type values…"),
       r.align ? el("button", { class: "small ghost", onclick: () => { r.align = null; draw(); renderSide(); } }, "Cancel clicking") : null
     )
@@ -1335,6 +1391,249 @@ function drawAlignClicks(px) {
     ctx2d.stroke();
     label(r.align.names[i], x + 10 * px, y - 10 * px, px, COLORS.selected);
   });
+}
+
+// ---- placing the whole page by hand: the template's marks, index points and
+// bubbles are drawn over the original scan through 4 draggable page corners;
+// the sheet is then read again through that placement (manual-align, corners)
+const PLACE_HANDLE_PX = 14;
+
+function solveLinear(a, b) {
+  const n = b.length;
+  const m = a.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let pivot = c;
+    for (let i = c + 1; i < n; i++) if (Math.abs(m[i][c]) > Math.abs(m[pivot][c])) pivot = i;
+    if (Math.abs(m[pivot][c]) < 1e-12) return null;
+    [m[c], m[pivot]] = [m[pivot], m[c]];
+    for (let i = 0; i < n; i++) {
+      if (i === c) continue;
+      const f = m[i][c] / m[c][c];
+      for (let j = c; j <= n; j++) m[i][j] -= f * m[c][j];
+    }
+  }
+  return m.map((row, i) => row[n] / row[i]);
+}
+
+// 3x3 homography (row-major, 9 numbers) taking 4 src points onto 4 dst points
+function homography4(src, dst) {
+  const a = [];
+  const b = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i];
+    const [u, v] = dst[i];
+    a.push([x, y, 1, 0, 0, 0, -u * x, -u * y]);
+    b.push(u);
+    a.push([0, 0, 0, x, y, 1, -v * x, -v * y]);
+    b.push(v);
+  }
+  const h = solveLinear(a, b);
+  return h ? [...h, 1] : null;
+}
+
+function project(h, x, y) {
+  const w = h[6] * x + h[7] * y + h[8];
+  return [(h[0] * x + h[1] * y + h[2]) / w, (h[3] * x + h[4] * y + h[5]) / w];
+}
+
+function placeCorners() {
+  const [w, h] = r.place.targets.page_size;
+  return [
+    [0, 0],
+    [w - 1, 0],
+    [w - 1, h - 1],
+    [0, h - 1],
+  ];
+}
+
+async function startPlacement(d) {
+  try {
+    const targets = await api(`/scans/${d.scan_id}/manual-align`);
+    r.align = null;
+    if (r.mode !== "original") setViewOption("mode", "original");
+    await loadViews();
+    // A load started by the view switch is still running: wait for it
+    for (let i = 0; i < 300 && viewEntry("original") && viewEntry("original").loading; i++) await new Promise((done) => setTimeout(done, 100));
+    const entry = viewEntry("original");
+    if (!entry || !entry.meta) return toast("The original scan could not be loaded", "error", 5000);
+    const page = entry.meta.map && entry.meta.map.page;
+    const W = entry.meta.width;
+    const H = entry.meta.height;
+    const quad = page && page.length === 4 ? page.map((p) => p.slice()) : rectQuad(0, 0, W - 1, H - 1);
+    r.place = { scanId: d.scan_id, targets, quad, initial: quad.map((p) => p.slice()), active: null, busy: false, turn: 0 };
+    toast("Drag the corners (or the centre) until the boxes sit on the printed marks, then Regrade", "", 6000);
+    renderSide();
+    draw();
+  } catch (error) {
+    toast(error.message, "error", 5000);
+  }
+}
+
+// Turn the scan itself (not the page box) for hand placement: the original
+// view is fetched again turned, and the page box starts over on it
+async function turnPlacementImage(degrees) {
+  const p = r.place;
+  if (!p || !r.data) return;
+  p.turn = (p.turn + degrees) % 360;
+  const scanId = r.data.scan_id;
+  const entry = { scanId, loading: true, meta: null, image: null, error: null };
+  r.views.original = entry;
+  draw();
+  try {
+    entry.meta = await api(`/scans/${scanId}/views/original?turn=${p.turn}`);
+    entry.image = await loadImage(url(entry.meta.image_url));
+  } catch (error) {
+    entry.error = error.message.replace(/^\d+: /, "");
+    toast(entry.error, "error", 5000);
+  }
+  entry.loading = false;
+  if (r.place !== p || !entry.meta) return draw();
+  p.quad = rectQuad(0, 0, entry.meta.width - 1, entry.meta.height - 1);
+  p.initial = p.quad.map((q) => q.slice());
+  renderSide();
+  draw();
+}
+
+// Back to the original view as stored, after a placement on a turned image
+function untwistOriginal(place) {
+  if (place && place.turn) {
+    delete r.views.original;
+    loadViews();
+  }
+}
+
+function placementBox() {
+  const p = r.place;
+  const turn = (steps) => {
+    // Which scan corner is the page's top-left: turns the page in 90° steps
+    p.quad = p.quad.map((_, i) => p.quad[(i + steps) % 4]);
+    draw();
+  };
+  return el(
+    "div",
+    { class: "res-failed" },
+    el("strong", {}, "Place the page by hand"),
+    el(
+      "p",
+      { class: "muted small" },
+      "Drag a corner circle to stretch, or the centre cross to move the whole page, until the red timing-mark boxes, blue index points and grey bubbles sit on the printed ones. Arrow keys nudge the selected corner (or the whole page) by 1 px, Shift by 10."
+    ),
+    el(
+      "div",
+      { class: "row gap wrap" },
+      el("button", { class: "small primary", disabled: p.busy || undefined, onclick: submitPlacement }, p.busy ? "Reading…" : "Regrade with this placement"),
+      el("button", { class: "small", title: "Turn the scan itself clockwise; the page box starts over on the turned scan", onclick: () => turnPlacementImage(90) }, "Turn image 90°"),
+      el("button", { class: "small", title: "Turn the scan itself upside down; the page box starts over on the turned scan", onclick: () => turnPlacementImage(180) }, "Turn image 180°"),
+      el("button", { class: "small", title: "Turn only the page box (the template) on the scan", onclick: () => turn(2) }, "Turn template 180°"),
+      el("button", { class: "small", title: "Turn only the page box (the template) on the scan", onclick: () => turn(1) }, "Turn template 90°"),
+      el("button", { class: "small", onclick: () => { p.quad = p.initial.map((q) => q.slice()); draw(); } }, "Reset"),
+      el("button", { class: "small ghost", onclick: () => { r.place = null; untwistOriginal(p); renderSide(); draw(); } }, "Cancel")
+    )
+  );
+}
+
+async function submitPlacement() {
+  const p = r.place;
+  if (!p || p.busy) return;
+  p.busy = true;
+  renderSide();
+  try {
+    const points = p.quad.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10]);
+    const data = await api(`/scans/${p.scanId}/manual-align`, { method: "POST", json: { points, kind: "corners", turn: p.turn || 0 } });
+    const changes = data && data.changes ? ` · ${data.changes.length} value(s) changed` : "";
+    toast(`Read again with the page placed by hand${changes}`, "ok");
+    r.place = null;
+    if (p.turn) delete r.views.original;
+    await open(p.scanId);
+    load(r.offset, true);
+    emit("review-changed");
+  } catch (error) {
+    p.busy = false;
+    toast(error.message, "error", 6000);
+    renderSide();
+  }
+}
+
+function placeHandleAt(p) {
+  const px = 1 / (r.view.scale * p.pane.k);
+  const near = (q) => Math.hypot(q[0] - p.x, q[1] - p.y) <= PLACE_HANDLE_PX * px;
+  const index = r.place.quad.findIndex(near);
+  if (index >= 0) return index;
+  return near(placeCentre()) ? "move" : null;
+}
+
+function placeCentre() {
+  const h = homography4(placeCorners(), r.place.quad);
+  const [w, hh] = r.place.targets.page_size;
+  return h ? project(h, w / 2, hh / 2) : r.place.quad[0];
+}
+
+function placeKey(e) {
+  const moves = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  if (e.key === "Escape") {
+    r.place = null;
+    renderSide();
+    draw();
+    return true;
+  }
+  const move = moves[e.key];
+  if (!move) return false;
+  const step = e.shiftKey ? 10 : 1;
+  const active = r.place.active;
+  r.place.quad = r.place.quad.map(([x, y], i) => (active === null || active === "move" || active === i ? [x + move[0] * step, y + move[1] * step] : [x, y]));
+  draw();
+  return true;
+}
+
+function drawPlacement(px) {
+  const p = r.place;
+  const h = homography4(placeCorners(), p.quad);
+  if (!h) return;
+  const t = p.targets;
+  const box = (x, y, w, hh) => path(rectQuad(x, y, w, hh).map(([a, b]) => project(h, a, b)));
+  ctx2d.lineWidth = 1 * px;
+  ctx2d.strokeStyle = "rgba(90, 98, 115, 0.8)";
+  for (const [x, y, w, hh] of t.bubbles || []) {
+    box(x, y, w, hh);
+    ctx2d.stroke();
+  }
+  const [mw, mh] = t.mark_size || [0, 0];
+  ctx2d.lineWidth = 2 * px;
+  ctx2d.strokeStyle = COLORS.selected;
+  for (const [x, y] of t.timing_marks || []) {
+    box(x - mw / 2, y - mh / 2, mw, mh);
+    ctx2d.stroke();
+  }
+  ctx2d.strokeStyle = "#1478dc";
+  for (const point of t.index_points || []) {
+    const [w, hh] = point.size || [16, 16];
+    box(point.center[0] - w / 2, point.center[1] - hh / 2, w, hh);
+    ctx2d.stroke();
+  }
+  // Page outline, corner handles and the centre cross
+  ctx2d.strokeStyle = "#1478dc";
+  ctx2d.setLineDash([10 * px, 6 * px]);
+  path(p.quad);
+  ctx2d.stroke();
+  ctx2d.setLineDash([]);
+  p.quad.forEach(([x, y], i) => {
+    ctx2d.fillStyle = p.active === i ? "rgba(208, 52, 44, 0.5)" : "rgba(20, 120, 220, 0.25)";
+    ctx2d.beginPath();
+    ctx2d.arc(x, y, PLACE_HANDLE_PX * px, 0, Math.PI * 2);
+    ctx2d.fill();
+    ctx2d.stroke();
+    label(CORNER_NAMES[i], x + 16 * px, y - 16 * px, px, "#1478dc");
+  });
+  const [cx, cy] = placeCentre();
+  const c = PLACE_HANDLE_PX * px;
+  ctx2d.strokeStyle = p.active === "move" ? COLORS.selected : "#1478dc";
+  ctx2d.lineWidth = 3 * px;
+  ctx2d.beginPath();
+  ctx2d.moveTo(cx - c, cy);
+  ctx2d.lineTo(cx + c, cy);
+  ctx2d.moveTo(cx, cy - c);
+  ctx2d.lineTo(cx, cy + c);
+  ctx2d.stroke();
 }
 
 async function typeValues(d) {
@@ -1428,14 +1727,18 @@ const REGRADE_EXAMPLE = '{"colorDropout": {"enabled": false}}';
 // The main settings a sheet is usually re-read with; anything else goes in
 // the JSON boxes under Advanced. "t": template override, "c": config override
 const ON_OFF = [[true, "On"], [false, "Off"]];
+const PAGE_EDGES = [{ name: "CropPage", options: { morphKernel: [10, 10] } }];
 const REGRADE_OPTIONS = [
-  { label: "Turn the sheet", where: "t", path: ["alignment", "rotate"], choices: [[90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]], unset: "As scanned" },
+  { group: "image", label: "Turn the sheet", where: "t", path: ["alignment", "rotate"], choices: [[90, "90° clockwise"], [180, "Upside down (180°)"], [270, "90° anticlockwise"]], unset: "As scanned" },
+  { group: "image", label: "Mirror the sheet (after the turn)", where: "t", path: ["alignment", "flip"], choices: [["horizontal", "Left to right"], ["vertical", "Top to bottom"]], unset: "Not mirrored" },
+  { group: "image", label: "Straighten (degrees, + = clockwise)", where: "t", path: ["alignment", "straighten"], number: { min: -45, max: 45, step: 0.1, placeholder: "0" } },
+  { group: "image", label: "Line the image up by", where: "t", path: ["preProcessors"], choices: [[PAGE_EDGES, "Page edges only"], [[], "Nothing: fit the whole image to the page"]], unset: "The template's alignment" },
   { label: "Colour removal", where: "t", path: ["colorDropout"], choices: [["grey", "Plain grey"], ["red", "Red channel (removes red print)"], ["green", "Green channel"], ["blue", "Blue channel"], ["max", "Brightest channel (removes any colour)"]] },
   { label: "Bubble threshold", where: "c", path: ["threshold_params", "mode"], choices: [["adaptive", "Adaptive (per sheet)"], ["fixed", "Fixed level"]] },
   { label: "Fixed level (0–255)", where: "c", path: ["threshold_params", "fixed_threshold"], number: { min: 1, max: 254, placeholder: "120" } },
   { label: "Mark sensitivity (lower counts fainter marks)", where: "c", path: ["threshold_params", "MIN_JUMP"], number: { min: 1, max: 255, placeholder: "25" } },
   { label: "Even out shadows", where: "c", path: ["threshold_params", "flatten_background"], choices: ON_OFF },
-  { label: "Find the page outline (phone photos)", where: "t", path: ["alignment", "page_outline"], choices: ON_OFF },
+  { group: "image", label: "Find the page outline (phone photos)", where: "t", path: ["alignment", "page_outline"], choices: ON_OFF },
   { label: "Fit blocks to their printed borders", where: "t", path: ["alignment", "rectify_on_border"], choices: ON_OFF },
   { label: "Per-block perspective", where: "t", path: ["alignment", "block_perspective"], choices: ON_OFF },
 ];
@@ -1483,12 +1786,13 @@ function showRegrade() {
   const rest = { t: JSON.parse(JSON.stringify(last.template_overrides || {})), c: JSON.parse(JSON.stringify(last.config_overrides || {})) };
   const controls = REGRADE_OPTIONS.map((option) => {
     const value = pathGet(rest[option.where], option.path);
-    const known = option.number ? typeof value === "number" : option.choices.some(([v]) => v === value);
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const known = option.number ? typeof value === "number" : option.choices.some(([v]) => same(v, value));
     if (value !== undefined && known) pathDelete(rest[option.where], option.path);
     const current = known ? value : undefined;
     let input;
     if (option.number) {
-      input = el("input", { type: "number", min: option.number.min, max: option.number.max, placeholder: `template setting (${option.number.placeholder})`, value: current === undefined ? "" : String(current) });
+      input = el("input", { type: "number", min: option.number.min, max: option.number.max, step: option.number.step || 1, placeholder: `template setting (${option.number.placeholder})`, value: current === undefined ? "" : String(current) });
     } else {
       input = el("select", {}, el("option", { value: "" }, option.unset || "Template setting"), option.choices.map(([v, text]) => el("option", { value: JSON.stringify(v) }, text)));
       input.value = current === undefined ? "" : JSON.stringify(current);
@@ -1504,6 +1808,47 @@ function showRegrade() {
     });
     return out;
   };
+  // Thumbnail of the original scan with the turn, mirror and straighten applied
+  const thumb = el("canvas", { width: 220, height: 300 });
+  const control = (path) => controls.find(({ option }) => option.path.join(".") === path).input;
+  const drawThumb = (img) => {
+    if (!img) return;
+    const turn = Number(control("alignment.rotate").value ? JSON.parse(control("alignment.rotate").value) : 0);
+    const flip = control("alignment.flip").value ? JSON.parse(control("alignment.flip").value) : null;
+    const tilt = Number(control("alignment.straighten").value || 0);
+    const sideways = turn === 90 || turn === 270;
+    const w = sideways ? img.naturalHeight : img.naturalWidth;
+    const h = sideways ? img.naturalWidth : img.naturalHeight;
+    const scale = Math.min(220 / w, 300 / h);
+    thumb.width = Math.round(w * scale);
+    thumb.height = Math.round(h * scale);
+    const g = thumb.getContext("2d");
+    g.fillStyle = "#fff";
+    g.fillRect(0, 0, thumb.width, thumb.height);
+    g.save();
+    g.translate(thumb.width / 2, thumb.height / 2);
+    // The reader turns, then mirrors, then straightens; canvas calls apply
+    // to the picture in reverse order
+    g.rotate((tilt * Math.PI) / 180);
+    if (flip) g.scale(flip === "horizontal" ? -1 : 1, flip === "vertical" ? -1 : 1);
+    g.rotate((turn * Math.PI) / 180);
+    g.drawImage(img, (-img.naturalWidth * scale) / 2, (-img.naturalHeight * scale) / 2, img.naturalWidth * scale, img.naturalHeight * scale);
+    g.restore();
+  };
+  let original = r.views.original && r.views.original.image;
+  ["alignment.rotate", "alignment.flip", "alignment.straighten"].forEach((path) => control(path).addEventListener("input", () => drawThumb(original)));
+  ["alignment.rotate", "alignment.flip"].forEach((path) => control(path).addEventListener("change", () => drawThumb(original)));
+  (async () => {
+    if (!original) {
+      try {
+        const meta = await api(`/scans/${r.data.scan_id}/views/original`);
+        original = await loadImage(url(meta.image_url));
+      } catch (e) {
+        return;
+      }
+    }
+    drawThumb(original);
+  })();
   const jsonText = (obj) => (Object.keys(obj).length ? JSON.stringify(obj, null, 1) : "");
   const templateBox = el("textarea", { rows: 5, placeholder: REGRADE_EXAMPLE }, jsonText(rest.t));
   const configBox = el("textarea", { rows: 3, placeholder: '{"review_params": {"min_confidence": 0.3}}' }, jsonText(rest.c));
@@ -1530,9 +1875,8 @@ function showRegrade() {
       const data = await api(`/scans/${r.data.scan_id}/regrade`, { method: "POST", json: body });
       if (apply) {
         dialog.close();
-        toast(`Regraded · ${data.changes.length} value(s) changed`, "ok");
-        r.views = {};
-        await open(r.data.scan_id, { keepView: true });
+        toast(`Regraded and saved · ${data.changes.length} value(s) changed`, "ok");
+        await afterRegrade(r.data.scan_id);
         return;
       }
       const image = await loadImage(fresh(data.image_url));
@@ -1561,17 +1905,80 @@ function showRegrade() {
     el(
       "div",
       {},
-      el("p", { class: "muted small" }, "Re-reads the original file with these settings. Preview first; Apply replaces the stored read (the old one is kept in the history) and re-applies your corrections."),
-      el("div", { class: "regrade-grid" }, controls.map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
+      el("p", { class: "muted small" }, "Re-reads the original scan with these settings: the image settings change the scan itself before it is read, the reading settings how it is read. The template is not changed. Preview first; Apply saves the new read on the sheet (Undo takes it back) and re-applies your corrections."),
+      el("h4", { class: "regrade-head" }, "Image: turn, mirror, straighten and line up the scan"),
+      el(
+        "div",
+        { class: "regrade-image" },
+        el("div", { class: "regrade-grid" }, controls.filter(({ option }) => option.group === "image").map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
+        el("div", { class: "regrade-thumb" }, thumb, el("div", { class: "muted small" }, "The original scan as it will be fed to the reader"))
+      ),
+      el("h4", { class: "regrade-head" }, "Reading settings"),
+      el("div", { class: "regrade-grid" }, controls.filter(({ option }) => option.group !== "image").map(({ option, input }) => el("label", { class: "field" }, option.label, input))),
       advanced,
       el("label", { class: "small" }, keep, " keep my corrections"),
       " ",
       el("label", { class: "small" }, current, " use the current template version"),
       result
     ),
-    [el("button", { onclick: () => run(false) }, "Preview"), el("button", { class: "primary", onclick: () => run(true) }, "Apply")],
+    [
+      el(
+        "button",
+        {
+          class: "ghost",
+          title: "For a sheet read badly out of place: position the page over the template yourself and read it again",
+          onclick: () => {
+            const d = r.data;
+            dialog.close();
+            startPlacement(d);
+          },
+        },
+        "Place the page by hand…"
+      ),
+      el("button", { onclick: () => run(false) }, "Preview"),
+      el("button", { class: "primary", onclick: () => run(true) }, "Apply"),
+    ],
     { wide: true }
   );
+}
+
+// Undo / redo the open sheet's last change (any change: values, accepts,
+// verification, regrade, hand alignment, typed values)
+const UNDO_NAMES = { correction: "value change", accept: "accept", "bulk accept": "bulk accept", verify: "verification", unverify: "unverify", regrade: "regrade", "hand alignment": "hand alignment", "typed values": "typed values" };
+
+function syncUndo() {
+  const u = (r.data && !r.preview && r.data.undo) || {};
+  const label = (step, verb, keys) => (step ? `${verb} ${UNDO_NAMES[step.action] || step.action} by ${step.by} (${keys})` : `Nothing to ${verb.toLowerCase()} on this sheet`);
+  $("res-undo").disabled = !u.undo;
+  $("res-redo").disabled = !u.redo;
+  $("res-undo").title = label(u.undo, "Undo", "Ctrl+Z");
+  $("res-redo").title = label(u.redo, "Redo", "Ctrl+Y");
+}
+
+async function undoStep(direction) {
+  if (!r.data || r.busy) return;
+  if (r.preview) return toast("Apply or discard the regrade preview first", "", 2500);
+  const u = r.data.undo || {};
+  if (!u[direction]) return toast(`Nothing to ${direction} on this sheet`, "", 1500);
+  const scanId = r.data.scan_id;
+  try {
+    const data = await api(`/scans/${scanId}/${direction}`, { method: "POST" });
+    const step = data.undone || data.redone;
+    toast(`${direction === "undo" ? "Undone" : "Redone"}: ${UNDO_NAMES[step.action] || step.action}`, "ok", 2000);
+    await afterRegrade(scanId);
+  } catch (error) {
+    toast(error.message, "error", 5000);
+  }
+}
+
+// An applied regrade is the sheet's stored read from now on: show it, refresh
+// its list row and let the review queue drop what it loaded before
+async function afterRegrade(scanId) {
+  r.views = {};
+  await open(scanId, { keepView: true });
+  load(r.offset, true);
+  emit("review-changed");
+  emit("sheet-changed", scanId);
 }
 
 function changesTable(changes) {
@@ -1602,11 +2009,10 @@ function previewBox() {
           const body = { ...r.preview.body, apply: true };
           try {
             await api(`/scans/${r.data.scan_id}/regrade`, { method: "POST", json: body });
-            toast("Regrade applied", "ok");
+            toast("Regrade applied and saved", "ok");
             const backdrop = document.querySelector(".modal-backdrop");
             if (backdrop) backdrop.remove();
-            r.views = {};
-        await open(r.data.scan_id, { keepView: true });
+            await afterRegrade(r.data.scan_id);
           } catch (error) {
             toast(error.message, "error");
           }

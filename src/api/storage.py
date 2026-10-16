@@ -111,6 +111,9 @@ def scan_dir_for(scans_root, scan_id):
     return Path(scans_root) / scan_id[:2] / scan_id
 
 
+# Results filter value for sheets nobody is assigned to
+UNASSIGNED = "__none__"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS scans (
     id TEXT PRIMARY KEY,
@@ -169,6 +172,30 @@ CREATE TABLE IF NOT EXISTS corrections (
 );
 CREATE INDEX IF NOT EXISTS ix_corrections_scan ON corrections(scan_id, id);
 CREATE INDEX IF NOT EXISTS ix_corrections_at ON corrections(at);
+-- Who did what: scanned, reviewed, corrected, regraded, aligned or typed by
+-- hand, verified (one row per action; value changes are in corrections)
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id TEXT,
+    job_id TEXT,
+    template_id TEXT,
+    action TEXT NOT NULL,
+    user TEXT,
+    detail TEXT,
+    at REAL
+);
+CREATE INDEX IF NOT EXISTS ix_activity_scan ON activity(scan_id, id);
+CREATE INDEX IF NOT EXISTS ix_activity_at ON activity(at);
+-- Who a sheet is handed to for review (an administrator hands out work)
+CREATE TABLE IF NOT EXISTS assignments (
+    scan_id TEXT PRIMARY KEY,
+    user TEXT NOT NULL,
+    assigned_by TEXT,
+    at REAL,
+    template_id TEXT,
+    job_id TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_assign_user ON assignments(user, job_id);
 -- Per field outcome of fully verified sheets: drives the accuracy readout
 CREATE TABLE IF NOT EXISTS field_outcomes (
     scan_id TEXT NOT NULL,
@@ -457,6 +484,24 @@ class ScanIndex:
         rows = self._query("SELECT DISTINCT seq FROM scans WHERE job_id=?", (job_id,))
         return {row["seq"] for row in rows}
 
+    def error_seqs(self, job_id):
+        """Files of a job that ended in an error, except files with a page a
+        person already reviewed."""
+        rows = self._query(
+            "SELECT seq, MAX(status='error') AS failed, MAX(reviewed) AS seen "
+            "FROM scans WHERE job_id=? GROUP BY seq",
+            (job_id,),
+        )
+        return {row["seq"] for row in rows if row["failed"] and not row["seen"]}
+
+    def delete_job_seqs(self, job_id, seqs):
+        """Drop every page of these files of a job from the index."""
+        seqs = set(seqs)
+        if not seqs:
+            return
+        rows = self._query("SELECT id, seq FROM scans WHERE job_id=?", (job_id,))
+        self.delete_scans(row["id"] for row in rows if row["seq"] in seqs)
+
     def status_counts(self, job_id=None, template_id=None):
         where, params = self._filters(job_id=job_id, template_id=template_id)
         rows = self._query(
@@ -574,6 +619,7 @@ class ScanIndex:
         flag=None,
         file=None,
         scan_ids=None,
+        assigned=None,
     ):
         if view and view not in self.RESULT_VIEWS:
             raise ValueError(f"Unknown view '{view}'")
@@ -594,6 +640,11 @@ class ScanIndex:
         if scan_ids:
             clauses.append(f"id IN ({','.join('?' * len(scan_ids))})")
             params.extend(scan_ids)
+        if assigned == UNASSIGNED:
+            clauses.append("id NOT IN (SELECT scan_id FROM assignments)")
+        elif assigned:
+            clauses.append("id IN (SELECT scan_id FROM assignments WHERE user = ?)")
+            params.append(assigned)
         return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
 
     @staticmethod
@@ -695,18 +746,18 @@ class ScanIndex:
             "GROUP BY flag ORDER BY n DESC LIMIT 200",
             params,
         )
-        views = {
-            view: self.count_results(template_id=template_id, job_id=job_id, view=view)
-            for view in (
-                "all",
-                "flagged",
-                "unflagged",
-                "reviewed",
-                "not_reviewed",
-                "corrected",
-                "duplicates",
-            )
-        }
+        # One pass over the scans for every view count (a COUNT per view read a
+        # 200k-sheet job seven times)
+        counted = ("flagged", "unflagged", "reviewed", "not_reviewed", "corrected")
+        columns = ", ".join(
+            f"COALESCE(SUM(CASE WHEN {self.RESULT_VIEWS[v]} THEN 1 ELSE 0 END), 0) AS {v}"
+            for v in counted
+        )
+        row = self._query(f"SELECT COUNT(*) AS all_, {columns} FROM scans {where}", params)[0]
+        views = {"all": row["all_"], **{v: row[v] for v in counted}}
+        views["duplicates"] = self.count_results(
+            template_id=template_id, job_id=job_id, view="duplicates"
+        )
         return {"names": names, "flags": flags, "views": views}
 
     def duplicates_of(self, scan_id, across_jobs=False):
@@ -843,6 +894,171 @@ class ScanIndex:
         ]["n"]
         return items, total
 
+    # ---- assignments ----------------------------------------------------
+    def assign(self, by_user, assigned_by):
+        """by_user: {user: [scan ids]}. A sheet has one assignee; assigning it
+        again moves it."""
+        now = time.time()
+        with self.lock:
+            for user, scan_ids in by_user.items():
+                for start in range(0, len(scan_ids), 500):
+                    chunk = scan_ids[start : start + 500]
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO assignments (scan_id, user, assigned_by, "
+                        "at, template_id, job_id) SELECT id, ?, ?, ?, template_id, job_id "
+                        f"FROM scans WHERE id IN ({','.join('?' * len(chunk))})",
+                        (user, assigned_by, now, *chunk),
+                    )
+            self.conn.commit()
+
+    def unassign(self, scan_ids):
+        scan_ids = list(scan_ids)
+        with self.lock:
+            for start in range(0, len(scan_ids), 500):
+                chunk = scan_ids[start : start + 500]
+                self.conn.execute(
+                    f"DELETE FROM assignments WHERE scan_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+            self.conn.commit()
+
+    def unassign_where(self, template_id=None, job_id=None, user=None):
+        where, params = self._filters(template_id=template_id, job_id=job_id, user=user)
+        with self.lock:
+            count = self.conn.execute(f"DELETE FROM assignments {where}", params).rowcount
+            self.conn.commit()
+        return count
+
+    def list_scans_by_id(self, scan_ids):
+        out = []
+        scan_ids = list(scan_ids)
+        for start in range(0, len(scan_ids), 500):
+            chunk = scan_ids[start : start + 500]
+            out.extend(
+                self._query(
+                    "SELECT id, job_id, template_id FROM scans "
+                    f"WHERE id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+            )
+        return out
+
+    def assignee(self, scan_id):
+        rows = self._query(
+            "SELECT user, assigned_by, at FROM assignments WHERE scan_id = ?", (scan_id,)
+        )
+        return rows[0] if rows else None
+
+    def assignment_summary(self, template_id=None, job_id=None):
+        """Per assignee: sheets handed out, still waiting for review, reviewed
+        (nothing left to review, not verified) and verified."""
+        where, params = self._filters(**{"a.template_id": template_id, "a.job_id": job_id})
+        return self._query(
+            "SELECT a.user, COUNT(*) AS assigned, "
+            "SUM(s.review_count > 0 AND s.verified = 0) AS to_review, "
+            "SUM(s.review_count = 0 AND s.verified = 0) AS reviewed, "
+            "SUM(s.verified = 1) AS verified "
+            f"FROM assignments a JOIN scans s ON s.id = a.scan_id {where} "
+            "GROUP BY a.user ORDER BY a.user",
+            params,
+        )
+
+    def add_activity(self, rows):
+        """rows: dicts with action, user, at and optional scan_id, job_id,
+        template_id, detail (any JSON value)."""
+        if not rows:
+            return
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO activity (scan_id, job_id, template_id, action, user, "
+                "detail, at) VALUES (?,?,?,?,?,?,?)",
+                [
+                    (
+                        r.get("scan_id"),
+                        r.get("job_id"),
+                        r.get("template_id"),
+                        r["action"],
+                        r.get("user"),
+                        None if r.get("detail") is None else json.dumps(r["detail"]),
+                        r.get("at") or time.time(),
+                    )
+                    for r in rows
+                ],
+            )
+            self.conn.commit()
+
+    def list_activity(
+        self,
+        scan_id=None,
+        job_id=None,
+        template_id=None,
+        user=None,
+        action=None,
+        limit=100,
+        offset=0,
+    ):
+        where, params = self._filters(
+            scan_id=scan_id,
+            job_id=job_id,
+            template_id=template_id,
+            user=user,
+            action=action,
+        )
+        items = self._query(
+            "SELECT id, scan_id, job_id, template_id, action, user, detail, at "
+            f"FROM activity {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        for item in items:
+            item["detail"] = json.loads(item["detail"]) if item["detail"] else None
+        total = self._query(f"SELECT COUNT(*) AS n FROM activity {where}", params)[0]["n"]
+        return items, total
+
+    def changed_sheets(
+        self,
+        actions,
+        template_id=None,
+        job_id=None,
+        user=None,
+        include_checked=False,
+        limit=50,
+        offset=0,
+    ):
+        """Sheets people changed after scanning, newest change first. Unless
+        include_checked, only those not verified since their last change."""
+        clauses = [f"a.action IN ({','.join('?' * len(actions))})"]
+        params = list(actions)
+        for column, value in (
+            ("a.template_id", template_id),
+            ("a.job_id", job_id),
+            ("a.user", user),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        having = ""
+        if not include_checked:
+            having = (
+                "HAVING s.verified = 0 OR (verified_at IS NOT NULL "
+                "AND changed_at > verified_at)"
+            )
+        base = (
+            "SELECT s.id AS scan_id, s.file_name, s.status, s.verified, s.job_id, "
+            "s.template_id, s.seq, MAX(a.at) AS changed_at, COUNT(a.id) AS changes, "
+            "GROUP_CONCAT(DISTINCT a.user) AS users, "
+            "GROUP_CONCAT(DISTINCT a.action) AS actions, "
+            "(SELECT MAX(v.at) FROM activity v WHERE v.scan_id = s.id "
+            "AND v.action = 'verified') AS verified_at "
+            "FROM activity a JOIN scans s ON s.id = a.scan_id "
+            f"WHERE {' AND '.join(clauses)} GROUP BY s.id {having}"
+        )
+        items = self._query(
+            f"{base} ORDER BY changed_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        total = self._query(f"SELECT COUNT(*) AS n FROM ({base})", params)[0]["n"]
+        return items, total
+
     def set_outcomes(self, scan_id, rows):
         """rows: (name, kind, template_id, job_id, flagged, corrected) of a verified sheet."""
         with self.lock:
@@ -894,6 +1110,7 @@ class ScanIndex:
                 ("review_items", "scan_id"),
                 ("scan_flags", "scan_id"),
                 ("field_outcomes", "scan_id"),
+                ("assignments", "scan_id"),
             ):
                 self.conn.executemany(
                     f"DELETE FROM {table} WHERE {column}=?",
@@ -903,7 +1120,13 @@ class ScanIndex:
 
     def delete_template_rows(self, template_id):
         with self.lock:
-            for table in ("scans", "review_items", "scan_flags", "field_outcomes"):
+            for table in (
+                "scans",
+                "review_items",
+                "scan_flags",
+                "field_outcomes",
+                "assignments",
+            ):
                 self.conn.execute(
                     f"DELETE FROM {table} WHERE template_id=?", (template_id,)
                 )

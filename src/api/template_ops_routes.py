@@ -11,25 +11,30 @@ Template housekeeping and scoring helpers (plan items 6, 7, 12):
                                        key from a master sheet, scoring preview)
 - POST /templates/{id}/score-preview  score responses with a draft evaluation
 - POST /templates/answer-key/parse    rows of a CSV / Excel answer key file
+- GET  /templates/{id}/package        one .zip to carry the template to another
+                                       system (import it with POST /templates)
 """
 
 import csv
 import io
 import json
+import os
 import shutil
 import tempfile
 import time
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import Body, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from src.api.accounts import request_user
-from src.api.storage import read_json, safe_filename, write_json_atomic
-from src.api.templates import META_FILE, schema_errors
+from src.api.storage import read_json, safe_filename, slugify, write_json_atomic
+from src.api.templates import META_FILE, PACKAGE_FILE, PACKAGE_META, schema_errors
 
 DEFAULT_USER = "local"
 NAME_MAX = 120
@@ -120,6 +125,30 @@ def copy_template_dir(source, target):
             shutil.copy2(path, destination)
 
 
+def write_package(source, meta, out_path):
+    """Zip a template folder (no meta, backups or alignment test sheets) with
+    an omr-package.json naming it, written straight to out_path."""
+    package = {
+        "kind": "omr-template",
+        "version": 1,
+        "name": meta.get("name"),
+        "status": meta.get("status", "ready"),
+        "exported_at": time.time(),
+        "meta": {key: meta[key] for key in PACKAGE_META if key in meta},
+    }
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(PACKAGE_FILE, json.dumps(package, indent=2))
+        for path in sorted(source.rglob("*")):
+            relative = path.relative_to(source)
+            if not path.is_file() or path.name == META_FILE:
+                continue
+            if any(part.startswith(".") for part in relative.parts):
+                continue
+            if relative.parts[0] == "_samples":
+                continue
+            archive.write(path, relative.as_posix())
+
+
 def parse_table(filename, content):
     """Rows (lists of strings) of the first sheet of a CSV / TSV / XLSX file."""
     name = (filename or "").lower()
@@ -189,6 +218,30 @@ def register(app, ctx, secured, template_detail):
         if len(content) > 20 * 1024 * 1024:
             raise HTTPException(413, "The answer key file is too large")
         return {"rows": parse_table(file.filename, content)}
+
+    @app.get("/templates/{template_id}/package", tags=["templates"], dependencies=secured)
+    def package_template(template_id: str):
+        """
+        One .zip with template.json, config, answer key, reference image and
+        other assets, plus the template's name. Upload it on another system
+        (Templates › Upload, or POST /templates) to import the template.
+        """
+        source = require(template_id)
+        meta = store.meta(template_id)
+        handle, path = tempfile.mkstemp(suffix=".zip", prefix="omr-template-")
+        os.close(handle)
+        try:
+            write_package(source, meta, path)
+        except Exception:
+            os.unlink(path)
+            raise
+        name = slugify(meta.get("name") or template_id, template_id)
+        return FileResponse(
+            path,
+            media_type="application/zip",
+            filename=f"{name}.omr-template.zip",
+            background=BackgroundTask(os.unlink, path),
+        )
 
     @app.post(
         "/templates/{template_id}/duplicate",

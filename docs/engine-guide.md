@@ -33,6 +33,8 @@ your labelled data.
 | `weak_mark` | a bubble read as marked has little ink inside its circle (partial fill, tick, misregistration) | yes |
 | `possible_missed_mark` | an unmarked bubble has a lot of ink inside its circle | yes |
 | `model_disagrees` | the learned classifier and the threshold reader disagree | yes |
+| `kept_darker_mark` | several bubbles were marked and only the clearly darkest was kept (`keep_darker_gap`) | no |
+| `faint_second_mark` | a second, lightly filled bubble made the field a double mark (`strict_double_mark`) | no (the field is also `multi_marked`) |
 
 Zones add `not_found`, `multiple_symbols`, `pattern_mismatch`,
 `engine_unavailable`, `no_icr_model` and `read_error`, which go to review, and
@@ -49,10 +51,19 @@ Tune these in `config.json`:
   "min_confidence": 0.35,
   "min_marked_fill_ratio": 0.25,
   "max_unmarked_fill_ratio": 0.6,
+  "keep_darker_gap": 0,
+  "strict_double_mark": 0,
   "review_flags": ["multi_marked", "ambiguous_threshold", "low_confidence",
                    "weak_mark", "possible_missed_mark", "model_disagrees"]
 }
 ```
+
+`keep_darker_gap` and `strict_double_mark` are off at 0. With
+`keep_darker_gap` set, a field with two or more marks keeps only the darkest
+when its fill beats the next by at least the gap. With `strict_double_mark`
+set, a field with one mark also counts any other bubble filled at least that
+much, so it becomes `multi_marked`. A field the first rule settled is left
+alone by the second.
 
 ## Designing sheets for machine reading
 
@@ -114,7 +125,12 @@ sheet if fewer than `minMatchedMarks` marks match or the mean residual exceeds
 phone lens distortion; `nonRigid: "tracks"` instead corrects each row and
 column from the timing marks themselves (a vertical track measures row
 offsets, a horizontal one column offsets, interpolated between opposite tracks
-and never extrapolated past their ends). `indexSeed: true` adds the index
+and never extrapolated past their ends; with tracks in one direction only,
+the same tracks also give the offset across them, so every matched mark lands
+on its template place). When index points are missing or the fit shears the
+page (more than 0.012), each track is re-paired up to one mark pitch either
+way and the fit finding the most index points, then without shear, is kept:
+a track paired one mark off otherwise reads one side of the sheet a row off. `indexSeed: true` adds the index
 points' own fit as a starting guess for the track search. `earlyStop` (on by default; `false` turns it off) stops trying
 orientations once one fits cleanly; 0 and 180 degrees are still both tried (the second with only its 3 unshifted guesses)
 unless the index points already decided.
@@ -450,7 +466,23 @@ python -m src.batch --template forms/exam/template.json --input scans/ --out res
 ```
 
 It writes `results.csv`, which has a `needs_review` column, and
-`results.jsonl`, which has full per-field detail.
+`results.jsonl`, which has full per-field detail. Both are written to disk
+after every sheet.
+
+- `--resume` continues a stopped run in the same `--out`: sheets already read
+  are kept, the rest and the error sheets are read.
+- With 2 or more workers, a sheet that crashes its reader process, or is still
+  being read after `--sheet-timeout` seconds (300; 0 = no limit), becomes an
+  error row and the run carries on.
+
+**Fast pass (test mode).** `"speed_params": {"fast_pass": true}` in
+`config.json` reads each sheet at half size first (`fast_scale`, 0.5 or 0.25)
+and keeps that result only when nothing needs review, every bubble is below
+`fast_clear_empty` (0.25) or above `fast_clear_marked` (0.6) and every zone
+was read; any other sheet is read again at full size. `read_pass` in the
+result says which read was kept. Templates with steps not checked at half
+size (other preprocessors, non-rigid alignment, border fitting, OCR/ICR/image
+zones, a bubble model, `auto_align`, `min_grid_fit`) always read at full size.
 
 On the 4-core development machine, single-threaded reading takes about 65–80 ms
 per sheet, measured on synthetic phone-like sheets at roughly 150 DPI:
@@ -478,6 +510,12 @@ Open `http://host:8000/` for the GUI and `/docs` for the OpenAPI reference.
 | Review | work the review queue; corrections rescore the sheet and are saved as training data |
 | Results | browse graded sheets with their overlay, toggle bubbles, edit values, verify, regrade, measure accuracy ([below](#results-screen)) |
 | Exports | CSV, XLSX, PDF, SQLite or any SQL database, with export profiles ([below](#exports)) |
+
+Jobs resume on their own after a restart and skip the sheets already read.
+A reader process that crashes, or stays on one sheet longer than
+`OMR_SHEET_TIMEOUT_S` (300 s; 0 = no limit), is restarted and that sheet is
+stored as an error; **Rescan errors** (`POST /jobs/{id}/rescan-errors`) reads
+a job's error sheets again, keeping reviewed ones.
 
 Set `OMR_API_KEY` to require an `X-API-Key` header. Server folders: once
 accounts exist, administrators can browse and scan any folder; every other
@@ -855,9 +893,13 @@ and PyInstaller 5.13. Python 3.8 is the last Python that runs on Windows 7.
 - **Running it:** the exe starts the API and GUI on the local machine, opens
   the browser and keeps its data next to the exe.
 - **Headless options:**
-  - `OMRChecker.exe --bulk FOLDER --template T.json` runs a batch without the GUI;
+  - `OMRChecker.exe --bulk FOLDER --template T.json` runs a batch without the GUI
+    (add `--resume` to continue a stopped run);
   - `--host 0.0.0.0` serves the webapp to other machines;
   - `--selftest` checks the install.
+- **Online installer:** `OMRChecker-setup-<version>.exe` installs it as a normal
+  program and downloads the rest from the GitHub release
+  ([packaging/README.md](../packaging/README.md#online-installer)).
 - **Browser needed for the GUI:** Chrome 109 or Firefox ESR 115 on Windows 7.
 - **Not yet tested on Windows 7:** CI builds on Windows Server 2022. Run
   `--selftest` once on a real Windows 7 PC.

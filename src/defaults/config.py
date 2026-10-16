@@ -77,6 +77,12 @@ CONFIG_DEFAULTS = DotMap(
             # Flag the sheet (too_few_marks) when fewer bubbles are marked; 0 = off.
             # Catches pens the colour dropout removed along with the print
             "min_marked_bubbles": 0,
+            # Double marks (0 = off). keep_darker_gap: with two or more marked,
+            # keep only the darkest when its fill beats the next by this much.
+            # strict_double_mark: with one marked, any other bubble filled at
+            # least this much makes the field multi_marked
+            "keep_darker_gap": 0,
+            "strict_double_mark": 0,
             # Flags that send a field to the manual review queue
             "review_flags": [
                 "multi_marked",
@@ -136,6 +142,16 @@ CONFIG_DEFAULTS = DotMap(
             # Handwriting reader when no ICR model is loaded: PaddleOCR when its
             # models are installed ("auto"), or always Tesseract ("tesseract")
             "icr_engine": "auto",
+        },
+        "speed_params": {
+            # Test mode (src/fast_pass.py): read at half size first and re-read
+            # the normal way any sheet that is not clear-cut. Off by default
+            "fast_pass": False,
+            "fast_scale": 0.5,
+            # A fast read is kept only if every unmarked bubble is at most this
+            # full and every marked bubble at least fast_clear_marked full
+            "fast_clear_empty": 0.25,
+            "fast_clear_marked": 0.6,
         },
         "outputs": {
             "show_image_level": 0,

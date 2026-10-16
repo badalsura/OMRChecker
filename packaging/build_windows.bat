@@ -23,6 +23,8 @@ python -m pip install -r packaging\requirements-win7.txt || exit /b 1
 rem Tesseract, the OCR models (English, Hindi; PaddleOCR mobile and server for
 rem printed text and handwriting) and cloudflared are always bundled
 python packaging\prepare_bundle.py || exit /b 1
+rem Name and icon from branding\branding.json and icon.png (icon.ico, branding.iss)
+python packaging\apply_branding.py || echo Branding not refreshed: the committed icon.ico and branding.iss are used
 
 set OMR_BUILD_MODE=%MODE%
 pyinstaller --noconfirm --clean --distpath dist --workpath build\pyinstaller packaging\omr.spec || exit /b 1

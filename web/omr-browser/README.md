@@ -119,6 +119,8 @@ if (result.status !== "ok") {
 | `rectifyOnBorder` / `borderPadding` per block, `alignment_params.rectify_on_border` / `rectify_search_px` | Port of `src/rectify.py`: border line fits, the per-bubble offsets, and `rectify_failed` when no border is found |
 | `colorDropout` (`grey`, `red`, `green`, `blue`, `max`, `color` with `tolerance`, `strength`), per-zone `options.colorDropout`, `templateOverrides` | Port of `src/color.py`, byte for byte (OpenCV's Lab conversion is reproduced). Zone variants follow the page through every registration step |
 | `review_params.min_marked_bubbles` | Same sheet-level `too_few_marks` review item |
+| `review_params.keep_darker_gap`, `strict_double_mark` | Same double-mark rules and flags (`kept_darker_mark`, `faint_second_mark`) |
+| `speed_params.fast_pass` | Not ported (Python test mode); the browser always reads at full size |
 | `validate`, `checks` (normalizers, `onMissing`, `onConflict`, `priority`, `skipInvalid`, `skipFlagged`, `absorbSourceReview`), barcode `fallbackZone`, lazy zones | Port of `src/rules`: same `checks` / `validation` results, output columns and review items. A lazy fallback zone is read only when a check needs it |
 | `TimingMarkAlignment` (orientation 0/90/180/270, residual check, `nonRigid` TPS) | Same algorithm, matching OpenCV's primitives |
 | `CropPage` | Same algorithm (truncate, close, Canny, convex hulls, approxPoly, cosine check), including the Otsu + auto-Canny retry for pages the fixed search misses |

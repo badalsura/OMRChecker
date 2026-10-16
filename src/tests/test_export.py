@@ -5,6 +5,8 @@ import io
 import json
 import random
 import sqlite3
+import threading
+import time
 from datetime import date
 from decimal import Decimal
 
@@ -350,6 +352,82 @@ def test_api_exports_job_with_corrections(tmp_path):
         assert rows[1][header.index("q1")] == "D"  # the corrected value
         assert rows[1][header.index("corrected")] is True
 
+        # Written straight into a folder; a second run does not overwrite it
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        saved = client.post(
+            "/exports", json={**body, "format": "csv", "folder": str(out_dir)}
+        ).json()
+        assert saved["state"] == "completed", saved
+        assert saved["path"] == str(out_dir / saved["file_name"])
+        assert (out_dir / saved["file_name"]).read_text().count("\n") == 4
+        again = client.post(
+            "/exports", json={**body, "format": "csv", "folder": str(out_dir)}
+        ).json()
+        assert again["path"] != saved["path"] and " (2)." in again["file_name"]
+        assert client.get(again["download_url"]).status_code == 200
+        client.delete(f"/exports/{again['id']}")
+        assert len(list(out_dir.iterdir())) == 2  # the user's file stays
+        missing = client.post(
+            "/exports", json={**body, "folder": str(tmp_path / "nope")}
+        )
+        assert missing.status_code == 422
+
+        # Cancel: a queued export stops before writing; it can't be deleted
+        # while active, and one left running by a stopped server is marked
+        manager = client.app.state.ctx.exports
+        held = []
+        manager.pool.submit, real_submit = (lambda *job: held.append(job)), manager.pool.submit
+        try:
+            queued = client.post("/exports", json={**body, "format": "csv", "wait": False}).json()
+        finally:
+            manager.pool.submit = real_submit
+        assert queued["state"] == "queued"
+        assert client.delete(f"/exports/{queued['id']}").status_code == 409
+        assert client.post(f"/exports/{queued['id']}/cancel").status_code == 200
+        held[0][0](*held[0][1:])
+        stopped = client.get(f"/exports/{queued['id']}").json()
+        assert stopped["state"] == "cancelled"
+        # Run again repeats it under a new id
+        again = client.post(f"/exports/{queued['id']}/rerun")
+        assert again.status_code == 201, again.text
+        again = again.json()
+        assert again["id"] != queued["id"] and again["format"] == "csv"
+        for _ in range(100):
+            if client.get(f"/exports/{again['id']}").json()["state"] == "completed":
+                break
+            time.sleep(0.05)
+        assert client.get(f"/exports/{again['id']}").json()["rows"] == 3
+        client.delete(f"/exports/{again['id']}")
+        assert client.delete(f"/exports/{queued['id']}").status_code == 200
+
+        # Pause holds a running export on its first sheet; Resume finishes it
+        held.clear()
+        manager.pool.submit = lambda *job: held.append(job)
+        try:
+            paused = client.post("/exports", json={**body, "format": "csv", "wait": False}).json()
+        finally:
+            manager.pool.submit = real_submit
+        assert client.post(f"/exports/{paused['id']}/pause").json()["state"] == "paused"
+        worker = threading.Thread(target=held[0][0], args=held[0][1:])
+        worker.start()
+        time.sleep(0.6)
+        record = client.get(f"/exports/{paused['id']}").json()
+        assert record["state"] == "paused" and record["rows"] == 0
+        assert client.delete(f"/exports/{paused['id']}").status_code == 409
+        assert client.post(f"/exports/{paused['id']}/resume").json()["state"] == "running"
+        worker.join(10)
+        done = client.get(f"/exports/{paused['id']}").json()
+        assert done["state"] == "completed" and done["rows"] == 3
+        assert client.post(f"/exports/{paused['id']}/pause").status_code == 409
+        client.delete(f"/exports/{paused['id']}")
+
+        stale = {**stopped, "id": "stale", "state": "running"}
+        (manager.root / "stale.json").write_text(json.dumps(stale))
+        manager.mark_interrupted()
+        assert client.get("/exports/stale").json()["state"] == "interrupted"
+        client.delete("/exports/stale")
+
         # Lossy cast: refused, nothing to download
         body = {
             "format": "csv",
@@ -389,11 +467,10 @@ def test_api_exports_job_with_corrections(tmp_path):
             state = client.get(f"/exports/{record['id']}").json()
             if state["state"] in ("completed", "failed"):
                 break
-            import time
 
             time.sleep(0.1)
         assert state["state"] == "completed", state
-        assert len(client.get("/exports").json()["exports"]) == 3
+        assert len(client.get("/exports").json()["exports"]) == 4  # one more saved into a folder above
         assert client.delete(f"/exports/{record['id']}").status_code == 200
         assert client.post("/exports", json={"format": "doc"}).status_code == 422
 

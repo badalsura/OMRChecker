@@ -16,7 +16,7 @@ export const PSM_CHOICES = [
 ];
 
 
-const REVIEW_DEFAULTS = { min_confidence: 0.35, min_marked_fill_ratio: 0.25, max_unmarked_fill_ratio: 0.6, confidence_margin: 20, min_marked_bubbles: 0 };
+const REVIEW_DEFAULTS = { min_confidence: 0.35, min_marked_fill_ratio: 0.25, max_unmarked_fill_ratio: 0.6, confidence_margin: 20, min_marked_bubbles: 0, keep_darker_gap: 0, strict_double_mark: 0 };
 const REVIEW_FLAGS = [
   ["multi_marked", "two or more bubbles marked"],
   ["empty", "nothing marked"],
@@ -26,8 +26,11 @@ const REVIEW_FLAGS = [
   ["possible_missed_mark", "possible missed mark"],
   ["model_disagrees", "bubble model disagrees"],
   ["rectify_failed", "printed border not found"],
+  ["border_slide", "printed border would move the block a lot"],
+  ["kept_darker_mark", "double mark settled by darker bubble"],
+  ["faint_second_mark", "faint second mark"],
 ];
-const DEFAULT_REVIEW_FLAGS = ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees"];
+const DEFAULT_REVIEW_FLAGS = ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees", "border_slide"];
 const BARCODE_ENGINES = ["zxing", "builtin", "opencv", "pyzbar"];
 
 const labeled = (label, control, ctx) => help(el("label", { class: "field" }, label, control), label, ctx);
@@ -120,14 +123,14 @@ function numberInput(value, onchange, placeholder = "", step = "any") {
 }
 
 // ------------------------------------------------------------------ review thresholds
-function slider(label, value, fallback, { min = 0, max = 1, step = 0.01 }, onchange) {
+function slider(label, value, fallback, { min = 0, max = 1, step = 0.01 }, onchange, ctx = "review") {
   const shown = value ?? fallback;
   const range = el("input", { type: "range", min, max, step, value: shown });
   const num = el("input", { type: "number", min, max, step, value: shown, class: "slider-num" });
   range.addEventListener("input", () => (num.value = range.value));
   range.addEventListener("change", () => onchange(Number(range.value)));
   num.addEventListener("change", () => onchange(num.value === "" ? null : Number(num.value)));
-  return labeled(label, el("div", { class: "row gap slider" }, range, num, value === undefined ? el("span", { class: "muted small" }, "default") : null), "review");
+  return labeled(label, el("div", { class: "row gap slider" }, range, num, value === undefined ? el("span", { class: "muted small" }, "default") : null), ctx);
 }
 
 export function renderReviewParams(ed) {
@@ -153,6 +156,8 @@ export function renderReviewParams(ed) {
     slider("Weak mark below", r.min_marked_fill_ratio, REVIEW_DEFAULTS.min_marked_fill_ratio, {}, (v) => set("min_marked_fill_ratio", v)),
     slider("Possible missed mark above", r.max_unmarked_fill_ratio, REVIEW_DEFAULTS.max_unmarked_fill_ratio, {}, (v) => set("max_unmarked_fill_ratio", v)),
     slider("Confidence margin", r.confidence_margin, REVIEW_DEFAULTS.confidence_margin, { min: 1, max: 80, step: 1 }, (v) => set("confidence_margin", v)),
+    slider("Keep darker mark when ahead by", r.keep_darker_gap, REVIEW_DEFAULTS.keep_darker_gap, {}, (v) => set("keep_darker_gap", v)),
+    slider("Strict double marks from", r.strict_double_mark, REVIEW_DEFAULTS.strict_double_mark, {}, (v) => set("strict_double_mark", v)),
     labeled("Min marked bubbles per sheet", numberInput(r.min_marked_bubbles, (v) => set("min_marked_bubbles", v === null ? null : Math.max(0, Math.round(v))), "0 = off", "1"), "review"),
     labeled("Flags that send a field to review", flagBox, "review")
   );
@@ -209,9 +214,16 @@ function renderHistogram(ed, r) {
 }
 
 // ------------------------------------------------------------------ alignment
+const NON_RIGID = [
+  ["", "Off (straight perspective fit)"],
+  ["tracks", "Exact: every mark onto its template place"],
+  ["true", "Smooth curve (curled paper, phone photos)"],
+  ["auto", "Curve when marks cover the page"],
+];
 const ALIGN_METHODS = [
   ["", "None (sheets are already straight)"],
   ["TimingMarkAlignment", "Timing tracks"],
+  ["IndexPoints", "Index points only (no timing tracks)"],
   ["CropOnMarkers", "Corner markers"],
   ["CropPage", "Page edges"],
   ["FeatureBasedAlignment", "Match a reference image (features)"],
@@ -248,12 +260,26 @@ export function renderAlignment(ed) {
   const list = doc.preProcessors || [];
   const index = list.findIndex((p) => ALIGN_NAMES.includes(p.name));
   const proc = index >= 0 ? list[index] : null;
+  // "Index points only" is TimingMarkAlignment without tracks
+  const indexOnly = (p) => p?.name === "TimingMarkAlignment" && !Object.keys(p.options?.tracks || {}).length && (ed.indexOnly ?? (p.options?.indexPoints || []).length > 0);
+  const shownMethod = indexOnly(proc) ? "IndexPoints" : proc?.name || "";
   ed.alignStash = ed.alignStash || {};
   const setMethod = (name) =>
     ed.edit(() => {
       const next = (doc.preProcessors || []).slice();
-      if (proc) ed.alignStash[proc.name] = JSON.parse(JSON.stringify(proc));
-      const created = name ? ed.alignStash[name] || { name, options: defaultOptions(name, ed) } : null;
+      if (proc) ed.alignStash[shownMethod] = JSON.parse(JSON.stringify(proc));
+      ed.indexOnly = name === "IndexPoints";
+      let created = name ? ed.alignStash[name] || { name, options: defaultOptions(name, ed) } : null;
+      if (name === "IndexPoints" && !ed.alignStash[name]) {
+        // Keep index points already set; else the marks the generator suggested
+        const kept = proc?.name === "TimingMarkAlignment" ? proc.options?.indexPoints || [] : [];
+        const suggested = ed.detail?.report?.alignment?.suggested_points || [];
+        const points = (kept.length ? kept : suggested).map((p) => JSON.parse(JSON.stringify(p)));
+        created = { name: "TimingMarkAlignment", options: { tracks: {}, markDimensions: proc?.options?.markDimensions || [20, 10], ...(points.length ? { indexPoints: points } : {}) } };
+      } else if (name === "TimingMarkAlignment" && !ed.alignStash[name] && shownMethod === "IndexPoints") {
+        // Tracks added on top of the index points already set
+        created = JSON.parse(JSON.stringify(proc));
+      }
       if (index >= 0) {
         if (created) next[index] = created;
         else next.splice(index, 1);
@@ -262,7 +288,9 @@ export function renderAlignment(ed) {
         next.push(created);
       }
       doc.preProcessors = next;
-      if (name === "TimingMarkAlignment" && !Object.keys(created.options.tracks || {}).length) {
+      if (name === "IndexPoints" && (created.options.indexPoints || []).length < 4) {
+        toast("Index points only: add 4 or more index points (+ Add index point below); 5 or more lets a wrong match be caught", "", 6000);
+      } else if (name === "TimingMarkAlignment" && !Object.keys(created.options.tracks || {}).length) {
         toast("Timing tracks: draw the tracks (track editor) or paste them into the preProcessors JSON before saving", "", 6000);
       }
     });
@@ -281,9 +309,16 @@ export function renderAlignment(ed) {
     input.addEventListener("change", () => setOpt(key, input.value.trim() || null));
     return labeled(label, input, "align");
   };
-  const body = [labeled("Alignment method", select(ALIGN_METHODS, proc?.name || "", setMethod), "align")];
+  const body = [labeled("Alignment method", select(ALIGN_METHODS, shownMethod, setMethod), "align")];
   const others = list.filter((p) => !ALIGN_NAMES.includes(p.name)).map((p) => p.name);
-  if (proc?.name === "TimingMarkAlignment") {
+  if (shownMethod === "IndexPoints") {
+    const n = (o.indexPoints || []).length;
+    body.push(
+      el("div", { class: n >= 4 ? "muted small" : "chip error" }, `${n} index point(s)${n < 4 ? ": at least 4 are needed" : n < 5 ? ": 5 or more lets a wrong match be caught" : ""}. Add or edit them with the tools below.`),
+      num("Search radius", "searchRadius", "default"),
+      num("Max leftover error", "maxResidual", "default")
+    );
+  } else if (proc?.name === "TimingMarkAlignment") {
     const tracks = Object.entries(o.tracks || {});
     body.push(
       el("div", { class: "muted small" }, tracks.length ? `Tracks: ${tracks.map(([n, t]) => `${n} (${(t.marks || []).length} marks)`).join(", ")} · mark ${(o.markDimensions || []).join(" × ")} px` : "No tracks defined yet."),
@@ -291,7 +326,11 @@ export function renderAlignment(ed) {
       num("Minimum matched marks", "minMatchedMarks", "default", "1"),
       num("Max leftover error", "maxResidual", "default"),
       // upside-down detection: the "Detect upside-down sheets" switch with the tracks below
-      tick("Bend to fit the marks (nonRigid)", "nonRigid")
+      labeled(
+        "Bend to fit the marks (nonRigid)",
+        select(NON_RIGID, o.nonRigid === true ? "true" : o.nonRigid || "", (v) => setOpt("nonRigid", v === "true" ? true : v || null)),
+        "align"
+      )
     );
   } else if (proc?.name === "CropOnMarkers") {
     body.push(text("Marker image", "relativePath", "omr_marker.jpg"), num("Marker width share", "sheetToMarkerWidthRatio", "17"), num("Min match score", "min_matching_threshold", "default"));
@@ -348,6 +387,32 @@ export function renderModels(ed) {
       .catch(() => build([]));
   }
   return section(ed, "models", "Learned models", box);
+}
+
+// ------------------------------------------------------------------ fast pass (speed_params)
+const SPEED_DEFAULTS = { fast_pass: false, fast_scale: 0.5, fast_clear_empty: 0.25, fast_clear_marked: 0.6 };
+const FAST_SCALES = [[0.5, "Half size (recommended)"], [0.25, "Quarter size (fastest, small bubbles may not pass)"]];
+
+export function renderSpeedParams(ed) {
+  const config = ed.configObject() || {};
+  const p = config.speed_params || {};
+  const set = (key, value) => ed.setConfig("speed_params", { [key]: value === SPEED_DEFAULTS[key] || value === null ? null : value });
+  const on = !!p.fast_pass;
+  const sliderIn = (label, key) => slider(label, p[key], SPEED_DEFAULTS[key], {}, (v) => set(key, v), "speed");
+  return section(
+    ed,
+    "speed",
+    `Fast pass${on ? " · on" : ""}`,
+    ticked("Fast first pass at reduced size", on, (v) => set("fast_pass", v), "speed"),
+    labeled("Fast pass size", select(FAST_SCALES, p.fast_scale ?? SPEED_DEFAULTS.fast_scale, (v) => set("fast_scale", Number(v))), "speed"),
+    sliderIn("Keep fast read when empty bubbles are at most", "fast_clear_empty"),
+    sliderIn("…and marked bubbles at least", "fast_clear_marked"),
+    el(
+      "div",
+      { class: "muted small" },
+      "Each sheet is first read at the reduced size; the result is kept only when nothing needs review and every bubble is clearly empty or clearly filled, otherwise the sheet is read again at full size. Works with timing-track templates (Exact and Smooth curve included) whose zones are barcodes or QR codes only."
+    )
+  );
 }
 
 export const PDF_DPI_CHOICES = [["auto", "auto (the PDF's own resolution)"], [150, "150"], [200, "200"], [300, "300"], [400, "400"], [600, "600"]];

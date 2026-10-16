@@ -3,25 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OMR Station</title>
+  <title>UNIC OMR Scanner</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/results_views.css">
   <link rel="stylesheet" href="/static/editor_tools.css">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%232f6fdf'/%3E%3C/svg%3E">
+  <!-- Name and icon come from branding/branding.json (GET /branding); app.js applies them -->
+  <link rel="icon" type="image/png" href="/branding/icon.png">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="dot"></span>OMR Station</div>
+    <div class="brand"><img class="brand-icon" src="/branding/icon.png" alt=""><span class="brand-name">UNIC OMR Scanner</span></div>
     <nav class="tabs" role="tablist">
       <button data-tab="scan" class="active">Scan</button>
       <button data-tab="review">Review queue <span id="review-badge" class="badge hidden"></span></button>
       <button data-tab="results">Results</button>
+      <button data-tab="changes" title="Administrators: hand out review work, check what people changed, verify or send back">Check changes</button>
       <button data-tab="jobs">Jobs</button>
       <button data-tab="templates">Templates</button>
     </nav>
     <div class="topbar-right">
       <button id="user-btn" class="ghost small" title="Your name, recorded with every correction">User</button>
       <button id="api-key-btn" class="ghost small" title="Set the API key">API key</button>
+      <a href="/help" target="_blank" class="ghost small" title="What every screen and option does, with search">Help</a>
       <a href="/docs" target="_blank" class="ghost small">API docs</a>
     </div>
   </header>
@@ -112,6 +115,13 @@
             <label class="field">Flag <select id="res-flag"><option value="">Any flag</option></select></label>
           </div>
           <label class="field">File name <input id="res-file" placeholder="contains…"></label>
+          <label class="field">Assigned to
+            <select id="res-assigned">
+              <option value="">Anyone</option>
+              <option value="@me">Me</option>
+              <option value="__none__">Nobody</option>
+            </select>
+          </label>
           <div class="row gap res-pager">
             <button id="res-prev-page" class="small ghost" title="Previous page">‹</button>
             <span id="res-count" class="muted small"></span>
@@ -149,6 +159,8 @@
             </label>
             <label class="small muted" title="Show the block borders the engine found (solid) or fitted (dashed) (B)"><input type="checkbox" id="res-borders"> borders (B)</label>
             <span class="sep"></span>
+            <button id="res-undo" class="small ghost" disabled title="Undo this sheet's last change (Ctrl+Z)">↶ Undo</button>
+            <button id="res-redo" class="small ghost" disabled title="Redo (Ctrl+Y or Ctrl+Shift+Z)">↷ Redo</button>
             <button id="res-regrade" class="small" title="Re-read with different settings (R)">Regrade…</button>
             <span class="spacer"></span>
             <button id="res-accuracy" class="small ghost">Accuracy</button>
@@ -168,6 +180,50 @@
     </section>
 
     <!-- JOBS -->
+    <section id="tab-changes" class="tab">
+      <div class="panel">
+        <div class="row gap wrap">
+          <label class="field">Template <select id="chg-template" class="template-select" data-allow-all="1"></select></label>
+          <label class="field">Job <select id="chg-job"><option value="">All jobs</option></select></label>
+        </div>
+        <h2>Hand out review work</h2>
+        <p class="muted small">Assign sheets of the template and job above to people. They find them in Results with <b>Assigned to: me</b>, review them, and you verify their work below. The sheets are split into equal runs, in sheet order, between the people named.</p>
+        <div class="row gap wrap">
+          <label class="field">Which sheets
+            <select id="chg-which">
+              <option value="flagged">Flagged, not verified</option>
+              <option value="not_reviewed">Not reviewed</option>
+              <option value="errors">Errors (could not be read)</option>
+              <option value="corrected">Corrected</option>
+              <option value="all">All sheets</option>
+            </select>
+          </label>
+          <label class="field">People (comma between names) <input id="chg-people" list="chg-people-list" placeholder="asha, bob"></label>
+          <datalist id="chg-people-list"></datalist>
+          <label class="field">At most <input id="chg-limit" type="number" min="1" placeholder="all"></label>
+          <label class="small"><input type="checkbox" id="chg-only-new" checked> only sheets nobody has yet</label>
+          <button id="chg-assign" class="primary">Assign</button>
+        </div>
+        <div id="chg-summary"></div>
+      </div>
+      <div class="panel">
+        <h2>Changed sheets</h2>
+        <p class="muted small">Sheets people changed after scanning (values changed or accepted, regraded, aligned or typed by hand) and nobody verified since. Check the settings and values, open a sheet to look at it, then verify it or send it back to review.</p>
+        <div class="row gap wrap">
+          <input id="chg-user" type="search" class="small" placeholder="changed by (user name)">
+          <label class="small"><input type="checkbox" id="chg-all"> include sheets already verified</label>
+          <span id="chg-count" class="muted small"></span>
+          <button id="chg-prev" class="small ghost">‹ Newer</button>
+          <button id="chg-next" class="small ghost">Older ›</button>
+          <span class="spacer"></span>
+          <button id="chg-verify-page">Verify all on this page</button>
+          <button id="chg-return" disabled>Send ticked back</button>
+          <button id="chg-verify" class="primary" disabled>Verify ticked</button>
+        </div>
+        <div id="chg-table"></div>
+      </div>
+    </section>
+
     <section id="tab-jobs" class="tab">
       <div class="panel">
         <h2>New bulk job</h2>
@@ -196,7 +252,7 @@
             <div class="help-line small muted">Copies the sheets from this computer to the server. Use it when the server is another machine, or for a few hundred sheets.</div>
           </div>
           <div class="source-box" data-help>
-            <strong>…or a folder on the server <span class="help-i" tabindex="0" title="Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.">ⓘ</span></strong>
+            <strong>…or a folder on the server <span class="help-i" tabindex="0" title="Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running this program (on the portable app, that is this PC) or on a network drive it can reach.">ⓘ</span></strong>
             <div class="row gap wrap">
               <input id="job-folder" placeholder="D:\scans\batch-01" size="40" spellcheck="false" autocomplete="off">
               <button id="job-browse" class="small" type="button" title="Pick a folder on the server">Browse…</button>
@@ -206,7 +262,7 @@
               <label class="small"><input id="job-recursive" type="checkbox" checked> Include subfolders <span class="help-i" tabindex="0" title="Also read the sheets in every folder inside this one. Untick to read only the files directly in this folder.">ⓘ</span></label>
               <span id="job-folder-check" class="small muted"></span>
             </div>
-            <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running OMR Checker (on the portable app, that is this PC) or on a network drive it can reach.</div>
+            <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running this program (on the portable app, that is this PC) or on a network drive it can reach.</div>
             <div class="small muted">Examples: Windows <code>D:\scans\batch-01</code> · network share <code>\\server\scans\batch-01</code> · Linux <code>/srv/scans/batch-01</code></div>
           </div>
         </div>
@@ -218,7 +274,14 @@
       <div class="panel">
         <div class="row"><h2>Jobs</h2><span class="spacer"></span><button id="jobs-refresh" class="small ghost">Refresh</button></div>
         <table class="table" id="jobs-table">
-          <thead><tr><th>Job</th><th>Template</th><th>State</th><th>Progress</th><th>OK</th><th>Review</th><th>Error</th><th>Sheets/s</th><th>ETA</th><th></th></tr></thead>
+          <thead><tr><th>Job</th><th>Template</th><th>State</th><th>Progress</th><th>OK</th><th>Review</th><th>Error</th><th>Sheets/s</th><th>Time</th><th>ETA</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="panel" id="exports-panel">
+        <div class="row"><h2>Exports</h2><span class="muted small">&nbsp;Exports keep running on the server when you close the Export window.</span><span class="spacer"></span><button id="exports-refresh" class="small ghost">Refresh</button></div>
+        <table class="table" id="exports-table">
+          <thead><tr><th>File</th><th>Sheets</th><th>State</th><th>Progress</th><th>Started</th><th>Took</th><th>By</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>

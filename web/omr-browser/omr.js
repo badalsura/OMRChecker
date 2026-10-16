@@ -36,6 +36,8 @@
         min_marked_fill_ratio: 0.25,
         max_unmarked_fill_ratio: 0.6,
         min_marked_bubbles: 0,
+        keep_darker_gap: 0,
+        strict_double_mark: 0,
         review_flags: ["multi_marked", "ambiguous_threshold", "low_confidence", "weak_mark", "possible_missed_mark", "model_disagrees"],
       },
       ml_params: { bubble_model_path: null, icr_model_path: null },
@@ -60,6 +62,8 @@
     var TM_DEFAULT_SIZE_TOLERANCE = 0.5, TM_DEFAULT_MIN_MATCHED = 8, TM_DEFAULT_MAX_RESIDUAL = 3.0, TM_MIN_PAGE_AREA_FRACTION = 0.3, TPS_GRID_STEP = 16;
     // A fit matching this share of marks with none past the track ends is final
     var TM_GOOD_FIT_FRACTION = 0.95, TM_MIN_TILT_DEGREES = 0.3;
+    // Shear a real scan stays under; a track paired one mark off shears about 0.02
+    var TM_MAX_SHEAR = 0.012;
     // CropPage
     var MIN_PAGE_AREA_THRESHOLD = 80000, MAX_COSINE_THRESHOLD = 0.35, APPROX_POLY_EPSILON_FACTOR = 0.025;
 
@@ -1887,6 +1891,7 @@
       for (var r = 0; r < rotations.length; r++) {
         var fit = this.fitOrientation(corners, candidates, rotations[r]);
         if (!fit) continue;
+        fit = this.repairTrackSlides(fit, candidates);
         if (!best || fit.matched > best.matched || (fit.matched === best.matched && fit.residual < best.residual)) best = fit;
       }
       if (!best || best.matched < this.minMatched) {
@@ -2030,6 +2035,65 @@
         if (!best || fitKeyGreater(fit, best)) best = fit;
         if (fit.beyondEnds === 0 && fit.matched >= TM_GOOD_FIT_FRACTION * this.expected.length) break;
       }
+      return best;
+    };
+    // Shear of the homography's affine part, scale removed (_shear)
+    function homographyShear(H) {
+      var det = Math.abs(H[0] * H[4] - H[1] * H[3]) || 1;
+      return Math.abs(H[1] + H[3]) / Math.sqrt(det);
+    }
+    // One track paired with its neighbouring marks shears the fit; re-pair each
+    // track up to one pitch either way and keep a fit without shear
+    // (repair_track_slides; the port has no index points, so shear decides)
+    TimingMarkAlignment.prototype.repairTrackSlides = function (fit, candidates) {
+      var self = this;
+      var names = [];
+      this.tracks.forEach(function (m, t) {
+        if (m.length >= 3) names.push(t);
+      });
+      if (!names.length || homographyShear(fit.homography) <= TM_MAX_SHEAR) return fit;
+      var radius = this.searchRadius * this.pixelsPerUnit(fit.homography);
+      var pairs = this.match(fit.homography, candidates, radius * 0.5);
+      if (pairs.length < 4) return fit;
+      var owner = [];
+      this.tracks.forEach(function (m, t) {
+        for (var i = 0; i < m.length; i++) owner.push([t, i]);
+      });
+      if (fit.beyondEnds === undefined) fit.beyondEnds = this.marksBeyondTrackEnds(fit.homography, candidates, radius * 0.5);
+      var best = fit;
+      var combos = [[]];
+      names.forEach(function () {
+        var next = [];
+        combos.forEach(function (c) {
+          [-1, 0, 1].forEach(function (s) {
+            next.push(c.concat([s]));
+          });
+        });
+        combos = next;
+      });
+      combos.forEach(function (shifts, c) {
+        if (shifts.every(function (s) { return s === 0; })) return;
+        var shiftOf = {};
+        names.forEach(function (t, k) {
+          shiftOf[t] = shifts[k];
+        });
+        var tp = [], ip = [];
+        pairs.forEach(function (p) {
+          var o = owner[p[0]], marks = self.tracks[o[0]], moved = o[1] + (shiftOf[o[0]] || 0);
+          if (moved >= 0 && moved < marks.length) {
+            tp.push(marks[moved]);
+            ip.push(candidates[p[1]]);
+          }
+        });
+        if (tp.length < 4 || !spansTwoDimensions(tp)) return;
+        var start = findHomographyLS(tp, ip);
+        if (!start) return;
+        var cand = self.refine(start, candidates, radius, 4321 + c * 17);
+        if (!cand || cand.matched < fit.matched - 3 || homographyShear(cand.homography) > TM_MAX_SHEAR) return;
+        cand.rotation = fit.rotation;
+        cand.beyondEnds = self.marksBeyondTrackEnds(cand.homography, candidates, radius * 0.5);
+        if (best === fit || fitKeyGreater(cand, best)) best = cand;
+      });
       return best;
     };
     function fitKeyGreater(a, b) {
@@ -2767,6 +2831,46 @@
       for (var j = 0; j < n; j++) s += (arr[j] - m) * (arr[j] - m);
       return Math.sqrt(s / n);
     }
+    // Optional double-mark rules (review_params, 0 = off); port of
+    // ImageInstanceOps.resolve_double_marks. Updates details and detected.
+    function resolveDoubleMarks(fieldBubbles, details, detected, params) {
+      var flags = [];
+      var gap = params.keep_darker_gap || 0, strict = params.strict_double_mark || 0;
+      if (!detected.length || !(gap || strict)) return flags;
+      var marked = [];
+      details.forEach(function (d, i) {
+        if (d.marked) marked.push(i);
+      });
+      if (gap && marked.length > 1) {
+        // Stable sort, darkest first, like Python's sorted(reverse=True)
+        var ranked = marked.slice().sort(function (a, b) {
+          return details[b].fill_ratio - details[a].fill_ratio || a - b;
+        });
+        if (details[ranked[0]].fill_ratio - details[ranked[1]].fill_ratio >= gap) {
+          ranked.slice(1).forEach(function (i) {
+            details[i].marked = false;
+            details[i].dropped_lighter_mark = true;
+          });
+          marked = ranked.slice(0, 1);
+          flags.push("kept_darker_mark");
+        }
+      }
+      if (strict && !flags.length) {
+        details.forEach(function (d, i) {
+          if (!d.marked && d.fill_ratio >= strict) {
+            d.marked = true;
+            d.faint_second_mark = true;
+            marked.push(i);
+            flags.push("faint_second_mark");
+          }
+        });
+      }
+      detected.length = 0;
+      fieldBubbles.forEach(function (b, i) {
+        if (marked.indexOf(i) >= 0) detected.push(b);
+      });
+      return flags;
+    }
     function summarizeField(label, value, bubbles, markedCount, lowConfidence, params, extraFlags) {
       var flags = {};
       (extraFlags || []).forEach(function (f) {
@@ -2778,7 +2882,7 @@
       var confidence = bubbles.length ? Infinity : 0.0;
       bubbles.forEach(function (b) {
         if (b.marked && b.fill_ratio < params.min_marked_fill_ratio) flags.weak_mark = 1;
-        if (!b.marked && b.fill_ratio > params.max_unmarked_fill_ratio) flags.possible_missed_mark = 1;
+        if (!b.marked && !b.dropped_lighter_mark && b.fill_ratio > params.max_unmarked_fill_ratio) flags.possible_missed_mark = 1;
         if (b.model_disagrees) flags.model_disagrees = 1;
         confidence = Math.min(confidence, b.confidence);
       });
@@ -3282,11 +3386,13 @@
               details.push(detail);
               if (marked) detected.push(bubble);
             });
+            var doubleMarkFlags = resolveDoubleMarks(field.bubbles, details, detected, rp);
+            var fieldExtra = doubleMarkFlags.length ? (extra || []).concat(doubleMarkFlags) : extra;
             detected.forEach(function (b) {
               omrResponse[b.label] = b.label in omrResponse ? omrResponse[b.label] + b.value : b.value;
             });
             if (!detected.length) omrResponse[field.label] = block.emptyValue;
-            fieldDetails[field.label] = summarizeField(field.label, omrResponse[field.label], details, detected.length, lowConfidence, rp, extra);
+            fieldDetails[field.label] = summarizeField(field.label, omrResponse[field.label], details, detected.length, lowConfidence, rp, fieldExtra);
             stripNo++;
           });
         });
@@ -5686,6 +5792,8 @@
       // Low-level building blocks (exported for tests and advanced use)
       _internals: {
         parseTemplate: parseTemplate,
+        resolveDoubleMarks: resolveDoubleMarks,
+        summarizeField: summarizeField,
         joinGroup: joinGroup,
         columnState: columnState,
         makeImage: makeImage,

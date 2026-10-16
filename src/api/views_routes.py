@@ -14,6 +14,7 @@ before geometry was recorded fall back to a plain resize and say so.
 
 import hashlib
 import json
+from pathlib import Path
 
 import cv2
 from types import SimpleNamespace
@@ -34,15 +35,88 @@ NO_GEOMETRY = (
 )
 
 
-def rotate(image, degrees):
-    degrees = int(degrees or 0) % 360
-    if degrees == 90:
-        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    if degrees == 180:
-        return cv2.rotate(image, cv2.ROTATE_180)
-    if degrees == 270:
-        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    return image
+def feed_options(service, result):
+    """The sheet's turn, mirror and straighten: the template's "alignment",
+    with a regrade's overrides on top."""
+    alignment = {}
+    try:
+        directory, _, _ = service.engines.locate(result)
+        with open(Path(directory) / "template.json", encoding="utf-8") as handle:
+            alignment.update(json.load(handle).get("alignment") or {})
+    except Exception:  # no template: nothing to turn
+        pass
+    overrides = ((result.get("regrade") or {}).get("template_overrides") or {})
+    alignment.update(overrides.get("alignment") or {})
+    return (
+        int(alignment.get("rotate") or 0) % 360,
+        alignment.get("flip") if alignment.get("flip") in ("horizontal", "vertical") else None,
+        float(alignment.get("straighten") or 0),
+    )
+
+
+def _turned(matrix, turn, w, h):
+    """matrix followed by a clockwise turn of a w x h image; (matrix, w, h)."""
+    if turn not in (90, 180, 270):
+        return matrix, w, h
+    step = {
+        90: [[0, -1, h - 1], [1, 0, 0]],
+        180: [[-1, 0, w - 1], [0, -1, h - 1]],
+        270: [[0, 1, 0], [-1, 0, w - 1]],
+    }[turn]
+    matrix = np.vstack([step, [0, 0, 1]]) @ matrix
+    return (matrix, w, h) if turn == 180 else (matrix, h, w)
+
+
+def feed_transform(service, result, width, height, extra=0):
+    """(3x3 matrix from the original's pixels to the sheet as fed to the reader,
+    after its turn, mirror and straighten; size) or (None, size) for none.
+    extra: a further clockwise turn the reviewer asked for (hand placement)."""
+    turn, flip, straighten = feed_options(service, result)
+    if result.get("manual_alignment"):
+        # A hand placement maps the scan's own pixels: no turn before it
+        turn, flip, straighten = 0, None, 0.0
+    matrix = np.eye(3)
+    w, h = width, height
+    matrix, w, h = _turned(matrix, turn, w, h)
+    if flip:
+        step = [[-1, 0, w - 1], [0, 1, 0]] if flip == "horizontal" else [[1, 0, 0], [0, -1, h - 1]]
+        matrix = np.vstack([step, [0, 0, 1]]) @ matrix
+    if abs(straighten) >= 0.01:
+        step = cv2.getRotationMatrix2D(((w - 1) / 2.0, (h - 1) / 2.0), -straighten, 1.0)
+        matrix = np.vstack([step, [0, 0, 1]]) @ matrix
+    # Undo the orientation the reader found on its own (timing marks), so the
+    # sheet shows upright like the aligned page. It is recorded as how far
+    # the scan was turned clockwise, so it is turned back anticlockwise.
+    found = int((result.get("geometry") or {}).get("rotation") or 0) % 360
+    matrix, w, h = _turned(matrix, (360 - found) % 360, w, h)
+    matrix, w, h = _turned(matrix, int(extra or 0) % 360, w, h)
+    if np.allclose(matrix, np.eye(3)):
+        return None, (width, height)
+    return matrix, (w, h)
+
+
+def apply_matrix(matrix, points):
+    if matrix is None or not len(points):
+        return [list(p) for p in points]
+    pts = np.hstack([np.asarray(points, np.float64), np.ones((len(points), 1))])
+    out = pts @ matrix.T
+    return out[:, :2].tolist()
+
+
+def turn_map(mapped, matrix):
+    """Move every outline of map_overlay() onto the turned original."""
+    def move(poly):
+        return [[round(x, 1), round(y, 1)] for x, y in apply_matrix(matrix, poly)] if poly else poly
+
+    for field in mapped["fields"].values():
+        field["box"] = move(field.get("box"))
+        field["bubbles"] = {k: move(v) for k, v in field["bubbles"].items()}
+    mapped["zones"] = {k: move(v) for k, v in mapped["zones"].items()}
+    for block in mapped["blocks"].values():
+        block["corners"] = move(block.get("corners"))
+    if mapped.get("page"):
+        mapped["page"] = move(mapped["page"])
+    return mapped
 
 
 def source_page(service, result):
@@ -66,8 +140,9 @@ def source_page(service, result):
     image = images[page][1]
     if image.ndim == 2:
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    # Not turned by geometry["rotation"]: that turn is already part of the
+    # recorded warp (turning here too showed the colour view upside down)
     geometry = result.get("geometry") or {}
-    image = rotate(image, geometry.get("rotation"))
     size = geometry.get("source_size")
     if size and (image.shape[1], image.shape[0]) != (int(size[0]), int(size[1])):
         image = cv2.resize(image, (int(size[0]), int(size[1])))
@@ -216,7 +291,12 @@ def register(app, ctx, secured):
     def fail(error):
         raise HTTPException(error.status, str(error)) from None
 
-    def build(scan_id, view):
+    def check_turn(turn):
+        if turn % 360 not in (0, 90, 180, 270):
+            raise HTTPException(422, "turn must be 0, 90, 180 or 270")
+        return turn % 360
+
+    def build(scan_id, view, turn=0):
         result = service.load(scan_id)
         # A regrade or a path remap changes what is shown; key on both
         stamp = hashlib.sha1(
@@ -226,7 +306,7 @@ def register(app, ctx, secured):
                 default=str,
             ).encode()
         ).hexdigest()[:12]
-        key = f"{scan_id}:{view}:{stamp}"
+        key = f"{scan_id}:{view}:{turn}:{stamp}"
         cached = cache.get(key)
         if cached is not None:
             return cached
@@ -239,8 +319,22 @@ def register(app, ctx, secured):
             "warnings": warnings,
         }
         if view == "original":
-            image = source
-            meta["map"] = map_overlay(result, geometry)
+            # Shown as fed to the reader: after the sheet's turn, mirror and
+            # straighten (outlines follow)
+            matrix, size = feed_transform(
+                service, result, source.shape[1], source.shape[0], turn
+            )
+            mapped = map_overlay(result, geometry)
+            if matrix is None:
+                image = source
+            else:
+                image = cv2.warpAffine(
+                    source, matrix[:2], (int(size[0]), int(size[1])),
+                    flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255),
+                )
+                mapped = turn_map(mapped, matrix)
+                meta["turned"] = True
+            meta["map"] = mapped
         else:
             image = warp_to_aligned(geometry, source)
         cache.put(key, image, meta)
@@ -274,11 +368,17 @@ def register(app, ctx, secured):
                 if not isinstance(zone, dict):
                     raise ResultsError(f"Unknown zone '{body.zone}'", 404)
                 zone_type = zone.get("type") or zone_type
-            item = build(scan_id, "original")
-            source = item["image"]
+            source, _ = source_page(service, result)
             geometry, _ = effective_geometry(service, scan_id, result, source)
             view = "original" if body.view == "original" else "aligned"
-            return decode_area(source, geometry, body.box, view, zone_type)
+            box = body.box
+            matrix, _ = feed_transform(service, result, source.shape[1], source.shape[0])
+            if view == "original" and matrix is not None:
+                # A box drawn on the turned original: back to the scan's pixels
+                quad = apply_matrix(np.linalg.inv(matrix), _quad(box))
+                xs, ys = [p[0] for p in quad], [p[1] for p in quad]
+                box = [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]
+            return decode_area(source, geometry, box, view, zone_type)
         except ResultsError as error:
             fail(error)
 
@@ -287,6 +387,7 @@ def register(app, ctx, secured):
         scan_id: str,
         view: str,
         format: str = Query("jpg", pattern="^(jpg|png)$"),
+        turn: int = Query(0, description="view=original: turn it a further 90, 180 or 270 degrees clockwise"),
     ):
         """
         view=original: the colour scan with every outline mapped back through
@@ -297,8 +398,9 @@ def register(app, ctx, secured):
         """
         if view not in VIEWS:
             raise HTTPException(404, f"Unknown view '{view}' (original or color)")
+        turn = check_turn(turn) if view == "original" else 0
         try:
-            item = build(scan_id, view)
+            item = build(scan_id, view, turn)
         except ResultsError as error:
             fail(error)
         image = item["image"]
@@ -307,7 +409,9 @@ def register(app, ctx, secured):
             "view": view,
             "width": int(image.shape[1]),
             "height": int(image.shape[0]),
-            "image_url": f"/scans/{scan_id}/views/{view}/image?format={format}",
+            "image_url": f"/scans/{scan_id}/views/{view}/image?format={format}"
+            + (f"&turn={turn}" if turn else ""),
+            "turn": turn,
             **item["meta"],
         }
 
@@ -315,12 +419,16 @@ def register(app, ctx, secured):
         "/scans/{scan_id}/views/{view}/image", tags=["results"], dependencies=secured
     )
     def scan_view_image(
-        scan_id: str, view: str, format: str = Query("jpg", pattern="^(jpg|png)$")
+        scan_id: str,
+        view: str,
+        format: str = Query("jpg", pattern="^(jpg|png)$"),
+        turn: int = Query(0),
     ):
         if view not in VIEWS:
             raise HTTPException(404, f"Unknown view '{view}'")
+        turn = check_turn(turn) if view == "original" else 0
         try:
-            item = build(scan_id, view)
+            item = build(scan_id, view, turn)
         except ResultsError as error:
             fail(error)
         return Response(
