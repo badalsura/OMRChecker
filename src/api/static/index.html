@@ -188,7 +188,7 @@
           <label class="field">Job <select id="chg-job"><option value="">All jobs</option></select></label>
         </div>
         <h2>Hand out review work</h2>
-        <p class="muted small">Assign sheets of the template and job above to people. They find them in Results with <b>Assigned to: me</b>, review them, and you approve their work below. A sheet's number is its place in the job (shown as #12 in Results when a job is picked).</p>
+        <p class="muted small">Assign sheets of the template and job above to people. They find them in Results with <b>Assigned to: me</b>, review them, and you approve their work below. Sheet numbers count only the sheets <b>Which sheets</b> picks, in job order: with <b>Flagged</b>, 1 to 500 is the first 500 flagged sheets. Results shows the same numbers (#12) with the same job and view picked.</p>
         <div class="row gap wrap">
           <label class="field">How
             <select id="chg-mode">
@@ -218,7 +218,7 @@
           <label class="field">At most <input id="chg-limit" type="number" min="1" placeholder="all"></label>
         </div>
         <div id="chg-ranges" class="hidden">
-          <p class="muted small">One row per person: sheets from and to (included) of the job above. Only the sheets chosen in <b>Which sheets</b> inside each range are assigned.</p>
+          <p class="muted small">One row per person: sheets from and to (included), counting only the sheets <b>Which sheets</b> picks in the job above.</p>
           <div id="chg-range-rows"></div>
           <button id="chg-range-add" class="small ghost">+ Add a person</button>
         </div>
@@ -255,13 +255,13 @@
           <label class="field">Name <input id="job-name" placeholder="optional"></label>
           <label class="field">Keep images
             <select id="job-images">
+              <option value="none" selected>None: draw review crops from the original files</option>
               <option value="review">Only sheets that need review</option>
               <option value="all">All sheets</option>
-              <option value="none">None: draw review crops from the original files</option>
             </select>
           </label>
           <label class="field">Worker processes <input id="job-workers" type="number" min="1" placeholder="auto"></label>
-          <label class="field" title="Files read into memory ahead of the workers, so they never wait on the disk. About 0.2 MB per JPEG scan; 0 turns it off on small machines">Read ahead (files) <input id="job-prefetch" type="number" min="0" placeholder="64"></label>
+          <label class="field" title="Files read into memory ahead of the workers, so they never wait on the disk. About 0.2 MB per JPEG scan (128 files: about 25 MB); 0 turns it off on small machines">Read ahead (files) <input id="job-prefetch" type="number" min="0" placeholder="128"></label>
         </div>
         <div id="job-workers-warning" class="small fs-warn"></div>
         <div id="job-pdf"></div>

@@ -640,7 +640,6 @@ class ScanIndex:
         file=None,
         scan_ids=None,
         assigned=None,
-        sheets=None,
     ):
         if view and view not in self.RESULT_VIEWS:
             raise ValueError(f"Unknown view '{view}'")
@@ -661,28 +660,12 @@ class ScanIndex:
         if scan_ids:
             clauses.append(f"id IN ({','.join('?' * len(scan_ids))})")
             params.extend(scan_ids)
-        clauses.extend(self._sheet_range(sheets, params))
         if assigned == UNASSIGNED:
             clauses.append("id NOT IN (SELECT scan_id FROM assignments)")
         elif assigned:
             clauses.append("id IN (SELECT scan_id FROM assignments WHERE user = ?)")
             params.append(assigned)
         return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
-
-    @staticmethod
-    def _sheet_range(sheets, params, column="seq"):
-        """sheets: (first, last) sheet numbers, 1-based, either may be None.
-        A sheet's number is its file's place in the job (seq + 1): the pages
-        of one PDF share it."""
-        first, last = sheets or (None, None)
-        clauses = []
-        if first:
-            clauses.append(f"{column} >= ?")
-            params.append(int(first) - 1)
-        if last:
-            clauses.append(f"{column} <= ?")
-            params.append(int(last) - 1)
-        return clauses
 
     @staticmethod
     def _by_seq(job_id, order):
@@ -981,6 +964,14 @@ class ScanIndex:
             )
         return out
 
+    def assigned_scan_ids(self, job_id=None):
+        """Ids of the sheets someone has (of one job, or all)."""
+        where, params = self._filters(job_id=job_id)
+        return {
+            row["scan_id"]
+            for row in self._query(f"SELECT scan_id FROM assignments {where}", params)
+        }
+
     def assignee(self, scan_id):
         rows = self._query(
             "SELECT user, assigned_by, at FROM assignments WHERE scan_id = ?", (scan_id,)
@@ -993,27 +984,25 @@ class ScanIndex:
     def assigned_ids(
         self, user, template_id=None, job_id=None, sheets=None, only_open=False
     ):
-        """Scan ids assigned to user, in sheet order; only_open: those the
-        person has not finished (not reviewed, not verified)."""
+        """Scan ids assigned to user, in sheet order. sheets: (first, last),
+        1-based places in that person's list (their 1st to 500th sheet);
+        only_open: of those, the ones the person has not finished."""
         where, params = self._filters(
             **{"a.user": user, "a.template_id": template_id, "a.job_id": job_id}
         )
-        clauses = [where[len("WHERE ") :]] if where else []
-        clauses.extend(self._sheet_range(sheets, params, "s.seq"))
-        if only_open:
-            clauses.append(self.OPEN)
         rows = self._query(
-            "SELECT a.scan_id FROM assignments a JOIN scans s ON s.id = a.scan_id "
-            f"{'WHERE ' + ' AND '.join(clauses) if clauses else ''} "
-            "ORDER BY s.seq, s.rowid",
+            f"SELECT a.scan_id, {self.OPEN} AS open FROM assignments a "
+            f"JOIN scans s ON s.id = a.scan_id {where} ORDER BY s.seq, s.rowid",
             params,
         )
-        return [row["scan_id"] for row in rows]
+        first, last = sheets or (None, None)
+        rows = rows[(first or 1) - 1 : last]
+        return [row["scan_id"] for row in rows if row["open"] or not only_open]
 
     def assignment_summary(self, template_id=None, job_id=None):
         """Per assignee: sheets handed out, still to review, reviewed (not yet
-        verified), verified, approved, sent back to review, the sheet numbers
-        they hold and when they last did anything."""
+        verified), verified, approved, sent back to review and when they last
+        did anything."""
         where, params = self._filters(**{"a.template_id": template_id, "a.job_id": job_id})
         rows = self._query(
             "SELECT a.user, COUNT(*) AS assigned, "
@@ -1022,8 +1011,7 @@ class ScanIndex:
             "SUM(s.verified = 1) AS verified, "
             "SUM(s.approved = 1) AS approved, "
             "SUM(EXISTS (SELECT 1 FROM activity r WHERE r.scan_id = s.id "
-            "AND r.action = 'returned')) AS sent_back, "
-            "MIN(s.seq) + 1 AS first_sheet, MAX(s.seq) + 1 AS last_sheet "
+            "AND r.action = 'returned')) AS sent_back "
             f"FROM assignments a JOIN scans s ON s.id = a.scan_id {where} "
             "GROUP BY a.user ORDER BY a.user",
             params,

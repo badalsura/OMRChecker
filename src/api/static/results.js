@@ -218,8 +218,9 @@ function renderList() {
       el(
         "li",
         { class: selected ? "selected" : "", onclick: () => openAt(index), title: item.file_name },
-        // The sheet number (its file's place in the job) used to assign ranges
-        $("res-job").value && item.seq !== null && item.seq !== undefined ? el("span", { class: "muted small res-num", title: "Sheet number in this job" }, `#${item.seq + 1}`) : null,
+        // Its place in this list (job order): the numbers Check changes assigns
+        // by, with the same job and view picked there
+        $("res-job").value ? el("span", { class: "muted small res-num", title: "Place in this list (job order)" }, `#${r.offset + index + 1}`) : null,
         el("span", { class: "name" }, item.file_name || item.id.slice(0, 8)),
         item.flag_count && !item.verified ? el("span", { class: "chip flag", title: "fields flagged when read" }, `⚑${item.flag_count}`) : null,
         item.corrected ? el("span", { class: "chip corrected", title: "corrected" }, "✎") : null,

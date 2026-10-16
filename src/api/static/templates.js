@@ -88,6 +88,8 @@ async function upload() {
   const form = new FormData();
   const name = document.getElementById("tpl-name").value.trim();
   if (name) form.append("name", name);
+  // New templates start with every optional review flag off
+  form.append("flags_off", "true");
   for (const f of files) form.append("files", f, f.name);
   try {
     const detail = await api("/templates", { method: "POST", form });

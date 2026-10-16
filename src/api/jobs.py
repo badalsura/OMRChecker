@@ -28,6 +28,7 @@ from pathlib import Path
 
 from src.api.storage import new_id, read_json, write_json_atomic
 from src.api.worker import (
+    SAVE_NONE,
     SAVE_REVIEW,
     archive_template_version,
     get_process_engine,
@@ -54,7 +55,7 @@ COMPLETED, FAILED, CANCELLED, INTERRUPTED = (
 # Stopped on request; sheets read so far are kept and Resume reads the rest
 PAUSED = "paused"
 # Files read ahead of the workers by default (a few MB of scans in memory)
-DEFAULT_PREFETCH = 64
+DEFAULT_PREFETCH = 128
 PREFETCH_READERS = 4
 ACTIVE_STATES = {QUEUED, RUNNING}
 # A job stops (failed, resumable) after this many reader pool restarts
@@ -206,7 +207,7 @@ class JobManager:
             "source": source,
             "state": QUEUED if start else UPLOADING,
             "options": {
-                "save_images": options.get("save_images") or SAVE_REVIEW,
+                "save_images": options.get("save_images") or SAVE_NONE,
                 "workers": options.get("workers"),
                 # Files read into memory ahead of the workers (0 = off)
                 "prefetch": DEFAULT_PREFETCH

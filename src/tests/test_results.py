@@ -636,8 +636,6 @@ def test_assign_by_sheet_numbers_move_and_take_back(tmp_path, spec):
         assert done == {"assigned": {"asha": 3, "bob": 2}, "total": 5}
         mine = client.get("/results", params={"job_id": job_id, "assigned": "bob"}).json()
         assert {i["id"] for i in mine["items"]} == {by_number[4], by_number[5]}
-        summary = {u["user"]: u for u in client.get("/assignments/summary").json()["users"]}
-        assert (summary["asha"]["first_sheet"], summary["asha"]["last_sheet"]) == (1, 3)
 
         # Move sheet 3 to bob; only unfinished ones when asked
         client.post(f"/scans/{by_number[2]}/verify", headers={"X-User": "asha"})
@@ -650,13 +648,30 @@ def test_assign_by_sheet_numbers_move_and_take_back(tmp_path, spec):
         assert client.get(f"/scans/{by_number[2]}/overlay").json()["assigned_to"]["user"] == "asha"
         back = client.post(
             "/assignments/clear",
-            json={"user": "bob", "job_id": job_id, "first_sheet": 5, "last_sheet": 5},
+            # bob's third sheet (sheet 5 of the job)
+            json={"user": "bob", "job_id": job_id, "first_sheet": 3, "last_sheet": 3},
         ).json()
         assert back == {"unassigned": 1}
         summary = {u["user"]: u for u in client.get("/assignments/summary").json()["users"]}
         assert summary["asha"]["assigned"] == 2 and summary["asha"]["verified"] == 1
         assert summary["bob"]["assigned"] == 2
         assert summary["asha"]["last_active"]
+
+        # Numbers count the sheets the view picks: with sheets 1 and 2 verified,
+        # "not reviewed" 1 to 2 is sheets 3 and 4
+        client.post("/assignments/clear", json={"job_id": job_id})
+        client.post(f"/scans/{by_number[1]}/verify")
+        picked = client.post(
+            "/assignments",
+            json={
+                "job_id": job_id,
+                "view": "not_reviewed",
+                "ranges": [{"user": "carol", "first_sheet": 1, "last_sheet": 2}],
+            },
+        ).json()
+        assert picked["assigned"] == {"carol": 2}
+        carol = client.get("/results", params={"job_id": job_id, "assigned": "carol"}).json()
+        assert {i["id"] for i in carol["items"]} == {by_number[3], by_number[4]}
 
         # With sign-in on, work goes to existing, active accounts only
         client.post("/auth/register", json={"username": "admin", "password": "secret-pass-1"})
@@ -1064,3 +1079,23 @@ def test_views_of_a_sheet_the_reader_turned_itself(tmp_path, turn):
             truth["answers"][q] for q in questions
         ]
         assert client.get(f"/scans/{scan_id}/views/original?turn=45").status_code == 422
+
+
+def test_templates_made_on_the_screens_start_with_flags_off(tmp_path, spec):
+    template = json.dumps(template_json(spec))
+    with make_client(tmp_path) as client:
+        def create(flags_off, config=None):
+            files = [("files", ("template.json", template, "application/json"))]
+            if config is not None:
+                files.append(("files", ("config.json", json.dumps(config), "application/json")))
+            response = client.post("/templates", files=files, data={"flags_off": flags_off})
+            assert response.status_code == 201, response.text
+            return client.get(f"/templates/{response.json()['id']}").json()["config"]
+
+        # The screens: every optional review flag off
+        assert create("true")["review_params"]["review_flags"] == []
+        # ... unless config.json chose its own
+        own = {"review_params": {"review_flags": ["multi_marked"]}}
+        assert create("true", own)["review_params"]["review_flags"] == ["multi_marked"]
+        # Programs through the API keep the engine's default list
+        assert not (create("false") or {}).get("review_params")

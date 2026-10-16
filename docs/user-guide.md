@@ -516,9 +516,9 @@ Use a job for anything more than a few dozen sheets. A job runs on the server in
 |---|---|---|
 | **Template** | first template | The template every sheet in the job is read with. |
 | **Name** | *optional* (empty) | A name shown in the Jobs list, the Review and Results filters and exports, for example "Physics mock 2026 day 1". Without one, the job is shown by the first 8 characters of its id. Naming jobs makes them much easier to find later. |
-| **Keep images** | *Only sheets that need review* | Which sheet images the server stores. *Only sheets that need review* stores the aligned image only for flagged sheets. *All sheets* stores every image: the most disk space, but sheets can be shown even if the original scans are later moved or deleted. *None: draw review crops from the original files* stores nothing and is the fastest; review crops and the Results view are rebuilt from your original scan files. With *None*, do not move or delete the scan folder until review and checking are finished (if it does move, use **Path remap** on the Results tab). |
+| **Keep images** | *None* | Which sheet images the server stores. *Only sheets that need review* stores the aligned image only for flagged sheets. *All sheets* stores every image: the most disk space, but sheets can be shown even if the original scans are later moved or deleted. *None: draw review crops from the original files* stores nothing and is the fastest; review crops and the Results view are rebuilt from your original scan files. With *None*, do not move or delete the scan folder until review and checking are finished (if it does move, use **Path remap** on the Results tab). |
 | **Worker processes** | *auto* (one per CPU core) | How many sheets are read at the same time. Leave it on auto in most cases. Lower it to keep the computer responsive for other work. More workers than CPU cores is allowed, and the app warns you ("… more workers than cores only helps when reading from a slow disk or network share, and uses more memory"). |
-| **Read ahead (files)** | 64 | How many files are loaded into memory ahead of the readers so they never wait for the disk. About 0.2 MB per JPEG scan. Raise it for slow network shares. Set **0** to turn it off on machines with little memory. |
+| **Read ahead (files)** | 128 | How many files are loaded into memory ahead of the readers so they never wait for the disk. About 0.2 MB per JPEG scan. Raise it for slow network shares. Set **0** to turn it off on machines with little memory. |
 | **PDF options** | template default | **PDF render DPI** and **PDF pages**, as on the Scan tab. |
 
 Then choose where the sheets come from. Use one of the two boxes.
@@ -600,7 +600,7 @@ The app is built so that one bad sheet does not stop a job of thousands:
 1. Copy or scan the sheets into one folder on the server PC or a network share.
 2. On the **Jobs** tab choose the **Template** and type a **Name**.
 3. In **…or a folder on the server**, click **Browse…**, find the folder and click **Select this folder**. Check that the line underneath shows the number of images you expect.
-4. Leave **Keep images** on *Only sheets that need review* and **Worker processes** on *auto*.
+4. Leave **Keep images** on *None* (or pick *Only sheets that need review* if the scan folder may move before review is done) and **Worker processes** on *auto*.
 5. Click **Start job** and watch the **Progress**, **Sheets/s** and **ETA** columns.
 6. When it is done, click **Review** to clear the flagged items, then **Export…**.
 
@@ -1270,24 +1270,24 @@ The work flow it supports: administrators hand sheets out to reviewers (other ad
 - **Which sheets:** Flagged, not verified (the usual choice) · Not reviewed · Errors · Corrected · All sheets. With Flagged only flagged sheets are assigned; with All sheets every sheet is.
 - **only sheets nobody has yet:** on by default, so assigning again only hands out the rest. Untick it to move sheets that someone already has.
 
-A sheet's **number** is its place in the job: 1 is the job's first file. Results shows it (#12) next to each sheet when a job is picked. The pages of one PDF share their file's number. Sheet numbers need one job picked at the top.
+Sheet **numbers** count only the sheets **Which sheets** picks, in job order. With *Flagged, not verified*, 1 to 500 is the first 500 flagged sheets of the job, wherever they are in it. Sheets someone already has still count, so the numbers stay put when you hand out the next range. Results shows the same numbers (#12) next to each sheet when the same job and view are picked there. Sheet numbers need one job picked at the top.
 
 **Split evenly:**
 
 - **People:** tick the people in the list; the search box above narrows a long list. With sign-in on the list holds the active accounts. Without sign-in it holds names already used, and you add a new one by typing it and pressing Enter.
-- **From sheet** / **To sheet** (optional): only sheets in this range of the job.
+- **From sheet** / **To sheet** (optional): only these sheet numbers (counted as above).
 - **At most:** hand out only this many sheets (empty = all that match).
 - **Assign** splits the matching sheets into equal runs, in sheet order, between the people ticked. For example, 300 flagged sheets for asha, bob and meena gives each 100 consecutive sheets. Each sheet has one person; assigning it again moves it.
 
-**Each person's sheet numbers:** one row per person with the first and last sheet (both included), for example asha 1 to 500 and bob 501 to 900. **+ Add a person** adds a row. Inside each range only the sheets chosen in **Which sheets** are assigned. Ranges may not overlap. The person box suggests names as you type.
+**Each person's sheet numbers:** one row per person with the first and last sheet number (both included), for example asha 1 to 500 and bob 501 to 900 of the flagged sheets. **+ Add a person** adds a row. Ranges may not overlap. The person box suggests names as you type.
 
 With sign-in on, work can only go to an active account: an unknown or disabled name is refused with a message naming it.
 
-Below it, a table shows per person: the lowest and highest **Sheets** they hold, **Assigned**, **Still to review** (not reviewed or verified yet), **Reviewed** (not verified yet), **Verified**, **Approved**, **Sent back**, **Last worked** (their last action), and the number of flagged sheets nobody has yet. Its buttons:
+Below it, a table shows per person: **Assigned**, **Still to review** (not reviewed or verified yet), **Reviewed** (not verified yet), **Verified**, **Approved**, **Sent back**, **Last worked** (their last action), and the number of flagged sheets nobody has yet. Its buttons:
 
 - **Their sheets** opens Results with only that person's sheets (of this template and job).
 - **Their changes** fills that person's name into the list below.
-- **Change…** opens a line to **Move to** someone else or **Take back** (nobody): all their sheets, or sheets from / to a number, and with **only sheets not finished yet** (on by default) the sheets they already reviewed or verified stay with them.
+- **Change…** opens a line to **Move to** someone else or **Take back** (nobody): all their sheets, or their sheets from / to a number (their 1st, 2nd... sheet in job order, as **Their sheets** numbers them in Results), and with **only sheets not finished yet** (on by default) the sheets they already reviewed or verified stay with them.
 
 A reviewer finds their sheets in **Results › Assigned to › Me** (it also offers **Anyone** and **Nobody**). The side panel of an assigned sheet says who it is assigned to and by whom.
 
@@ -2106,22 +2106,53 @@ The review rules apply to every bubble field, roll numbers and other grouped fie
 
 #### Flags you can tick
 
-| Tick box (as shown) | Flag | Ticked by default | What it means |
+A template you make on the screens (uploaded on the Templates tab or made by **Generate template**) starts with **every one of these unticked**: nothing goes to review for these reasons until you tick it. Templates made before this change, and templates uploaded by programs through the API, keep the old default list (the *Old default* column) until you change their ticks. A template whose config.json already chooses its flags keeps its choice.
+
+Unticked flags are still recorded on the sheet and shown on the Results screen; they only stop creating review work. For a grouped field (a roll number, for example) a multi-marked column still writes the group's multi placeholder (such as `*`), but it only sends the group to review while `multi_marked` is ticked.
+
+| Tick box (as shown) | Flag | Old default | What it means |
 |---|---|---|---|
-| two or more bubbles marked | `multi_marked` | yes | More than one bubble is marked in a single-answer field. |
-| nothing marked | `empty` | no | Nothing is marked. Blank answers are normal, so this is off; tick it only if every field must be answered (for example a roll number). |
-| marked/unmarked split unclear | `ambiguous_threshold` | yes | The row had no clear gap between dark and light bubbles. |
-| low confidence | `low_confidence` | yes | The least certain bubble is below **Min confidence**. |
-| weak mark | `weak_mark` | yes | A marked bubble is filled less than **Weak mark below**. |
-| possible missed mark | `possible_missed_mark` | yes | An empty bubble is filled more than **Possible missed mark above**. |
-| bubble model disagrees | `model_disagrees` | yes | A learned bubble model (if you use one) reads the bubble differently. |
-| printed border not found | `rectify_failed` | no | A block set to fit its printed border could not find the border. |
-| printed border would move the block a lot | `border_slide` | yes | Fitting a block to its printed border would have moved it by almost a whole bubble; the read is kept but checked. |
-| double mark settled by darker bubble | `kept_darker_mark` | no | **Keep darker mark when ahead by** turned a double mark into one answer. Tick it to check those decisions. |
-| faint second mark | `faint_second_mark` | no | **Strict double marks from** turned a single mark into a double mark. The field is also `multi_marked`, so it already goes to review while that flag is ticked. |
+| two or more bubbles marked | `multi_marked` | ticked | More than one bubble is marked in a single-answer field. |
+| nothing marked | `empty` | not ticked | Nothing is marked. Blank answers are normal; tick it only if every field must be answered (for example a roll number). |
+| marked/unmarked split unclear | `ambiguous_threshold` | ticked | The row had no clear gap between dark and light bubbles. |
+| low confidence | `low_confidence` | ticked | The least certain bubble is below **Min confidence**. |
+| weak mark | `weak_mark` | ticked | A marked bubble is filled less than **Weak mark below**. |
+| possible missed mark | `possible_missed_mark` | ticked | An empty bubble is filled more than **Possible missed mark above**. |
+| bubble model disagrees | `model_disagrees` | ticked | A learned bubble model (if you use one) reads the bubble differently. |
+| printed border not found | `rectify_failed` | not ticked | A block set to fit its printed border could not find the border. |
+| printed border would move the block a lot | `border_slide` | ticked | Fitting a block to its printed border would have moved it by almost a whole bubble; the read is kept but checked. |
+| double mark settled by darker bubble | `kept_darker_mark` | not ticked | **Keep darker mark when ahead by** turned a double mark into one answer. Tick it to check those decisions. |
+| faint second mark | `faint_second_mark` | not ticked | **Strict double marks from** turned a single mark into a double mark. The field is also `multi_marked`, so it goes to review while either is ticked. |
 
+#### Flags you cannot untick
 
-Some sheet-level problems always go to review whatever you tick here: `poor_image` (see the image-quality gate below), `too_few_marks`, and alignment problems. Zone, validation and check flags (for example `not_found`, `pattern_mismatch`, `validation_failed`, `cross_check_failed`) follow their own settings, described further down and in the zones section.
+These always send their field, zone or sheet to review when they happen. Many only happen when you turned on the setting that produces them (shown in *When*).
+
+| Flag | On | When | What it means |
+|---|---|---|---|
+| `group_issue` | grouped field | always | A column of a grouped field (roll number and similar, with group options) is unclear: blank but flagged for something other than being empty, or flagged by a ticked flag. Only that column is marked on the Results screen. |
+| `multi_marked` (group) | grouped field | `multi_marked` ticked | A column of a grouped field has two or more marks. With `multi_marked` unticked the group is not flagged for it. |
+| `not_found` | barcode / QR zone | always | No code was found in the zone. |
+| `multiple_symbols` | barcode / QR zone | always | More than one code was found in the zone. |
+| `decoded_by_fallback` | barcode / QR zone | **Review reads by fallback decoders** on | The first engine failed and another one read the code. |
+| `low_confidence` | OCR / ICR zone | always | The zone's text was read with less confidence than its **Min confidence**. |
+| `low_char_confidence` | OCR zone | **minCharConfidence** set | One character was read with less confidence than that. |
+| `engine_disagree` | OCR zone | two engines set | The two OCR engines read different text. |
+| `pattern_mismatch` | any zone | a pattern set | The value does not match the zone's pattern (for example 10 digits). |
+| `engine_unavailable` | OCR / ICR zone | always | The reading engine (Tesseract or PaddleOCR) is not installed or did not start. |
+| `no_icr_model` | ICR zone | always | No handwriting model is available for the zone. |
+| `read_error` | any zone | always | Reading the zone failed with an error; the rest of the sheet is kept. |
+| `validation_failed` | field or zone | a validation rule set | A validation rule (length, range, allowed values, pattern) failed. |
+| `cross_check_failed` | check | a check set | The check's sources disagree, and the check is set to review conflicts (or to error). |
+| `fallback_used` | check | a check set to review fallbacks | The first source was missing, so a later source was used. |
+| `all_sources_missing` | check | a check set to review it | None of the check's sources could be read. |
+| `too_few_marks` | sheet | **Min marked bubbles per sheet** above 0 | The whole sheet has fewer marked bubbles than that. |
+| `poor_image` | sheet | an image-quality minimum set | The scan is too blurred, dark, light or low in contrast (see the image-quality gate below). |
+| `orientation_ambiguous` | sheet | timing-mark alignment | Another orientation of the sheet fits the timing marks almost as well. |
+| `registration_suspect` | sheet | timing-mark alignment, or a grid-fit minimum set | The marks fit almost as well slid by one mark, or the bubbles sit poorly on the grid. |
+| `alignment_residual` | sheet | `maxRegionResidual` set | Part of the sheet is still off the template after alignment by more than that. |
+| `index_point_missing` | sheet | required index points | A required index point was not found. |
+| `sent_back` | field or zone | always | An administrator sent the sheet back to review and this value had been changed. |
 
 #### Image-quality gate (config.json only)
 

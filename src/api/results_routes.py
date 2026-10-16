@@ -91,8 +91,10 @@ class ReturnBody(BaseModel):
 
 class SheetRange(BaseModel):
     user: str = Field(..., min_length=1)
-    first_sheet: Optional[int] = Field(None, ge=1, description="Sheet number, 1 = the job's first")
-    last_sheet: Optional[int] = Field(None, ge=1, description="Included; empty = the job's last")
+    first_sheet: Optional[int] = Field(
+        None, ge=1, description="1 = the first of the job's sheets the view picks"
+    )
+    last_sheet: Optional[int] = Field(None, ge=1, description="Included; empty = the last")
 
 
 class AssignBody(BaseModel):
@@ -680,6 +682,12 @@ def register(app, ctx, secured):
         require_admin(request, "assign sheets")
 
         def matching(sheets, limit=None):
+            """Scan ids the view picks, in sheet order. sheets: (first, last),
+            1-based places among the sheets the view picks (with Flagged,
+            1 to 500 is the first 500 flagged sheets), already assigned
+            sheets included in the count so the numbers stay put."""
+            first, last = sheets or (None, None)
+            taken = ctx.index.assigned_scan_ids(body.job_id) if body.only_unassigned else ()
             try:
                 rows = ctx.index.iter_results(
                     template_id=body.template_id,
@@ -687,11 +695,16 @@ def register(app, ctx, secured):
                     view=body.view,
                     flag=body.flag,
                     name=body.name,
-                    sheets=sheets,
-                    assigned=UNASSIGNED if body.only_unassigned else None,
+                    assigned=UNASSIGNED if body.only_unassigned and not sheets else None,
                 )
                 ids = []
-                for row in rows:
+                for place, row in enumerate(rows, 1):
+                    if first and place < first:
+                        continue
+                    if last and place > last:
+                        break
+                    if sheets and row["id"] in taken:
+                        continue
                     ids.append(row["id"])
                     if limit and len(ids) >= limit:
                         break

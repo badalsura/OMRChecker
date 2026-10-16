@@ -256,7 +256,7 @@ async function renderSummary() {
     box.append(el("p", { class: "muted small" }, "No sheets are assigned for this template and job."));
     return;
   }
-  const heads = ["Person", "Sheets", "Assigned", "Still to review", "Reviewed", "Verified", "Approved", "Sent back", "Last worked", ""];
+  const heads = ["Person", "Assigned", "Still to review", "Reviewed", "Verified", "Approved", "Sent back", "Last worked", ""];
   const rows = [];
   for (const u of data.users) {
     rows.push(
@@ -264,7 +264,6 @@ async function renderSummary() {
         "tr",
         {},
         el("td", {}, u.user),
-        el("td", { class: "small", title: "Lowest and highest sheet number they hold" }, $("chg-job").value ? `#${u.first_sheet}–#${u.last_sheet}` : "—"),
         el("td", {}, String(u.assigned)),
         el("td", {}, String(u.to_review)),
         el("td", {}, String(u.reviewed)),
@@ -301,7 +300,7 @@ function editForm(u) {
     if (num(from)) body.first_sheet = num(from);
     if (num(till)) body.last_sheet = num(till);
     if ((body.first_sheet || body.last_sheet) && !body.job_id) return toast("Pick one job above to give sheet numbers", "error");
-    const range = body.first_sheet || body.last_sheet ? ` sheets ${body.first_sheet || "first"} to ${body.last_sheet || "last"} of` : "";
+    const range = body.first_sheet || body.last_sheet ? ` ${body.first_sheet || "first"} to ${body.last_sheet || "last"} of the` : "";
     const which = open.checked ? "unfinished sheets" : "sheets";
     try {
       if (action.value === "move") {
@@ -328,7 +327,7 @@ function editForm(u) {
     el("strong", {}, `${u.user}:`),
     action,
     to,
-    el("label", { class: "small" }, "sheets ", from),
+    el("label", { class: "small", title: "Places in their list, in job order (Their sheets shows the numbers)" }, "their sheets ", from),
     el("label", { class: "small" }, "to ", till),
     el("label", { class: "small", title: "Leave alone the sheets they already reviewed or verified" }, open, " only sheets not finished yet"),
     el("button", { class: "small primary", onclick: apply }, "Apply")
