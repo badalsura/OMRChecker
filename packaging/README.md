@@ -64,18 +64,19 @@ menus. The engine runs on 127.0.0.1:8766 inside the app (local only) and stops
 when the window closes; starting the app again brings the open window to the
 front. Window size and place are kept in the data folder (`app_window.json`).
 
-Two window engines are being compared (`.github/workflows/build-app-test.yml`
-builds both; no OCR models in these test builds):
+The window is Microsoft WebView2 (pywebview 4.4.1, `requirements-app.txt`;
+needs .NET Framework 4.7.2+). `.github/workflows/build-app-test.yml` builds it
+twice (no OCR models in these test builds):
 
-| | WebView2 (`OMR_APP_ENGINE=webview2`) | Qt (`OMR_APP_ENGINE=qt`) |
+| | Modern (Windows 10/11) | Legacy (Windows 7/8.1) |
 |---|---|---|
-| Chromium | 109 (Fixed Version runtime in `webview2\`) | 83 (Qt 5.15 WebEngine) |
-| Extra needs | .NET Framework 4.7.2+ | none |
-| Save As | the page's own Save As box | the window's Save As box |
-| Python pins | `requirements-app-webview2.txt` | `requirements-app-qt.txt` |
+| WebView2 runtime | the one Windows installs and keeps up to date | Fixed Version 109 in `webview2\` |
+| Chromium | current | 109 |
+
+Both run the same screens, so the screens must keep working on Chromium 109.
 
 Microsoft's page lists only the newest two Fixed Version runtimes, so the
-build takes runtime 109 from a URL (default: an archive copy) and refuses it
+legacy build takes runtime 109 from a URL (default: an archive copy) and refuses it
 unless every .exe and .dll in it carries a valid Microsoft signature (Google
 for widevinecdm.dll, the video DRM module Edge ships).
 

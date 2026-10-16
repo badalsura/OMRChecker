@@ -2,18 +2,19 @@
 Desktop app window for the OMR engine: our screens in their own window, no
 browser and no server dialog.
 
-    OMRChecker.exe                    open the app (or bring the open one to the front)
-    OMRChecker.exe --engine qt        pick the window engine when both are bundled
+    OMRChecker.exe          open the app (or bring the open one to the front)
 
 The engine runs on 127.0.0.1 inside this process (nothing is reachable from
-other computers) and stops when the window closes. Two window engines:
+other computers) and stops when the window closes. The window is Microsoft
+WebView2 through pywebview:
 
-    webview2  Microsoft WebView2 through pywebview. A Fixed Version runtime 109
-              (the last one for Windows 7/8) in <exe dir>\\webview2 is used when
-              present, so every Windows shows the same Chromium 109.
-    qt        Qt 5.15 WebEngine through PySide2 (Chromium 83), bundled in the exe.
+    modern build  (Windows 10/11) the WebView2 runtime Windows installs and updates
+    legacy build  (Windows 7/8.1) a Fixed Version runtime 109, the last one for
+                  Windows 7/8, in <exe dir>\\webview2
 
-Runs from source too: python packaging/omr_app.py --engine qt
+The screens must keep working on Chromium 109 (the legacy build).
+
+Runs from source too: python packaging/omr_app.py
 """
 
 import argparse
@@ -355,170 +356,13 @@ def run_webview2(engine, state, instance):
     )
 
 
-# --------------------------------------------------------------------- Qt 5.15
-def run_qt(engine, state, instance):
-    from PySide2 import QtCore, QtGui, QtWidgets
-    from PySide2.QtWebEngineWidgets import (
-        QWebEnginePage,
-        QWebEngineProfile,
-        QWebEngineSettings,
-        QWebEngineView,
-    )
-
-    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_ShareOpenGLContexts)
-    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
-    QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
-    app = QtWidgets.QApplication(sys.argv[:1])
-    app.setApplicationName(base.DISPLAY_NAME)
-    icon_path = base.BRANDING_DIR / "icon.ico"
-    if not icon_path.is_file():
-        icon_path = base.BRANDING_DIR / "icon.png"
-    if icon_path.is_file():
-        app.setWindowIcon(QtGui.QIcon(str(icon_path)))
-
-    profile_dir = engine.data_dir / "app_profile" / "qt"
-    profile = QWebEngineProfile("omr", app)
-    profile.setPersistentStoragePath(str(profile_dir / "storage"))
-    profile.setCachePath(str(profile_dir / "cache"))
-    profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
-    settings = profile.settings()
-    settings.setAttribute(QWebEngineSettings.FullScreenSupportEnabled, False)
-    settings.setAttribute(QWebEngineSettings.ErrorPageEnabled, True)
-
-    children = []
-
-    class Page(QWebEnginePage):
-        def createWindow(self, _type):
-            # Our own pages open in another app window, other sites in the browser
-            page = Page(profile, window)
-            claimed = []
-
-            def first_url(url):
-                if claimed:
-                    return
-                claimed.append(url)
-                if own_page(engine, url.toString()):
-                    child = QWebEngineView()
-                    child.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-                    child.setPage(page)
-                    child.setContextMenuPolicy(QtCore.Qt.NoContextMenu)
-                    child.setWindowTitle(child_title(url.toString()))
-                    child.resize(1100, 800)
-                    child.destroyed.connect(lambda *_: children.remove(child) if child in children else None)
-                    children.append(child)
-                    child.show()
-                else:
-                    QtGui.QDesktopServices.openUrl(url)
-                    page.deleteLater()
-
-            page.urlChanged.connect(first_url)
-            return page
-
-    class Window(QtWidgets.QMainWindow):
-        show_requested = QtCore.Signal()
-
-        def __init__(self):
-            super().__init__()
-            self.setWindowTitle(base.DISPLAY_NAME)
-            self.view = QWebEngineView(self)
-            self.view.setPage(Page(profile, self.view))
-            self.view.setContextMenuPolicy(QtCore.Qt.NoContextMenu)
-            self.view.page().setBackgroundColor(QtGui.QColor("#f6f7f9"))
-            self.setCentralWidget(self.view)
-            self.setMinimumSize(960, 600)
-            self.show_requested.connect(self.bring_to_front)
-
-        def bring_to_front(self):
-            if self.isMinimized():
-                self.showNormal()
-            self.raise_()
-            self.activateWindow()
-
-        def closeEvent(self, event):
-            state.values["maximized"] = self.isMaximized()
-            if not self.isMaximized():
-                geometry = self.geometry()
-                state.values.update(
-                    x=geometry.x(), y=geometry.y(), width=geometry.width(), height=geometry.height()
-                )
-            super().closeEvent(event)
-
-    window = Window()
-    instance["show"] = window.show_requested.emit
-
-    def download(item):
-        # Qt 5.15 has no Save As box in the page (showSaveFilePicker), so every
-        # download asks here; the file then streams straight to the chosen path
-        folder = QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.DownloadLocation)
-        suggested = os.path.join(folder, Path(item.path()).name)
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(window, "Save as", suggested)
-        if not path:
-            item.cancel()
-            return
-        item.setPath(path)
-        name = Path(path).name
-
-        def finished():
-            ok = item.state() == item.DownloadCompleted
-            message = json.dumps([name, ok])
-            window.view.page().runJavaScript(
-                f"window.dispatchEvent(new CustomEvent('omr-saved', {{detail: {message}}}))"
-            )
-
-        item.finished.connect(finished)
-        item.accept()
-
-    profile.downloadRequested.connect(download)
-
-    v = state.values
-    window.resize(v["width"], v["height"])
-    if v["x"] is not None and v["y"] is not None:
-        window.move(v["x"], v["y"])
-    window.view.setHtml(splash_html())
-    if v.get("maximized"):
-        window.showMaximized()
-    else:
-        window.show()
-
-    class Bridge(QtCore.QObject):
-        ready = QtCore.Signal()
-
-    bridge = Bridge()
-
-    def loaded():
-        if engine.error:
-            window.view.setHtml(splash_html("The engine could not start.", engine.error))
-        else:
-            window.view.setUrl(QtCore.QUrl(engine.url))
-
-    bridge.ready.connect(loaded)
-
-    def boot():
-        engine.start()
-        bridge.ready.emit()
-
-    threading.Thread(target=boot, name="omr-boot", daemon=True).start()
-    app.exec_()
-
-
-ENGINES = {"webview2": run_webview2, "qt": run_qt}
-
-
-def available_engines():
-    found = []
+def webview_available():
     try:
         import webview  # noqa: F401
 
-        found.append("webview2")
+        return True
     except ImportError:
-        pass
-    try:
-        import PySide2.QtWebEngineWidgets  # noqa: F401
-
-        found.append("qt")
-    except ImportError:
-        pass
-    return found
+        return False
 
 
 # --------------------------------------------------------------------- start
@@ -528,7 +372,6 @@ def log_path():
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=f"{base.DISPLAY_NAME} app window")
-    parser.add_argument("--engine", choices=sorted(ENGINES), help="window engine (default: the bundled one)")
     parser.add_argument("--data-dir", help="data folder (default: as the launcher)")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--version", action="store_true")
@@ -538,7 +381,7 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     if args.version:
-        print(f"{base.DISPLAY_NAME} {base.LAUNCHER_VERSION} app ({', '.join(available_engines())})")
+        print(f"{base.DISPLAY_NAME} {base.LAUNCHER_VERSION} app (WebView2 runtime: {webview2_runtime() or 'installed'})")
         return 0
     data_dir = Path(args.data_dir) if args.data_dir else base.default_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -554,15 +397,13 @@ def main(argv=None):
         return 0
     base.configure_environment()
 
-    engines = available_engines()
-    name = args.engine or (engines[0] if engines else None)
-    if name not in engines:
-        print(f"No window engine available (wanted {name or 'any'}; bundled: {engines})", file=sys.stderr)
+    if not webview_available():
+        print("pywebview is not installed (packaging/requirements-app.txt)", file=sys.stderr)
         return 2
     engine = Engine(data_dir, args.workers)
     state = WindowState(data_dir)
     try:
-        ENGINES[name](engine, state, instance)
+        run_webview2(engine, state, instance)
     except Exception:
         traceback.print_exc()
         return 1

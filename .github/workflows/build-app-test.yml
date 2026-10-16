@@ -1,7 +1,8 @@
 name: Test build of the app window
 
-# Two builds of the app window (packaging/omr_app.py) to compare the window
-# engines side by side: WebView2 109 and Qt 5.15. Only the window is under test,
+# Two builds of the app window (packaging/omr_app.py, WebView2): modern for
+# Windows 10/11 (the WebView2 runtime Windows keeps up to date) and legacy for
+# Windows 7/8.1 (WebView2 runtime 109 next to the exe). Only the window is under test,
 # so these leave out the OCR models, Tesseract and cloudflared (ICR zones go to
 # manual review) and run no test suite: each build only checks that the exe
 # starts its engine and takes a screenshot of the window.
@@ -19,7 +20,7 @@ on:
       - claude/project-thread-7ju3uh
     paths:
       - packaging/omr_app.py
-      - packaging/requirements-app-*.txt
+      - packaging/requirements-app.txt
       - .github/workflows/build-app-test.yml
 
 jobs:
@@ -29,9 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        engine: [webview2, qt]
+        flavor: [modern, legacy]
     env:
-      OMR_APP_ENGINE: ${{ matrix.engine }}
+      OMR_APP: "1"
       OMR_BUILD_MODE: onedir
       PYTHONIOENCODING: utf-8
       WEBVIEW2_CAB: ${{ github.event.inputs.webview2_cab || 'https://github.com/westinyang/WebView2RuntimeArchive/releases/download/109.0.1518.78/Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64.cab' }}
@@ -45,18 +46,18 @@ jobs:
           cache: pip
           cache-dependency-path: |
             packaging/requirements-win7.txt
-            packaging/requirements-app-${{ matrix.engine }}.txt
+            packaging/requirements-app.txt
 
       - name: Install pinned dependencies
         run: |
           python -m pip install --upgrade "pip<25" wheel
-          python -m pip install -r packaging/requirements-win7.txt -r packaging/requirements-app-${{ matrix.engine }}.txt
+          python -m pip install -r packaging/requirements-win7.txt -r packaging/requirements-app.txt
 
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean packaging/omr.spec
 
       - name: Reuse the WebView2 runtime
-        if: matrix.engine == 'webview2'
+        if: matrix.flavor == 'legacy'
         id: runtime-cache
         uses: actions/cache@v4
         with:
@@ -64,7 +65,7 @@ jobs:
           key: webview2-runtime-${{ hashFiles('.github/workflows/build-app-test.yml') }}-${{ env.WEBVIEW2_CAB }}
 
       - name: Fetch and check the WebView2 109 runtime
-        if: matrix.engine == 'webview2' && steps.runtime-cache.outputs.cache-hit != 'true'
+        if: matrix.flavor == 'legacy' && steps.runtime-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $cab = "build\webview2.cab"
@@ -88,7 +89,7 @@ jobs:
           Move-Item $exe.Directory.FullName build\webview2
 
       - name: Put the runtime next to the exe
-        if: matrix.engine == 'webview2'
+        if: matrix.flavor == 'legacy'
         shell: pwsh
         run: Copy-Item -Recurse build\webview2 dist\OMRChecker\webview2
 
@@ -108,7 +109,7 @@ jobs:
           $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
           $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
           [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-          $bmp.Save("dist\screenshot-${{ matrix.engine }}.png")
+          $bmp.Save("dist\screenshot-${{ matrix.flavor }}.png")
           $alive = -not $p.HasExited
           if ($alive) { Stop-Process -Id $p.Id -Force }
           if (Test-Path "$data\app.log") { Get-Content "$data\app.log" -Tail 40 }
@@ -117,13 +118,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OMRChecker-app-${{ matrix.engine }}
+          name: OMRChecker-app-${{ matrix.flavor }}
           path: dist/OMRChecker/
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: screenshot-${{ matrix.engine }}
-          path: dist/screenshot-${{ matrix.engine }}.png
+          name: screenshot-${{ matrix.flavor }}
+          path: dist/screenshot-${{ matrix.flavor }}.png
           if-no-files-found: ignore

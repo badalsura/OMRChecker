@@ -1,8 +1,6 @@
 // The app window (packaging/omr_app.py opens /?desktop=1): behave like an app,
 // not a web page. No reload, back/forward, zoom or page menus; a file dropped
 // beside a drop zone does not replace the screen; no API key (local only).
-import { toast } from "./api.js";
-
 const EDITABLE = "input, textarea, select, [contenteditable=''], [contenteditable='true']";
 
 export function isDesktop() {
@@ -62,11 +60,5 @@ export function initDesktop() {
   );
   document.addEventListener("auxclick", (e) => {
     if (e.button === 1) e.preventDefault();
-  });
-  // Saved by the app window's own Save As box (Qt engine)
-  window.addEventListener("omr-saved", (e) => {
-    const [name, ok] = e.detail || [];
-    if (ok) toast(`Saved ${name}`, "ok");
-    else toast(`Could not save ${name}`, "error", 6000);
   });
 }
