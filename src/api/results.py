@@ -255,7 +255,7 @@ class ResultsService:
             previous = read_json(path)
             if previous is not None:
                 UndoStack(path.parent).push(previous, action, user or DEFAULT_USER)
-        write_json_atomic(path, result)
+        write_json_atomic(path, result, compact=True)
 
     def undo(self, scan_id, user=None, direction="undo"):
         """Undo (or redo) the last change of a sheet. Returns (result, step)."""
@@ -268,7 +268,7 @@ class ResultsService:
                 raise ResultsError(f"Nothing to {direction} on this sheet", 409)
             # Undo and redo are changes: the sheet waits for approval again
             restored.pop("approved", None)
-            write_json_atomic(self.result_path(scan_id), restored)
+            write_json_atomic(self.result_path(scan_id), restored, compact=True)
             self.ctx.index.add_scans([{**summarize(restored), "read_review": None}])
             self.ctx.index.set_scan_state(restored)
             self.ctx.index.sync_review_items(restored)

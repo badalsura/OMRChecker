@@ -44,11 +44,13 @@ def slugify(name, default="template"):
     return slug[:60] or default
 
 
-def write_json_atomic(path, data):
+def write_json_atomic(path, data, compact=False):
+    """compact: no spaces or line breaks (per-sheet results, about 40% smaller)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(data, indent=1, default=_json_default))
+    layout = {"separators": (",", ":")} if compact else {"indent": 1}
+    tmp.write_text(json.dumps(data, default=_json_default, **layout))
     # Windows refuses the swap ("Access is denied") while another program,
     # such as an antivirus scan or the search indexer, has the old file open
     # for a moment: try again for about a second before giving up

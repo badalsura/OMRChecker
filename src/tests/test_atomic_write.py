@@ -1,3 +1,4 @@
+import json
 import os
 from unittest import mock
 
@@ -29,3 +30,10 @@ def test_atomic_write_retries_while_windows_holds_the_file(tmp_path):
             storage.write_json_atomic(target, {"n": 2})
     assert storage.read_json(target) == {"n": 1}
     assert [p.name for p in tmp_path.iterdir()] == ["job.json"]
+
+
+def test_compact_writes_no_spaces(tmp_path):
+    target = tmp_path / "result.json"
+    storage.write_json_atomic(target, {"a": [1, 2], "b": {"c": 0.5}}, compact=True)
+    assert target.read_text() == '{"a":[1,2],"b":{"c":0.5}}'
+    assert json.loads(target.read_text()) == {"a": [1, 2], "b": {"c": 0.5}}
