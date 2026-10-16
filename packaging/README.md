@@ -263,14 +263,28 @@ and the newest Python that runs on Windows 7). An exe built with Python 3.9+
 will not start on Windows 7.
 
 ```
-packaging\build_windows.bat            :: onedir + onefile, then --version / --selftest
-packaging\build_windows.bat onedir     :: only the portable folder
+packaging\build_windows.bat                 :: the server build, onedir + onefile
+packaging\build_windows.bat server onedir   :: the server build, only the portable folder
+packaging\build_windows.bat app             :: the app (modern and legacy zips)
+packaging\build_windows.bat all             :: both
 ```
+
+| Build | Output |
+|---|---|
+| `server` (mode `onedir`, `onefile` or `both`, default both) | `dist\server\OMRChecker\`, `dist\server\OMRChecker-portable-win64.zip`, `dist\server\OMRChecker-onefile.exe` |
+| `app` (always onedir) | `dist\app\OMRChecker\`, `dist\app\OMRChecker-app-modern-win64.zip`, `dist\app\OMRChecker-app-legacy-win64.zip`, `dist\app\OMRChecker-webview2-109.zip` |
+
+The old form `build_windows.bat onedir|onefile|both` still builds the server.
 
 The script creates `build\venv38`, installs `packaging\requirements-win7.txt`
 (every package pinned to its newest release with a CPython 3.8 Windows wheel;
-check with `python packaging\verify_wheels.py`), runs PyInstaller 5.13.2 on
-`packaging\omr.spec`, smoke-tests the result and zips the folder.
+check with `python packaging\verify_wheels.py`), plus `requirements-app.txt` for
+the app, runs PyInstaller 5.13.2 on `packaging\omr.spec` and smoke-tests the
+result (`--version`, `--selftest`, Tesseract and, in the server, cloudflared in
+place). For the app, `packaging\pack_app.ps1` then fetches the WebView2 109
+runtime once into `build\webview2` (refusing any file without Microsoft's
+signature) and makes the zips, with 7-Zip when it is installed. The installers
+are only made by the GitHub workflow (Inno Setup).
 
 Manual equivalent:
 
