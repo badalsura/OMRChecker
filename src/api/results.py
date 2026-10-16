@@ -1110,19 +1110,34 @@ def group_highlights(result):
         if reason not in reasons:
             reasons.append(reason)
 
-    for group, details in (result.get("groups") or {}).items():
+    groups = result.get("groups") or {}
+
+    def flagged_columns(details):
+        # Sheets read before columns carried "flagged" go by their state
+        return [
+            column.get("name")
+            for column in details.get("columns") or []
+            if isinstance(column, dict)
+            and column.get("flagged", column.get("state") in ("multi", "issue"))
+        ]
+
+    for group, details in groups.items():
         if not isinstance(details, dict):
             continue
         for column in details.get("columns") or []:
-            if isinstance(column, dict) and column.get("state") in ("multi", "issue"):
+            if isinstance(column, dict) and column.get("name") in flagged_columns(details):
                 add(column.get("name"), f"{group}: {column['state']}")
     for item in result.get("review") or []:
         for column, flags in (item.get("field_flags") or {}).items():
             for flag in flags or ["needs_review"]:
                 add(column, f"{item.get('name')}: {flag}")
-        if not item.get("field_flags"):
-            for column in item.get("fields") or []:
-                add(column, f"{item.get('name')}: needs review")
+        if item.get("field_flags"):
+            continue
+        # A grouped value's item (older sheets): its flagged columns, not all
+        group = groups.get(item.get("name"))
+        columns = flagged_columns(group) if isinstance(group, dict) else []
+        for column in columns or item.get("fields") or []:
+            add(column, f"{item.get('name')}: needs review")
     return marks
 
 
