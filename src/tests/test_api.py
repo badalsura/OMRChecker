@@ -795,6 +795,8 @@ def test_branding_name_and_icon_are_open(tmp_path):
         assert brand["name"] == load_branding()["name"]
         icon = client.get(brand["icon_url"])
         assert icon.status_code == 200 and icon.headers["content-type"] == "image/png"
+        logo = client.get(brand["logo_url"])
+        assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
 
 
 def test_user_guide_page_and_text(tmp_path):

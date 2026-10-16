@@ -1245,13 +1245,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     @app.get("/branding", tags=["meta"])
     def branding():
         """Product name and icon (branding/branding.json); open, for the sign-in page."""
-        from src.branding import icon_path, load_branding
+        from src.branding import icon_path, load_branding, logo_path
 
         brand = load_branding()
         return {
             "name": brand["name"],
             "publisher": brand["publisher"],
             "icon_url": "/branding/icon.png" if icon_path() else None,
+            "logo_url": "/branding/logo.png" if logo_path() else None,
         }
 
     @app.get("/help", include_in_schema=False)
@@ -1273,6 +1274,15 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         path = icon_path()
         if path is None:
             raise HTTPException(404, "No icon")
+        return FileResponse(path, media_type="image/png")
+
+    @app.get("/branding/logo.png", include_in_schema=False)
+    def branding_logo():
+        from src.branding import logo_path
+
+        path = logo_path()
+        if path is None:
+            raise HTTPException(404, "No logo")
         return FileResponse(path, media_type="image/png")
 
     @app.get("/", include_in_schema=False)

@@ -1,6 +1,7 @@
 """
-The product's name and icon, kept in one place: branding/branding.json and
-branding/icon.png. Change those (then run packaging/apply_branding.py for the
+The product's name, icon and logo, kept in one place: branding/branding.json,
+branding/icon.png (square mark: tab, header, exe) and branding/logo.png (the
+full company logo: sign-in page). Change those (then run packaging/apply_branding.py for the
 exe and installer icon) to rebrand; nothing else needs editing.
 """
 
@@ -8,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-DEFAULTS = {"name": "UNIC OMR Scanner", "publisher": "UNIC", "icon": "icon.png"}
+DEFAULTS = {"name": "UNIC OMR Scanner", "publisher": "UNIC", "icon": "icon.png", "logo": "logo.png"}
 
 
 def _branding_dir():
@@ -33,4 +34,9 @@ def load_branding():
 
 def icon_path():
     path = BRANDING_DIR / load_branding()["icon"]
+    return path if path.is_file() else None
+
+
+def logo_path():
+    path = BRANDING_DIR / load_branding()["logo"]
     return path if path.is_file() else None

@@ -395,8 +395,9 @@ The program's name and icon come from one folder, `branding`, inside the program
 
 | File | What it holds |
 | --- | --- |
-| `branding.json` | `name`: the name shown in the browser tab, the app's top bar, the sign-in page, the launcher window, the installer and its shortcuts (default "UNIC OMR Scanner"). `publisher`: the publisher shown by the installer (default "UNIC"). `icon`: the icon file name (default `icon.png`). |
-| `icon.png` | The icon. Use a square picture, 256 × 256 pixels or larger. |
+| `branding.json` | `name`: the name shown in the browser tab, the app's top bar, the sign-in page, the launcher window, the installer and its shortcuts (default "UNIC OMR Scanner"). `publisher`: the publisher shown by the installer (default "UNIC"). `icon`: the icon file name (default `icon.png`). `logo`: the full logo file name (default `logo.png`). |
+| `icon.png` | The icon: the browser tab, the top bar, the Help page, the launcher window, and (through `icon.ico`) the exe, installer and shortcuts. Use a square picture with a transparent background, 256 × 256 pixels or larger. It is the UNIC mark. |
+| `logo.png` | The full company logo, shown at the top of the sign-in page. Any shape; a transparent background works best. It is the UNIC logo with "Technological Solutions & Consulting". |
 
 Example `branding.json`:
 
@@ -413,7 +414,7 @@ If the file is missing or broken, the default name and icon are used. Empty valu
 #### How to change the name or icon
 
 1. Stop the program (**Quit** in the launcher).
-2. Edit `branding\branding.json` and/or replace `branding\icon.png`.
+2. Edit `branding\branding.json` and/or replace `branding\icon.png` or `branding\logo.png`.
 3. Run `python packaging\apply_branding.py` from the source folder. It writes `icon.ico` (the Windows icon used for the exe, the installer and shortcuts) and `branding.iss` (the name used by the installer). (`apply_branding.py --draw` redraws the default icon.)
 4. Start the program again.
 

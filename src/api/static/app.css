@@ -63,6 +63,10 @@ a { color: var(--accent); }
 .brand { font-weight: 650; display: flex; align-items: center; gap: 8px; }
 .brand .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .brand .brand-icon { width: 22px; height: 22px; border-radius: 5px; }
+/* The logo's dark grey and navy need a light tile on a dark page */
+@media (prefers-color-scheme: dark) {
+  .brand-icon { background: #fff; padding: 1px; }
+}
 .tabs { display: flex; gap: 2px; height: 100%; }
 .tabs button {
   border: 0; background: none; color: var(--muted); padding: 0 14px; height: 100%;
@@ -388,6 +392,7 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .auth-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12); width: 380px; max-width: 100%; padding: 24px; display: flex; flex-direction: column; gap: 4px; }
 .auth-card h2 { margin: 10px 0 8px; font-size: 18px; }
 .auth-card .brand { font-weight: 600; }
+.auth-logo { display: block; width: 100%; max-width: 300px; margin: 0 auto 10px; padding: 10px 14px; background: #fff; border-radius: var(--radius); }
 .auth-card .row { margin-top: 6px; align-items: center; }
 .auth-note { min-height: 18px; font-size: 13px; }
 .auth-note.err { color: var(--err); }

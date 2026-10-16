@@ -389,6 +389,12 @@ this station.
 - **Pause** and **Resume** a running export (it carries on from where it stopped, while the server keeps running). **Run again** repeats an interrupted, cancelled or failed export.
 - `POST /exports/{id}/cancel`, `/pause`, `/resume` and `/rerun` are new.
 
+## UNIC logo
+
+- The icon (browser tab, top bar, Help page, launcher, exe, installer and shortcuts) is now the UNIC mark from the company logo, and `icon.ico` is regenerated from it.
+- The sign-in page shows the full logo with "Technological Solutions & Consulting" (`branding/logo.png`, `logo` in `branding.json`, `GET /branding` returns `logo_url`).
+- In dark mode the icon and logo sit on a white tile, so the grey and navy stay readable.
+
 ## New settings at a glance
 
 | Setting | Where | Default | What it does |
