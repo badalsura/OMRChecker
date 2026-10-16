@@ -142,6 +142,30 @@ def _escape(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+# --------------------------------------------------------------------- second windows
+# Links that open a new window: our own pages (Help, API docs, a scan's JSON, a
+# template layout) open in another app window; other websites in the browser
+CHILD_TITLES = {"/help": "Help", "/docs": "API docs", "/redoc": "API docs"}
+
+
+def own_page(engine, url):
+    return bool(engine.port) and str(url).startswith(f"http://127.0.0.1:{engine.port}/")
+
+
+def child_title(url):
+    from urllib.parse import urlsplit
+
+    path = urlsplit(str(url)).path.rstrip("/") or "/"
+    part = CHILD_TITLES.get(path)
+    return f"{base.DISPLAY_NAME} – {part}" if part else base.DISPLAY_NAME
+
+
+def open_outside(url):
+    import webbrowser
+
+    webbrowser.open(str(url))
+
+
 # --------------------------------------------------------------------- window size and place
 class WindowState:
     def __init__(self, data_dir):
@@ -290,6 +314,31 @@ def run_webview2(engine, state, instance):
     window.events.restored += restored
     instance["show"] = lambda: (window.restore(), window.show())
 
+    children = {}
+
+    def open_child(url):
+        known = children.get(url)
+        if known:
+            known.restore()
+            known.show()
+            return
+        child = webview.create_window(child_title(url), url, width=1100, height=800, min_size=(640, 480), text_select=True)
+        children[url] = child
+        child.events.closed += lambda: children.pop(url, None)
+
+    def new_window(browser, _sender, args):
+        args.set_Handled(True)
+        url = str(args.get_Uri())
+        if own_page(engine, url):
+            # create_window must not run on the window thread (pywebview 4.4.1)
+            threading.Thread(target=open_child, args=(url,), daemon=True).start()
+        else:
+            open_outside(url)
+
+    from webview.platforms import edgechromium
+
+    edgechromium.EdgeChrome.on_new_window_request = new_window
+
     def boot():
         engine.start()
         if engine.error:
@@ -336,12 +385,34 @@ def run_qt(engine, state, instance):
     settings.setAttribute(QWebEngineSettings.FullScreenSupportEnabled, False)
     settings.setAttribute(QWebEngineSettings.ErrorPageEnabled, True)
 
+    children = []
+
     class Page(QWebEnginePage):
         def createWindow(self, _type):
-            # Links that open a new window (the user guide) go to the default browser
-            target = QWebEnginePage(profile, self)
-            target.urlChanged.connect(lambda url: (QtGui.QDesktopServices.openUrl(url), target.deleteLater()))
-            return target
+            # Our own pages open in another app window, other sites in the browser
+            page = Page(profile, window)
+            claimed = []
+
+            def first_url(url):
+                if claimed:
+                    return
+                claimed.append(url)
+                if own_page(engine, url.toString()):
+                    child = QWebEngineView()
+                    child.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+                    child.setPage(page)
+                    child.setContextMenuPolicy(QtCore.Qt.NoContextMenu)
+                    child.setWindowTitle(child_title(url.toString()))
+                    child.resize(1100, 800)
+                    child.destroyed.connect(lambda *_: children.remove(child) if child in children else None)
+                    children.append(child)
+                    child.show()
+                else:
+                    QtGui.QDesktopServices.openUrl(url)
+                    page.deleteLater()
+
+            page.urlChanged.connect(first_url)
+            return page
 
     class Window(QtWidgets.QMainWindow):
         show_requested = QtCore.Signal()
