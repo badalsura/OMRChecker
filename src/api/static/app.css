@@ -119,6 +119,7 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 
 .progress { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; min-width: 120px; }
 .progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }
+.progress.paused > div { background: var(--warn); }
 
 .empty-state { color: var(--muted); padding: 40px; text-align: center; }
 

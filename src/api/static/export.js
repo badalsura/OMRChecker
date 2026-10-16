@@ -14,7 +14,7 @@ export function initExport() {
 }
 
 // ---- Jobs tab: every export, running or done ------------------------------
-const ACTIVE = ["queued", "running"];
+const ACTIVE = ["queued", "running", "paused"];
 let exportsTimer = null;
 
 export async function refreshExports() {
@@ -39,6 +39,14 @@ export async function refreshExports() {
     if (record.state === "completed") {
       actions.push(el("a", { class: "button small primary", href: url(record.download_url), download: record.file_name }, "Download"));
     }
+    if (record.state === "paused") {
+      actions.push(el("button", { class: "small primary", title: "Carry on from where it stopped", onclick: () => exportAction(record, "resume") }, "Resume"));
+    } else if (running) {
+      actions.push(el("button", { class: "small", title: "Stop for now and carry on later with Resume (while the server keeps running)", onclick: () => exportAction(record, "pause") }, "Pause"));
+    }
+    if (["interrupted", "cancelled", "failed"].includes(record.state) && record.request) {
+      actions.push(el("button", { class: "small primary", title: "Start the same export again: same sheets, format, columns and folder", onclick: () => exportAction(record, "rerun") }, "Run again"));
+    }
     if (running) {
       actions.push(el("button", { class: "small danger", onclick: () => cancelExport(record) }, "Cancel"));
     } else {
@@ -50,8 +58,8 @@ export async function refreshExports() {
         {},
         el("td", {}, el("div", {}, record.file_name), record.path ? el("div", { class: "mono small muted" }, record.path) : null, record.error && record.state !== "cancelled" ? el("div", { class: "small fs-warn" }, record.error) : null),
         el("td", { class: "small" }, `${record.format.toUpperCase()} · ${scopeText(record.filters || {})}`),
-        el("td", {}, chip(record.state, record.state === "completed" ? "ok" : record.state === "failed" || record.state === "interrupted" ? "error" : "")),
-        el("td", {}, running ? el("div", { class: "progress" }, el("div", { style: { width: `${pct}%` } })) : null, el("span", { class: "small muted" }, `${record.rows || 0} / ${record.total} rows`)),
+        el("td", {}, chip(record.state, record.state === "completed" ? "ok" : record.state === "failed" || record.state === "interrupted" ? "error" : record.state === "paused" ? "paused" : "")),
+        el("td", {}, running ? el("div", { class: "progress" + (record.state === "paused" ? " paused" : "") }, el("div", { style: { width: `${pct}%` } })) : null, el("span", { class: "small muted" }, `${record.rows || 0} / ${record.total} rows`)),
         el("td", { class: "muted small" }, fmtTime(record.created_at)),
         el("td", { class: "muted small" }, end && start ? fmtDuration(end - start) : ""),
         el("td", { class: "muted small" }, record.user || ""),
@@ -70,6 +78,16 @@ async function cancelExport(record) {
   try {
     await api(`/exports/${record.id}/cancel`, { method: "POST" });
     toast("Export cancelled");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+  refreshExports();
+}
+
+async function exportAction(record, action) {
+  try {
+    await api(`/exports/${record.id}/${action}`, { method: "POST" });
+    if (action === "rerun") toast("Export started again", "ok");
   } catch (error) {
     toast(error.message, "error");
   }
@@ -306,7 +324,17 @@ async function openExport(filters) {
     const bar = el("div", { class: "progress" }, el("div", { style: { width: "0%" } }));
     const text = el("span", { class: "muted small" }, "Exporting…");
     const cancel = el("button", { class: "small danger", onclick: async () => { try { await api(`/exports/${record.id}/cancel`, { method: "POST" }); } catch (error) { toast(error.message, "error"); } } }, "Cancel export");
-    statusBox.append(bar, text, " ", cancel, el("div", { class: "muted small" }, "You can close this window: the export keeps running on the server. Follow it, download it or cancel it in Jobs › Exports."));
+    const pause = el("button", { class: "small" }, "Pause");
+    pause.addEventListener("click", async () => {
+      const action = record.state === "paused" ? "resume" : "pause";
+      try {
+        record = await api(`/exports/${record.id}/${action}`, { method: "POST" });
+        pause.textContent = record.state === "paused" ? "Resume" : "Pause";
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    });
+    statusBox.append(bar, text, " ", pause, " ", cancel, el("div", { class: "muted small" }, "You can close this window: the export keeps running on the server. Follow it, download it or cancel it in Jobs › Exports."));
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 700));
       // The window was closed: the Jobs tab follows the export from here
@@ -320,6 +348,7 @@ async function openExport(filters) {
       const pct = record.total ? Math.min(100, Math.round((100 * (record.rows || 0)) / record.total)) : 0;
       bar.firstChild.style.width = `${pct}%`;
       text.textContent = `${record.state} · ${record.rows || 0} / ${record.total} rows`;
+      pause.textContent = record.state === "paused" ? "Resume" : "Pause";
       if (!ACTIVE.includes(record.state)) break;
     }
     emit("exports-changed");

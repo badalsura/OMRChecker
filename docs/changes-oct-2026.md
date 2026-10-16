@@ -386,7 +386,8 @@ this station.
 - **Jobs › Exports** lists every export with its progress, time taken and who ran it, with **Download**, **Cancel** and **Delete**. Exports always kept running on the server after the Export window closed; there was just no screen to follow them.
 - The Export window has **Cancel export** and says the export keeps running if the window is closed.
 - An export left running when the server stopped is marked **interrupted** at the next start. A running export can't be deleted; cancel it first.
-- `POST /exports/{id}/cancel` is new.
+- **Pause** and **Resume** a running export (it carries on from where it stopped, while the server keeps running). **Run again** repeats an interrupted, cancelled or failed export.
+- `POST /exports/{id}/cancel`, `/pause`, `/resume` and `/rerun` are new.
 
 ## New settings at a glance
 
@@ -431,7 +432,7 @@ this station.
 | `POST /activity/return` | Send sheets back to review, optionally to a person, with a note |
 | `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary` | Hand out flagged sheets to people in equal shares, take them back, and see each person's progress |
 | `POST /exports` | Takes `folder`: write the file straight into that server folder; the record carries `path` |
-| `POST /exports/{id}/cancel` | Stop a queued or running export |
+| `POST /exports/{id}/cancel`, `/pause`, `/resume`, `/rerun` | Stop, pause, resume or repeat an export |
 | `GET /templates/{id}/package` | One .zip of the template to import elsewhere with `POST /templates` |
 | `GET /results?assigned=` | `@me`, a user name, or `__none__` for sheets nobody has |
 | `GET /review`, `/review/counts`, bulk accept | Take a `flag` filter |

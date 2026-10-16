@@ -68,7 +68,7 @@ class ExportCancelled(Exception):
     """Someone pressed Cancel on a running export."""
 
 
-ACTIVE = ("queued", "running")
+ACTIVE = ("queued", "running", "paused")
 
 
 class ExportManager:
@@ -80,6 +80,10 @@ class ExportManager:
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="omr-export")
         self.lock = threading.Lock()
         self.cancelled = set()
+        # Paused exports: id -> Event, cleared while paused
+        self.gates = {}
+        # The record dict of each export being run, shared with pause/resume
+        self.live = {}
         self.mark_interrupted()
 
     def mark_interrupted(self):
@@ -103,6 +107,44 @@ class ExportManager:
         if record.get("state") in ACTIVE:
             self.cancelled.add(export_id)
         return record
+
+    def pause(self, export_id, paused=True):
+        """Pause (or resume) a queued or running export. The file stays open
+        and the export carries on where it stopped; a server stop in between
+        ends it as interrupted."""
+        with self.lock:
+            record = self.live.get(export_id) or self.get(export_id)
+            if record is None:
+                return None
+            if record.get("state") not in ACTIVE:
+                raise ExportError(f"The export is {record.get('state')}")
+            gate = self.gates.setdefault(export_id, threading.Event())
+            if paused:
+                gate.clear()
+            else:
+                gate.set()
+            started = export_id in self.live
+            record["state"] = "paused" if paused else ("running" if started else "queued")
+            if paused:
+                record["paused_at"] = time.time()
+            write_json_atomic(self.record_path(export_id), record)
+            return dict(record)
+
+    def wait_if_paused(self, export_id):
+        gate = self.gates.get(export_id)
+        while gate is not None and not gate.wait(0.5):
+            if export_id in self.cancelled:
+                raise ExportCancelled()
+
+    def rerun(self, export_id, user, scope=None):
+        """The same export again (for one interrupted, cancelled or failed)."""
+        record = self.get(export_id)
+        if record is None:
+            return None
+        request = record.get("request")
+        if not request:
+            raise ExportError("This export was made before Run again existed; start it from Results")
+        return self.create(ExportRequest(**request), user, scope)
 
     # ---- profiles --------------------------------------------------------
     def profile_path(self, name):
@@ -259,6 +301,14 @@ class ExportManager:
             "error": None,
             "file_name": file_name,
             "download_url": None,
+            # What Run again repeats (a database URL is not kept)
+            "request": {
+                "format": body.format,
+                "filters": body.filters.model_dump(exclude_none=True),
+                "profile": body.profile,
+                "profile_name": body.profile_name,
+                "folder": body.folder,
+            },
         }
         if folder is not None:
             target = self.target_path(folder, file_name)
@@ -289,17 +339,21 @@ class ExportManager:
         rows_of = self.results_factory(record["filters"])
 
         def results():
-            # Checked on every sheet, so Cancel stops any format promptly
+            # Checked on every sheet, so Cancel and Pause act promptly
             for result in rows_of():
+                self.wait_if_paused(export_id)
                 if export_id in self.cancelled:
                     raise ExportCancelled()
                 yield result
 
         if export_id in self.cancelled:
             return self._cancelled(record, path)
-        record["state"] = "running"
-        record["started_at"] = time.time()
-        write_json_atomic(self.record_path(export_id), record)
+        with self.lock:
+            self.live[export_id] = record
+            gate = self.gates.get(export_id)
+            record["state"] = "paused" if gate is not None and not gate.is_set() else "running"
+            record["started_at"] = time.time()
+            write_json_atomic(self.record_path(export_id), record)
 
         def progress(done):
             record["rows"] = done
@@ -338,10 +392,17 @@ class ExportManager:
             record.update(state="failed", error=f"{type(error).__name__}: {error}")
         record["finished_at"] = time.time()
         write_json_atomic(self.record_path(export_id), record)
+        self._forget(export_id)
         return record
+
+    def _forget(self, export_id):
+        with self.lock:
+            self.live.pop(export_id, None)
+            self.gates.pop(export_id, None)
 
     def _cancelled(self, record, path):
         self.cancelled.discard(record["id"])
+        self._forget(record["id"])
         path.unlink(missing_ok=True)
         record.update(state="cancelled", error="Cancelled", finished_at=time.time())
         write_json_atomic(self.record_path(record["id"]), record)
@@ -418,6 +479,44 @@ def register(app, ctx, secured):
     def cancel_export(export_id: str):
         """Stop a queued or running export (its partial file is removed)."""
         record = manager.cancel(export_id)
+        if record is None:
+            raise HTTPException(404, f"Export '{export_id}' not found")
+        return record
+
+    @app.post("/exports/{export_id}/pause", tags=["exports"], dependencies=secured)
+    def pause_export(export_id: str):
+        """Pause a queued or running export; resume carries on where it stopped."""
+        try:
+            record = manager.pause(export_id, True)
+        except ExportError as error:
+            fail(error, 409)
+        if record is None:
+            raise HTTPException(404, f"Export '{export_id}' not found")
+        return record
+
+    @app.post("/exports/{export_id}/resume", tags=["exports"], dependencies=secured)
+    def resume_export(export_id: str):
+        try:
+            record = manager.pause(export_id, False)
+        except ExportError as error:
+            fail(error, 409)
+        if record is None:
+            raise HTTPException(404, f"Export '{export_id}' not found")
+        return record
+
+    @app.post(
+        "/exports/{export_id}/rerun", tags=["exports"], dependencies=secured, status_code=201
+    )
+    def rerun_export(export_id: str, request: Request):
+        """Start the same export again (same sheets, format, profile and folder)."""
+        try:
+            record = manager.rerun(
+                export_id,
+                request_user(request, None, DEFAULT_USER),
+                folder_scope(ctx.settings, request),
+            )
+        except ExportError as error:
+            fail(error)
         if record is None:
             raise HTTPException(404, f"Export '{export_id}' not found")
         return record

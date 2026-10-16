@@ -5938,6 +5938,128 @@
         }
       }
     },
+    "/exports/{export_id}/pause": {
+      "post": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Pause Export",
+        "description": "Pause a queued or running export; resume carries on where it stopped.",
+        "operationId": "pause_export_exports__export_id__pause_post",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Export Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exports/{export_id}/resume": {
+      "post": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Resume Export",
+        "operationId": "resume_export_exports__export_id__resume_post",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Export Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exports/{export_id}/rerun": {
+      "post": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Rerun Export",
+        "description": "Start the same export again (same sheets, format, profile and folder).",
+        "operationId": "rerun_export_exports__export_id__rerun_post",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Export Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/exports/{export_id}/download": {
       "get": {
         "tags": [

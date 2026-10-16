@@ -5,6 +5,8 @@ import io
 import json
 import random
 import sqlite3
+import threading
+import time
 from datetime import date
 from decimal import Decimal
 
@@ -386,7 +388,40 @@ def test_api_exports_job_with_corrections(tmp_path):
         held[0][0](*held[0][1:])
         stopped = client.get(f"/exports/{queued['id']}").json()
         assert stopped["state"] == "cancelled"
+        # Run again repeats it under a new id
+        again = client.post(f"/exports/{queued['id']}/rerun")
+        assert again.status_code == 201, again.text
+        again = again.json()
+        assert again["id"] != queued["id"] and again["format"] == "csv"
+        for _ in range(100):
+            if client.get(f"/exports/{again['id']}").json()["state"] == "completed":
+                break
+            time.sleep(0.05)
+        assert client.get(f"/exports/{again['id']}").json()["rows"] == 3
+        client.delete(f"/exports/{again['id']}")
         assert client.delete(f"/exports/{queued['id']}").status_code == 200
+
+        # Pause holds a running export on its first sheet; Resume finishes it
+        held.clear()
+        manager.pool.submit = lambda *job: held.append(job)
+        try:
+            paused = client.post("/exports", json={**body, "format": "csv", "wait": False}).json()
+        finally:
+            manager.pool.submit = real_submit
+        assert client.post(f"/exports/{paused['id']}/pause").json()["state"] == "paused"
+        worker = threading.Thread(target=held[0][0], args=held[0][1:])
+        worker.start()
+        time.sleep(0.6)
+        record = client.get(f"/exports/{paused['id']}").json()
+        assert record["state"] == "paused" and record["rows"] == 0
+        assert client.delete(f"/exports/{paused['id']}").status_code == 409
+        assert client.post(f"/exports/{paused['id']}/resume").json()["state"] == "running"
+        worker.join(10)
+        done = client.get(f"/exports/{paused['id']}").json()
+        assert done["state"] == "completed" and done["rows"] == 3
+        assert client.post(f"/exports/{paused['id']}/pause").status_code == 409
+        client.delete(f"/exports/{paused['id']}")
+
         stale = {**stopped, "id": "stale", "state": "running"}
         (manager.root / "stale.json").write_text(json.dumps(stale))
         manager.mark_interrupted()
@@ -432,7 +467,6 @@ def test_api_exports_job_with_corrections(tmp_path):
             state = client.get(f"/exports/{record['id']}").json()
             if state["state"] in ("completed", "failed"):
                 break
-            import time
 
             time.sleep(0.1)
         assert state["state"] == "completed", state
