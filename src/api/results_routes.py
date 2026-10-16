@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from src.api.accounts import request_user
 from src.api.results import DEFAULT_USER, ResultsError, clean_rules
+from src.api.storage import UNASSIGNED
 
 VIEW_PATTERN = (
     "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors"
@@ -79,6 +80,31 @@ class RegradeBody(BaseModel):
     user: Optional[str] = None
 
 
+class ReturnBody(BaseModel):
+    scan_ids: List[str] = Field(..., min_length=1, max_length=500)
+    assign_to: Optional[str] = Field(None, description="Hand the sheets to this person")
+    note: Optional[str] = Field(None, max_length=500)
+
+
+class AssignBody(BaseModel):
+    users: List[str] = Field(..., min_length=1, max_length=100)
+    scan_ids: Optional[List[str]] = Field(None, max_length=100000)
+    template_id: Optional[str] = None
+    job_id: Optional[str] = None
+    view: str = Field("flagged", pattern=VIEW_PATTERN)
+    flag: Optional[str] = None
+    name: Optional[str] = None
+    only_unassigned: bool = True
+    limit: Optional[int] = Field(None, ge=1)
+
+
+class UnassignBody(BaseModel):
+    scan_ids: Optional[List[str]] = Field(None, max_length=100000)
+    user: Optional[str] = None
+    template_id: Optional[str] = None
+    job_id: Optional[str] = None
+
+
 class BulkVerifyBody(BaseModel):
     scan_ids: List[str] = Field(..., min_length=1, max_length=500)
 
@@ -105,6 +131,7 @@ def register(app, ctx, secured):
 
     def overlay_response(result, info=None, **extra):
         payload = service.overlay(result, info)
+        payload["assigned_to"] = ctx.index.assignee(result["scan_id"])
         payload.update(extra)
         if result.get("key_fields"):
             # Other sheets of the job with the same primary key
@@ -125,6 +152,9 @@ def register(app, ctx, secured):
         ),
         flag: Optional[str] = Query(None, description="Only sheets with this flag"),
         file: Optional[str] = Query(None, description="File name contains"),
+        assigned: Optional[str] = Query(
+            None, description="Only sheets assigned to this user (__none__: nobody)"
+        ),
         order: Optional[str] = Query(None, pattern="^(auto|seq|asc|desc)$"),
         limit: int = Query(100, ge=1, le=1000),
         offset: int = Query(0, ge=0),
@@ -138,6 +168,7 @@ def register(app, ctx, secured):
             name=name,
             flag=flag,
             file=file,
+            assigned=assigned,
             order=order,
             limit=limit,
             offset=offset,
@@ -159,6 +190,7 @@ def register(app, ctx, secured):
         name: Optional[str] = None,
         flag: Optional[str] = None,
         file: Optional[str] = None,
+        assigned: Optional[str] = None,
         order: Optional[str] = Query(None, pattern="^(auto|seq|asc|desc)$"),
     ):
         previous, following = ctx.index.neighbours(
@@ -171,6 +203,7 @@ def register(app, ctx, secured):
             name=name,
             flag=flag,
             file=file,
+            assigned=assigned,
         )
         return {"previous": previous, "next": following}
 
@@ -267,7 +300,9 @@ def register(app, ctx, secured):
 
     @app.post("/scans/{scan_id}/verify", tags=["results"], dependencies=secured)
     def scan_verify(scan_id: str, request: Request, body: Optional[VerifyBody] = None):
-        """A person checked every value of this sheet (feeds the accuracy readout)."""
+        """A person checked every value of this sheet (feeds the accuracy readout).
+        With sign-in on, administrators do the final verification."""
+        require_admin(request, "verify sheets")
         try:
             result, records = service.verify(
                 scan_id, user_of(request, body.user if body else None)
@@ -278,6 +313,7 @@ def register(app, ctx, secured):
 
     @app.delete("/scans/{scan_id}/verify", tags=["results"], dependencies=secured)
     def scan_unverify(scan_id: str, request: Request):
+        require_admin(request, "take back a verification")
         try:
             result, _ = service.verify(scan_id, user_of(request), verified=False)
         except ResultsError as error:
@@ -399,6 +435,12 @@ def register(app, ctx, secured):
         )
         return {"items": items, "total": total}
 
+    def require_admin(request, what):
+        """With sign-in on, only administrators may do this."""
+        signed_in = getattr(request.state, "user", None)
+        if signed_in and signed_in.get("role") != "admin":
+            raise HTTPException(403, f"Only an administrator can {what}")
+
     def scanned_by(record):
         """Who scanned the sheet and when (a job's starter, or the upload's)."""
         rows, _ = ctx.index.list_activity(
@@ -494,15 +536,14 @@ def register(app, ctx, secured):
                 continue
             row.update(sheet_changes(record))
             row["responses"] = record.get("responses") or {}
+            row["assigned_to"] = ctx.index.assignee(row["scan_id"])
             items.append(row)
         return {"items": items, "total": total}
 
     @app.post("/activity/verify", tags=["results"], dependencies=secured)
     def verify_sheets(body: BulkVerifyBody, request: Request):
         """Verify many changed sheets at once (administrators, when sign-in is on)."""
-        signed_in = getattr(request.state, "user", None)
-        if signed_in and signed_in.get("role") != "admin":
-            raise HTTPException(403, "Only an administrator can verify sheets in bulk")
+        require_admin(request, "verify sheets")
         user = user_of(request)
         done, failed = [], []
         for scan_id in dict.fromkeys(body.scan_ids):
@@ -515,6 +556,106 @@ def register(app, ctx, secured):
             except ResultsError as error:
                 failed.append({"scan_id": scan_id, "error": str(error)})
         return {"verified": done, "failed": failed}
+
+    @app.post("/activity/return", tags=["results"], dependencies=secured)
+    def return_sheets(body: ReturnBody, request: Request):
+        """Send sheets back to review (administrators): the verification is
+        taken back and the items flagged when the sheet was read wait in the
+        review queue again; optionally hand them to someone."""
+        require_admin(request, "send sheets back to review")
+        user = user_of(request)
+        done, failed = [], []
+        for scan_id in dict.fromkeys(body.scan_ids):
+            try:
+                service.return_to_review(scan_id, user, body.note)
+                done.append(scan_id)
+            except ResultsError as error:
+                failed.append({"scan_id": scan_id, "error": str(error)})
+        if body.assign_to and done:
+            assign_sheets({body.assign_to: done}, user)
+        return {"returned": done, "failed": failed}
+
+    def assign_sheets(by_user, by):
+        ctx.index.assign(by_user, by)
+        rows = []
+        for to, scan_ids in by_user.items():
+            for row in ctx.index.list_scans_by_id(scan_ids):
+                rows.append(
+                    {
+                        "scan_id": row["id"],
+                        "job_id": row["job_id"],
+                        "template_id": row["template_id"],
+                        "action": "assigned",
+                        "user": by,
+                        "detail": {"to": to},
+                    }
+                )
+        ctx.index.add_activity(rows)
+
+    @app.post("/assignments", tags=["results"], dependencies=secured)
+    def assign(body: AssignBody, request: Request):
+        """Hand sheets to people for review (administrators). Either the given
+        scan_ids, or every sheet matching the filters (by default flagged and
+        not verified, not yet assigned), split into equal consecutive runs
+        between the users in the order given."""
+        require_admin(request, "assign sheets")
+        users = [u.strip() for u in body.users if u and u.strip()]
+        if not users:
+            raise HTTPException(422, "Name at least one person")
+        if body.scan_ids:
+            scan_ids = list(dict.fromkeys(body.scan_ids))
+        else:
+            try:
+                rows = ctx.index.iter_results(
+                    template_id=body.template_id,
+                    job_id=body.job_id,
+                    view=body.view,
+                    flag=body.flag,
+                    name=body.name,
+                    assigned=UNASSIGNED if body.only_unassigned else None,
+                )
+                scan_ids = []
+                for row in rows:
+                    scan_ids.append(row["id"])
+                    if body.limit and len(scan_ids) >= body.limit:
+                        break
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from None
+        share, extra = divmod(len(scan_ids), len(users))
+        by_user, start = {}, 0
+        for index, name in enumerate(users):
+            size = share + (1 if index < extra else 0)
+            if size:
+                by_user[name] = scan_ids[start : start + size]
+            start += size
+        assign_sheets(by_user, user_of(request))
+        return {"assigned": {name: len(ids) for name, ids in by_user.items()}, "total": len(scan_ids)}
+
+    @app.post("/assignments/clear", tags=["results"], dependencies=secured)
+    def unassign(body: UnassignBody, request: Request):
+        """Take sheets back from whoever they were assigned to (administrators):
+        the given scan_ids, or every sheet of a user (within a template / job)."""
+        require_admin(request, "change assignments")
+        if body.scan_ids:
+            ctx.index.unassign(body.scan_ids)
+            return {"unassigned": len(body.scan_ids)}
+        count = ctx.index.unassign_where(
+            template_id=body.template_id, job_id=body.job_id, user=body.user
+        )
+        return {"unassigned": count}
+
+    @app.get("/assignments/summary", tags=["results"], dependencies=secured)
+    def assignment_summary(
+        template_id: Optional[str] = None, job_id: Optional[str] = None
+    ):
+        """Per person: sheets assigned, still to review, reviewed, verified;
+        and flagged sheets nobody has yet."""
+        return {
+            "users": ctx.index.assignment_summary(template_id=template_id, job_id=job_id),
+            "unassigned_flagged": ctx.index.count_results(
+                template_id=template_id, job_id=job_id, view="flagged", assigned=UNASSIGNED
+            ),
+        }
 
     @app.get("/settings/path-remap", tags=["results"], dependencies=secured)
     def get_path_remap():

@@ -377,6 +377,29 @@ def test_regrade_turns_an_upside_down_sheet(tmp_path, spec):
         # The stored geometry replays the turn
         client.app.state.ctx.results.renders.items.clear()
         assert client.get(f"/scans/{scan_id}/render").status_code == 200
+        # The original is shown turned the same way, outlines with it
+        view = client.get(f"/scans/{scan_id}/views/original").json()
+        assert view["turned"] is True
+        upright = {}
+        for name, field in view["map"]["fields"].items():
+            for value, quad in field["bubbles"].items():
+                upright[(name, value)] = quad
+        scanned = client.get(f"/scans/{scan_id}").json()
+        bubble = scanned["fields"]["q1"]["bubbles"][0]
+        quad = upright[("q1", bubble["value"])]
+        sx = view["width"] / stored["geometry"]["aligned_size"][0]
+        assert abs(quad[0][0] - bubble["x"] * sx) < 0.05 * view["width"]
+        # Placing the page by hand on the turned original reads it upright
+        w, h = view["width"] - 1, view["height"] - 1
+        placed = client.post(
+            f"/scans/{scan_id}/manual-align",
+            json={"points": [[0, 0], [w, 0], [w, h], [0, h]], "kind": "corners"},
+        )
+        assert placed.status_code == 200, placed.text
+        again = client.get(f"/scans/{scan_id}").json()
+        assert [again["responses"][q] for q in questions] == [
+            truth["answers"][q] for q in questions
+        ]
 
 
 def test_regrade_mirrors_a_flipped_sheet(tmp_path, spec):
@@ -518,6 +541,50 @@ def test_undo_and_redo_a_sheet(tmp_path, spec):
         assert not client.get(f"/scans/{scan_id}").json().get("verified")
         actions = [i["action"] for i in client.get(f"/scans/{scan_id}/activity").json()["items"]]
         assert actions[0] == "undone" and "redone" in actions
+
+
+def test_assign_send_back_and_filter(tmp_path, spec):
+    images = [sheet(spec, 40 + i)[0] for i in range(3)]
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        response = client.post(
+            "/scans",
+            data={"template_id": template_id},
+            files=[("files", (f"s{i}.png", png_bytes(im), "image/png")) for i, im in enumerate(images)],
+        )
+        ids = [s["scan_id"] for s in response.json()["scans"]]
+        done = client.post(
+            "/assignments", json={"users": ["asha", "bob"], "scan_ids": ids}
+        ).json()
+        assert done["assigned"] == {"asha": 2, "bob": 1}
+        mine = client.get("/results", params={"assigned": "bob"}).json()
+        assert [i["id"] for i in mine["items"]] == [ids[2]]
+        nobody = client.get("/results", params={"assigned": "__none__"}).json()
+        assert nobody["total"] == 0
+        summary = client.get("/assignments/summary").json()["users"]
+        assert {u["user"]: u["assigned"] for u in summary} == {"asha": 2, "bob": 1}
+        assert client.get(f"/scans/{ids[2]}/overlay").json()["assigned_to"]["user"] == "bob"
+
+        # bob changes a value, the administrator verifies, then sends it back
+        client.post(f"/scans/{ids[2]}/corrections", json={"changes": {"q1": "C"}}, headers={"X-User": "bob"})
+        client.post(f"/scans/{ids[2]}/verify")
+        back = client.post(
+            "/activity/return", json={"scan_ids": [ids[2]], "assign_to": "asha", "note": "check q1"}
+        ).json()
+        assert back == {"returned": [ids[2]], "failed": []}
+        stored = client.get(f"/scans/{ids[2]}").json()
+        assert not stored.get("verified")
+        assert "q1" in [i["name"] for i in stored["review"]]
+        assert stored["responses"]["q1"] == "C"
+        queue = client.get("/review", params={"scan_id": ids[2]}).json()["items"]
+        assert "q1" in [i["name"] for i in queue]
+        assert client.get(f"/scans/{ids[2]}/overlay").json()["assigned_to"]["user"] == "asha"
+        actions = [i["action"] for i in client.get(f"/scans/{ids[2]}/activity").json()["items"]]
+        assert actions[:2] == ["assigned", "returned"]
+
+        cleared = client.post("/assignments/clear", json={"user": "asha"}).json()
+        assert cleared["unassigned"] == 3
+        assert client.get("/results", params={"assigned": "__none__"}).json()["total"] == 3
 
 
 def test_decode_a_box_drawn_around_a_code(tmp_path, spec):

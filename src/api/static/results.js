@@ -3,7 +3,7 @@
 // or typing, verify it, regrade it with overrides, and read the accuracy.
 import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, state, toast, url } from "./api.js";
 import { scoreSummary } from "./score_view.js";
-import { historyBox, showActivity } from "./activity.js";
+import { historyBox, isAdmin } from "./activity.js";
 
 const PAGE = 100;
 const r = {
@@ -41,7 +41,7 @@ export function initResults() {
   canvas = $("res-canvas");
   ctx2d = canvas.getContext("2d");
   statusLine = $("res-status");
-  for (const id of ["res-template", "res-view", "res-name", "res-flag", "res-job"]) {
+  for (const id of ["res-template", "res-view", "res-name", "res-flag", "res-job", "res-assigned"]) {
     $(id).addEventListener("change", () => {
       if (id === "res-template" || id === "res-job") refreshFacets();
       load(0);
@@ -107,6 +107,12 @@ function isActive() {
 // ---------------------------------------------------------------------------
 // listing
 // ---------------------------------------------------------------------------
+// The signed-in account, else the name typed under User
+function me() {
+  const user = state.auth && state.auth.user;
+  return (user && user.name) || state.user || "local";
+}
+
 function currentFilters() {
   const f = {
     template_id: $("res-template").value,
@@ -115,6 +121,7 @@ function currentFilters() {
     name: $("res-name").value,
     flag: $("res-flag").value,
     file: $("res-file").value.trim(),
+    assigned: $("res-assigned").value === "@me" ? me() : $("res-assigned").value,
   };
   for (const k of Object.keys(f)) if (!f[k]) delete f[k];
   return f;
@@ -1150,11 +1157,15 @@ function renderSide() {
       )
     );
   }
+  if (d.assigned_to) side.append(el("div", { class: "muted small" }, `Assigned to ${d.assigned_to.user} by ${d.assigned_to.assigned_by || "?"} · ${new Date(d.assigned_to.at * 1000).toLocaleString()}`));
+  if (d.returned && !d.verified) side.append(el("div", { class: "res-warning" }, `Sent back to review by ${d.returned.by}${d.returned.note ? `: “${d.returned.note}”` : ""}`));
   side.append(historyBox(d.scan_id));
   renderViewNotes();
   if (d.regrade) side.append(el("div", { class: "muted small" }, `Regraded by ${d.regrade.by} with `, el("code", {}, JSON.stringify({ ...d.regrade.template_overrides, ...d.regrade.config_overrides }))));
   syncUndo();
   $("res-verify").textContent = verified ? "Unverify" : "Verify ✓";
+  $("res-verify").disabled = !isAdmin();
+  $("res-verify").title = isAdmin() ? "Verify: every value on this sheet is checked (V)" : "An administrator does the final verification";
   $("res-verify").classList.toggle("primary", !verified);
 }
 
@@ -1230,7 +1241,6 @@ export function bindToolbar() {
   $("res-regrade").addEventListener("click", showRegrade);
   $("res-undo").addEventListener("click", () => undoStep("undo"));
   $("res-redo").addEventListener("click", () => undoStep("redo"));
-  $("res-activity").addEventListener("click", () => showActivity(currentFilters()));
   $("res-delete").addEventListener("click", deleteScan);
   // View control: aligned / full colour / original, side by side, borders
   $("res-mode").value = r.mode;

@@ -111,6 +111,9 @@ def scan_dir_for(scans_root, scan_id):
     return Path(scans_root) / scan_id[:2] / scan_id
 
 
+# Results filter value for sheets nobody is assigned to
+UNASSIGNED = "__none__"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS scans (
     id TEXT PRIMARY KEY,
@@ -183,6 +186,16 @@ CREATE TABLE IF NOT EXISTS activity (
 );
 CREATE INDEX IF NOT EXISTS ix_activity_scan ON activity(scan_id, id);
 CREATE INDEX IF NOT EXISTS ix_activity_at ON activity(at);
+-- Who a sheet is handed to for review (an administrator hands out work)
+CREATE TABLE IF NOT EXISTS assignments (
+    scan_id TEXT PRIMARY KEY,
+    user TEXT NOT NULL,
+    assigned_by TEXT,
+    at REAL,
+    template_id TEXT,
+    job_id TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_assign_user ON assignments(user, job_id);
 -- Per field outcome of fully verified sheets: drives the accuracy readout
 CREATE TABLE IF NOT EXISTS field_outcomes (
     scan_id TEXT NOT NULL,
@@ -606,6 +619,7 @@ class ScanIndex:
         flag=None,
         file=None,
         scan_ids=None,
+        assigned=None,
     ):
         if view and view not in self.RESULT_VIEWS:
             raise ValueError(f"Unknown view '{view}'")
@@ -626,6 +640,11 @@ class ScanIndex:
         if scan_ids:
             clauses.append(f"id IN ({','.join('?' * len(scan_ids))})")
             params.extend(scan_ids)
+        if assigned == UNASSIGNED:
+            clauses.append("id NOT IN (SELECT scan_id FROM assignments)")
+        elif assigned:
+            clauses.append("id IN (SELECT scan_id FROM assignments WHERE user = ?)")
+            params.append(assigned)
         return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
 
     @staticmethod
@@ -875,6 +894,75 @@ class ScanIndex:
         ]["n"]
         return items, total
 
+    # ---- assignments ----------------------------------------------------
+    def assign(self, by_user, assigned_by):
+        """by_user: {user: [scan ids]}. A sheet has one assignee; assigning it
+        again moves it."""
+        now = time.time()
+        with self.lock:
+            for user, scan_ids in by_user.items():
+                for start in range(0, len(scan_ids), 500):
+                    chunk = scan_ids[start : start + 500]
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO assignments (scan_id, user, assigned_by, "
+                        "at, template_id, job_id) SELECT id, ?, ?, ?, template_id, job_id "
+                        f"FROM scans WHERE id IN ({','.join('?' * len(chunk))})",
+                        (user, assigned_by, now, *chunk),
+                    )
+            self.conn.commit()
+
+    def unassign(self, scan_ids):
+        scan_ids = list(scan_ids)
+        with self.lock:
+            for start in range(0, len(scan_ids), 500):
+                chunk = scan_ids[start : start + 500]
+                self.conn.execute(
+                    f"DELETE FROM assignments WHERE scan_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+            self.conn.commit()
+
+    def unassign_where(self, template_id=None, job_id=None, user=None):
+        where, params = self._filters(template_id=template_id, job_id=job_id, user=user)
+        with self.lock:
+            count = self.conn.execute(f"DELETE FROM assignments {where}", params).rowcount
+            self.conn.commit()
+        return count
+
+    def list_scans_by_id(self, scan_ids):
+        out = []
+        scan_ids = list(scan_ids)
+        for start in range(0, len(scan_ids), 500):
+            chunk = scan_ids[start : start + 500]
+            out.extend(
+                self._query(
+                    "SELECT id, job_id, template_id FROM scans "
+                    f"WHERE id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+            )
+        return out
+
+    def assignee(self, scan_id):
+        rows = self._query(
+            "SELECT user, assigned_by, at FROM assignments WHERE scan_id = ?", (scan_id,)
+        )
+        return rows[0] if rows else None
+
+    def assignment_summary(self, template_id=None, job_id=None):
+        """Per assignee: sheets handed out, still waiting for review, reviewed
+        (nothing left to review, not verified) and verified."""
+        where, params = self._filters(**{"a.template_id": template_id, "a.job_id": job_id})
+        return self._query(
+            "SELECT a.user, COUNT(*) AS assigned, "
+            "SUM(s.review_count > 0 AND s.verified = 0) AS to_review, "
+            "SUM(s.review_count = 0 AND s.verified = 0) AS reviewed, "
+            "SUM(s.verified = 1) AS verified "
+            f"FROM assignments a JOIN scans s ON s.id = a.scan_id {where} "
+            "GROUP BY a.user ORDER BY a.user",
+            params,
+        )
+
     def add_activity(self, rows):
         """rows: dicts with action, user, at and optional scan_id, job_id,
         template_id, detail (any JSON value)."""
@@ -1022,6 +1110,7 @@ class ScanIndex:
                 ("review_items", "scan_id"),
                 ("scan_flags", "scan_id"),
                 ("field_outcomes", "scan_id"),
+                ("assignments", "scan_id"),
             ):
                 self.conn.executemany(
                     f"DELETE FROM {table} WHERE {column}=?",
@@ -1031,7 +1120,13 @@ class ScanIndex:
 
     def delete_template_rows(self, template_id):
         with self.lock:
-            for table in ("scans", "review_items", "scan_flags", "field_outcomes"):
+            for table in (
+                "scans",
+                "review_items",
+                "scan_flags",
+                "field_outcomes",
+                "assignments",
+            ):
                 self.conn.execute(
                     f"DELETE FROM {table} WHERE template_id=?", (template_id,)
                 )

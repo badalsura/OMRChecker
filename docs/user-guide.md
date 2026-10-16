@@ -18,6 +18,7 @@ sections that contain all the words you type, for example `double mark`,
 | Look at one sheet, correct a bubble, verify it | 3. Results screen |
 | Re-read a sheet with other settings, or a sheet read upside down, mirrored or a row off | 3. Results screen → Regrade, Place the page by hand |
 | See who scanned, reviewed, changed, regraded or verified a sheet; check and verify changed sheets in bulk | 3. Results screen → Who did what, Check changes |
+| Hand flagged sheets out to reviewers, see your own sheets, send a sheet back to review | 3. Results screen → Check changes (Hand out review work, Send back); Results › Assigned to |
 | Make or change a template (blocks, bubbles, roll number, barcode) | 4. Templates and the template editor |
 | Choose an alignment method (timing tracks, index points, corner markers) | 4. → Alignment |
 | Tune how dark a mark must be, double marks, light pencil | 5. → Review thresholds |
@@ -965,7 +966,7 @@ All views use the exact geometry recorded when the sheet was read. Nothing is de
 |---|---|---|
 | **Aligned** (default) | The straightened page the engine actually read, after colour removal and conversion to grey. | Normal checking and correcting. |
 | **Aligned, full colour** | The same straightened page in its original colours. | Telling pencil from pen, or a student's mark from coloured print, when colour removal makes them look alike. |
-| **Original as background** | The scan exactly as it came off the scanner, upright and in colour. Every outline is mapped back onto it. | Checking whether the page was placed correctly, spotting a sheet read upside down or shifted by a row, and for the [failed-sheet tools](#failed-sheets-sheets-that-could-not-be-aligned). |
+| **Original as background** | The scan in colour, after the turn, mirror and straighten the template or a regrade gives it, so a sheet regraded with **Turn 180°** shows upright here too. Every outline is mapped back onto it. | Checking whether the page was placed correctly, spotting a sheet read upside down or shifted by a row, and for the [failed-sheet tools](#failed-sheets-sheets-that-could-not-be-aligned). |
 
 **side by side** (S) splits the canvas into two panes, each labelled with its view name. Zooming, scrolling and hovering move both panes together, and the bubble under the mouse is highlighted in both. A common setup is **left: Original** with **View: Aligned**, so you see the raw scan and the read page together.
 
@@ -1136,7 +1137,7 @@ After a regrade, a line at the bottom reads "Regraded by *name* with {…}" and 
 
 ### Verifying a sheet
 
-**Verify ✓** (V or Enter) means "a person has checked every value on this sheet and it is right". It:
+**Verify ✓** (V or Enter) means "a person has checked every value on this sheet and it is right". With sign-in on, only administrators can verify. It:
 
 - accepts every item still waiting for review on the sheet,
 - marks the sheet **verified by *your name***,
@@ -1248,20 +1249,44 @@ A regrade needs the original scan file. If the file was moved, set a [path remap
 
 ### Check changes (who did what)
 
-**Check changes** (Results toolbar) lists every sheet people changed after scanning that is not verified since its last change. A change is: values corrected, values accepted in review, a regrade, an alignment by hand or typed values. It uses the **Template** and **Job** picked in the Results filters.
+**Check changes** is its own tab, next to Results. When sign-in is on, only administrators see it; without sign-in everyone does. It has a **Template** and **Job** picker at the top, used by both of its parts.
+
+The work flow it supports: administrators hand flagged sheets out to reviewers (other administrators or reviewers), the reviewers work through the sheets assigned to them, and an administrator checks what they changed and does the final verification, or sends a sheet back.
+
+#### Hand out review work
+
+- **Which sheets:** Flagged, not verified (the usual choice) · Not reviewed · Errors · Corrected · All sheets.
+- **People:** names separated by commas. With sign-in on, the box suggests the accounts.
+- **At most:** hand out only this many sheets (empty = all that match).
+- **only sheets nobody has yet:** on by default, so assigning again only hands out the rest. Untick it to move sheets that someone already has.
+- **Assign** splits the sheets into equal runs, in sheet order, between the people named. For example, 300 flagged sheets for "asha, bob, meena" gives each 100 consecutive sheets. Each sheet has one person; assigning it again moves it.
+
+Below it, a table shows per person: **Assigned**, **Still to review** (sheets with items waiting), **Nothing left to review** (not verified yet) and **Verified**, and the number of flagged sheets nobody has yet. **Their changes** fills that person's name into the list below. **Take back** removes all their assignments in this template and job.
+
+A reviewer finds their sheets in **Results › Assigned to › Me** (it also offers **Anyone** and **Nobody**). The side panel of an assigned sheet says who it is assigned to and by whom.
+
+#### Changed sheets
+
+This lists every sheet people changed after scanning that is not verified since its last change. A change is: values corrected, values accepted in review, a regrade, an alignment by hand or typed values.
 
 Each row shows:
 
 - the sheet's file, status and when it was last changed,
-- **Scanned:** who scanned it, and **Changed:** everyone who changed it, with what they did,
+- **Scanned:** who scanned it, **Assigned to:** who has it, and **Changed:** everyone who changed it, with what they did,
 - the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it,
-- **Open** (shows the sheet on the Results screen) and **Verify**.
+- **Open** (shows the sheet on the Results screen), **Verify** and **Send back**.
 
 Above the table: a box to show only the changes of one person, **include sheets already verified** (to look back at checked sheets), and **‹ Newer** / **Older ›** for more pages (25 sheets each). **Verify ticked** verifies the ticked sheets and **Verify all on this page** every unverified sheet shown; both ask first. Verifying accepts the sheet's values as they are now, flagged ones included, exactly like **Verify ✓**. A verified sheet leaves the list until someone changes it again. Sheets that can't be verified (a failed sheet with no values) are named in the message.
 
-When sign-in is on, only administrators can verify from this screen; reviewers can still look at it. Without sign-in everyone can.
+**Send back** (or **Send ticked back**) returns sheets to review: their verification is taken back, and the items flagged when the sheet was read, plus every value someone changed, wait in the review queue again with their current values. It asks who to hand them to (leave it empty to keep the current person) and for an optional note. The Results side panel shows "Sent back to review by *name*: *note*". Undo on the sheet takes it back.
 
-The same information is available to programs: `GET /activity/sheets`, `GET /scans/{id}/activity`, `GET /activity` and `POST /activity/verify`.
+#### Who may verify
+
+With sign-in on, only administrators can verify or unverify a sheet, on the Results screen (the **Verify ✓** button is greyed out for reviewers), here, or through the API. Reviewers correct and accept values; the administrators do the final check. Without sign-in everyone can verify.
+
+Every step is in the sheet's **Who did what** list: assigned (to whom, by whom), sent back (with the note), and all the changes.
+
+The same information is available to programs: `GET /activity/sheets`, `GET /scans/{id}/activity`, `GET /activity`, `POST /activity/verify`, `POST /activity/return`, `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary`, and `assigned=` on `GET /results`.
 
 ### The Accuracy dialog
 

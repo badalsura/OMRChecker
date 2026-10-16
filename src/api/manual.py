@@ -99,7 +99,6 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             if missing or not names:
                 raise ResultsError(f"Unknown index point(s): {missing or names}", 422)
             goal = [known[n] for n in names]
-        matrix = _homography(clicks, goal)
         with service.engines.engine(result) as (engine, info):
             template = engine.template
             images = ImageUtils.load_omr_image(
@@ -109,6 +108,14 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             if not images or page >= len(images):
                 raise ResultsError(f"Could not read page {page + 1} of '{path}'", 422)
             image = images[page][1]
+            # The clicks were made on the original as shown: after the sheet's
+            # turn, mirror and straighten. Back to the scan's own pixels.
+            from src.api.views_routes import apply_matrix, feed_transform
+
+            feed, _ = feed_transform(service, result, image.shape[1], image.shape[0])
+            if feed is not None:
+                clicks = apply_matrix(np.linalg.inv(feed), clicks)
+            matrix = _homography(clicks, goal)
             white = (255, 255, 255) if image.ndim == 3 else 255
             warped = cv2.warpPerspective(
                 image, matrix, (width, height), flags=cv2.INTER_LINEAR, borderValue=white

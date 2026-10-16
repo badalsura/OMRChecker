@@ -2241,6 +2241,24 @@
             "description": "File name contains"
           },
           {
+            "name": "assigned",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only sheets assigned to this user (__none__: nobody)",
+              "title": "Assigned"
+            },
+            "description": "Only sheets assigned to this user (__none__: nobody)"
+          },
+          {
             "name": "order",
             "in": "query",
             "required": false,
@@ -2489,6 +2507,22 @@
                 }
               ],
               "title": "File"
+            }
+          },
+          {
+            "name": "assigned",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Assigned"
             }
           },
           {
@@ -2844,7 +2878,7 @@
           "results"
         ],
         "summary": "Scan Verify",
-        "description": "A person checked every value of this sheet (feeds the accuracy readout).",
+        "description": "A person checked every value of this sheet (feeds the accuracy readout).\nWith sign-in on, administrators do the final verification.",
         "operationId": "scan_verify_scans__scan_id__verify_post",
         "parameters": [
           {
@@ -3668,6 +3702,190 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/activity/return": {
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Return Sheets",
+        "description": "Send sheets back to review (administrators): the verification is\ntaken back and the items flagged when the sheet was read wait in the\nreview queue again; optionally hand them to someone.",
+        "operationId": "return_sheets_activity_return_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReturnBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assignments": {
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Assign",
+        "description": "Hand sheets to people for review (administrators). Either the given\nscan_ids, or every sheet matching the filters (by default flagged and\nnot verified, not yet assigned), split into equal consecutive runs\nbetween the users in the order given.",
+        "operationId": "assign_assignments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assignments/clear": {
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Unassign",
+        "description": "Take sheets back from whoever they were assigned to (administrators):\nthe given scan_ids, or every sheet of a user (within a template / job).",
+        "operationId": "unassign_assignments_clear_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnassignBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assignments/summary": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "summary": "Assignment Summary",
+        "description": "Per person: sheets assigned, still to review, reviewed, verified;\nand flagged sheets nobody has yet.",
+        "operationId": "assignment_summary_assignments_summary_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -5987,6 +6205,106 @@
         "type": "object",
         "title": "AlignBody"
       },
+      "AssignBody": {
+        "properties": {
+          "users": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Users"
+          },
+          "scan_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Ids"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "view": {
+            "type": "string",
+            "pattern": "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors|duplicates|duplicates_template)$",
+            "title": "View",
+            "default": "flagged"
+          },
+          "flag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flag"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "only_unassigned": {
+            "type": "boolean",
+            "title": "Only Unassigned",
+            "default": true
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "users"
+        ],
+        "title": "AssignBody"
+      },
       "AuthSettings": {
         "properties": {
           "registration": {
@@ -7057,6 +7375,48 @@
         "type": "object",
         "title": "RemapBody"
       },
+      "ReturnBody": {
+        "properties": {
+          "scan_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Scan Ids"
+          },
+          "assign_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assign To",
+            "description": "Hand the sheets to this person"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scan_ids"
+        ],
+        "title": "ReturnBody"
+      },
       "ReviewBody": {
         "properties": {
           "corrections": {
@@ -7175,6 +7535,60 @@
         },
         "type": "object",
         "title": "TestBody"
+      },
+      "UnassignBody": {
+        "properties": {
+          "scan_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Ids"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          }
+        },
+        "type": "object",
+        "title": "UnassignBody"
       },
       "UserUpdate": {
         "properties": {

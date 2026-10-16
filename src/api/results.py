@@ -688,6 +688,49 @@ class ResultsService:
             self.ctx.index.set_outcomes(result["scan_id"], outcome_rows(result))
         return template_id
 
+    def return_to_review(self, scan_id, user=None, note=None):
+        """Send a sheet back to review: its verification is taken back and the
+        items flagged when it was read (and values people changed) wait in the
+        review queue again, with their current values."""
+        user = user or DEFAULT_USER
+        with self.ctx.scan_lock(scan_id):
+            result = self.load(scan_id)
+            fields = result.get("fields") or {}
+            zones = result.get("zones") or {}
+            first = result["read_review"] if "read_review" in result else result.get("review")
+            items = [dict(item) for item in first or []]
+            listed = {item["name"] for item in items}
+            for entry in result.get("audit") or []:
+                name = entry.get("name")
+                if name and name not in listed and (name in fields or name in zones):
+                    kind = "field" if name in fields else "zone"
+                    items.append({"name": name, "kind": kind, "flags": ["sent_back"]})
+                    listed.add(name)
+            if not items:
+                raise ResultsError(
+                    "Nothing on this sheet to review again (no flagged or changed values)",
+                    422,
+                )
+            log = result.get("review_log") or {}
+            for name in listed:
+                log.pop(name, None)
+                target = fields.get(name) or zones.get(name)
+                if isinstance(target, dict):
+                    target["needs_review"] = True
+                    target.pop("reviewed", None)
+                    if isinstance(target.get("pre_rules"), dict):
+                        target["pre_rules"]["needs_review"] = True
+            result.pop("verified", None)
+            result["review"] = items
+            result["reviewed"] = False
+            result["returned"] = {"by": user, "at": time.time(), "note": note or None}
+            self.finish_edit(result, [], "send back", user)
+            self.ctx.index.set_outcomes(scan_id, [])
+            self.log_activity(
+                result, "returned", user, {"fields": sorted(listed), "note": note or None}
+            )
+        return result
+
     def verify(self, scan_id, user=None, verified=True):
         """Mark every field of a sheet as checked by a person (or undo that)."""
         user = user or DEFAULT_USER
@@ -1219,6 +1262,7 @@ def overlay_payload(result, info):
         "verified": result.get("verified"),
         "corrected": is_corrected(result),
         "regrade": result.get("regrade"),
+        "returned": result.get("returned"),
         "manual_alignment": result.get("manual_alignment"),
         "manual_entry": result.get("manual_entry"),
         "fields": fields,

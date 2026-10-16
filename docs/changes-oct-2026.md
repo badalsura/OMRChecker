@@ -364,6 +364,13 @@ this station.
     "camera / single uploads".
   - **Sheet name** renames the uploaded photo; empty keeps the photo's name.
 
+## Check changes tab and handing out review work
+
+- **Check changes** is now its own tab. Administrators hand out flagged sheets to reviewers and other administrators in equal shares, see each person's progress (assigned, still to review, reviewed, verified), look at what each person changed, take sheets back, verify changed sheets, or **Send back** sheets to review (to a chosen person, with a note). Every hand-out and send-back is logged.
+- **Results** has an **Assigned to** filter (Anyone, Me, Nobody). The side panel shows who a sheet is assigned to and a warning when it was sent back.
+- With sign-in on, only administrators can verify sheets.
+- **Original as background** now shows the sheet after its turn, mirror and straighten, so a sheet regraded with Turn 180° no longer shows upside down. Hand placement works on that turned view.
+
 ## New settings at a glance
 
 | Setting | Where | Default | What it does |
@@ -404,6 +411,9 @@ this station.
 | `POST /scans/{id}/undo`, `POST /scans/{id}/redo` | Undo or redo the sheet's last change; sheet payloads carry `undo: {undo, redo}` |
 | `GET /scans/{id}/activity`, `GET /activity` | Who scanned, reviewed, changed, regraded, aligned, typed and verified |
 | `GET /activity/sheets`, `POST /activity/verify` | Changed sheets not verified since, and bulk verify |
+| `POST /activity/return` | Send sheets back to review, optionally to a person, with a note |
+| `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary` | Hand out flagged sheets to people in equal shares, take them back, and see each person's progress |
+| `GET /results?assigned=` | `@me`, a user name, or `__none__` for sheets nobody has |
 | `GET /review`, `/review/counts`, bulk accept | Take a `flag` filter |
 | `GET /review/summary` | Adds `by_flag` and `by_job` |
 | `GET /results?view=` | Adds `unflagged`; `flagged` leaves out verified sheets |

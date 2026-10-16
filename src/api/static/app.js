@@ -1,6 +1,7 @@
 // Entry point: tabs, API key, capabilities and module wiring.
 import { api, loadTemplates, setApiKey, setUser, state, toast } from "./api.js";
 import { initAuth, loadAuth, loginRequired, openAccountMenu, showLogin } from "./auth.js";
+import { initChanges, onShowChanges, syncChangesTab } from "./activity.js";
 import { initExport } from "./export.js";
 import { initJobs, onShowJobs } from "./jobs.js";
 import { bindToolbar, initResults, onShowResults } from "./results.js";
@@ -8,7 +9,7 @@ import { initReview, refreshBadge } from "./review.js";
 import { initScan } from "./scan.js";
 import { initTemplates } from "./templates.js";
 
-const TABS = ["scan", "review", "results", "jobs", "templates"];
+const TABS = ["scan", "review", "results", "changes", "jobs", "templates"];
 
 function showTab(name) {
   for (const button of document.querySelectorAll(".tabs button")) {
@@ -20,6 +21,7 @@ function showTab(name) {
   if (name === "jobs") onShowJobs();
   if (name === "review") refreshBadge();
   if (name === "results") onShowResults();
+  if (name === "changes") onShowChanges();
   try {
     history.replaceState(null, "", `#${name}`);
   } catch (e) {
@@ -28,6 +30,7 @@ function showTab(name) {
 }
 
 function showUser() {
+  syncChangesTab();
   const signedIn = state.auth && state.auth.user;
   document.getElementById("user-btn").textContent = signedIn ? `👤 ${signedIn.display || signedIn.name}` : state.user ? `User: ${state.user}` : "User";
 }
@@ -74,6 +77,8 @@ async function init() {
   initReview();
   initResults();
   bindToolbar();
+  initChanges();
+  syncChangesTab();
   initExport();
   initJobs();
   initTemplates();
