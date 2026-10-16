@@ -389,6 +389,12 @@ The address in the browser follows the tab, for example `http://127.0.0.1:8765/#
 
 A typical day: set up a template once in **Templates**, start a batch in **Jobs**, clear the **Review queue**, check and correct in **Results**, and export. Each tab has its own section later in this guide.
 
+### Saving files
+
+Every button that gives you a file (an export, a job's CSV, a template package, the scan results CSV, a JSON file from the template editor) opens a **Save As** box first, so you choose the folder and the file name. The file is then written straight from the server into that file, so even a very large export never has to fit in memory. Closing the box saves nothing.
+
+This needs Chrome or Edge (or the app's own window). In Firefox and Safari the file goes to the browser's usual Downloads folder instead. For exports there is also **Save to folder**, which writes the file on the scanning computer without any download.
+
 ### Name and icon (branding)
 
 The program's name and icon come from one folder, `branding`, inside the program folder (next to `OMRChecker.exe` in the portable folder, or in the source folder).
@@ -570,7 +576,7 @@ The list shows the 50 newest jobs. While any job is queued or running and the ta
 
 | Button | Shown when | What it does |
 |---|---|---|
-| **CSV** | always | Downloads a quick CSV of the job: file name, page, scan id, status, score, needs review, reviewed, error and every answer column. It always uses the corrected values. |
+| **CSV** | always | Saves a quick CSV of the job (you choose where, see [Saving files](#saving-files)): file name, page, scan id, status, score, needs review, reviewed, error and every answer column. It always uses the corrected values. |
 | **Export…** | always | Opens the Export dialog limited to this job (see Export below). |
 | **Results** | the job has sheets | Opens the Results tab filtered to this job. |
 | **Review** | sheets need review | Opens the Review queue filtered to this job. |
@@ -854,8 +860,8 @@ Type notes:
 
 - **Preview** shows the number of sheets and the first rows exactly as they will be written, with any warnings (amber) or errors (red). Hover over a column heading to see its field and type.
 - **Save to folder** (optional): a folder on the computer running the scanner. Type it or click **Browse…**. The export is then written straight into that folder, so a large export needs no download afterwards. If a file of that name is already there, the new one is called "*name* (2)". Deleting the export from the list later keeps the file in your folder. Leave the box empty to download from the browser as before. The app remembers the folder.
-- **Export** runs the export on the server with a progress bar ("running · N / M rows"). When it is ready, click **Download *file name* (N rows)**, or, with a folder chosen, the dialog shows where the file was saved. The rows are written to the file as they are read, a few thousand at a time, so even very large jobs export without filling memory. A PDF is the exception: it is assembled in memory, which is why it has row and sheet limits.
-- **Following an export.** An export runs on the server, not in the window: closing the Export window, going back or switching tabs does not stop it. The window has a **Cancel export** button while it runs. Every export, running or finished, is listed under **Jobs › Exports** with its progress, how long it took and who ran it. There you can **Download** it, **Pause** and **Resume** one still running (it carries on from the sheet where it stopped), **Cancel** it (the part written so far is removed) or **Delete** a finished one (a file saved into your own folder stays). The Export window has the same **Pause** and **Cancel export** buttons. An export that was running or paused when the server was closed shows as **interrupted**, and so cannot be resumed: click **Run again** to start the same export (same sheets, format, columns and folder) from the beginning. **Run again** also works for a cancelled or failed export.
+- **Export** runs the export on the server with a progress bar ("running · N / M rows"). When it is ready, click **Save *file name* as… (N rows)** and choose where to save it (see [Saving files](#saving-files)), or, with a folder chosen, the dialog shows where the file was saved. The rows are written to the file as they are read, a few thousand at a time, so even very large jobs export without filling memory. A PDF is the exception: it is assembled in memory, which is why it has row and sheet limits.
+- **Following an export.** An export runs on the server, not in the window: closing the Export window, going back or switching tabs does not stop it. The window has a **Cancel export** button while it runs. Every export, running or finished, is listed under **Jobs › Exports** with its progress, how long it took and who ran it. There you can save it with **Save as…**, **Pause** and **Resume** one still running (it carries on from the sheet where it stopped), **Cancel** it (the part written so far is removed) or **Delete** a finished one (a file saved into your own folder stays). The Export window has the same **Pause** and **Cancel export** buttons. An export that was running or paused when the server was closed shows as **interrupted**, and so cannot be resumed: click **Run again** to start the same export (same sheets, format, columns and folder) from the beginning. **Run again** also works for a cancelled or failed export.
 
 #### Export profiles
 
@@ -1444,7 +1450,7 @@ Buttons on each row:
 
 - **Edit** opens the editor.
 - **Layout** opens a picture of the layout drawn over the reference image in a new browser tab. Handy to print or send to someone.
-- **Download** saves the template as one file, *name*.omr-template.zip: the layout, reading options, answer key, reference image and other files, plus the template's name. To give the template to someone else, send them this file. On their system they choose it under **Upload** in the Templates tab (leave the name empty to keep the original name). If their system already has a template with that name, the imported one is called "*name* (2)". Alignment test sheets are not included.
+- **Download** asks where to save the template and saves it as one file, *name*.omr-template.zip: the layout, reading options, answer key, reference image and other files, plus the template's name. To give the template to someone else, send them this file. On their system they choose it under **Upload** in the Templates tab (leave the name empty to keep the original name). If their system already has a template with that name, the imported one is called "*name* (2)". Alignment test sheets are not included.
 - **Duplicate** asks for a new name (suggested: "<name> copy") and copies the layout, its reading options, answer key and reference image, then opens the copy. Scans and results of the original stay with the original. Use this to make a variant (another exam with the same form, a different answer key) without risking the original.
 - **Rename** changes only the name. Past jobs, results and review items stay linked. You can also rename by clicking the title inside the editor.
 - **Delete** removes the template after you confirm. Stored scans are kept. New jobs can no longer use the template, so only delete templates you are finished with.

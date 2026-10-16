@@ -1,5 +1,5 @@
 // Jobs tab: start bulk jobs (chunked uploads or a server folder) and watch progress.
-import { api, chip, chunk, el, emit, fmtDuration, modal, state, toast, url } from "./api.js";
+import { api, chip, chunk, el, emit, fileStem, fmtDuration, modal, saveButton, state, toast } from "./api.js";
 import { includeSubfolders, initFolderPicker, onShowFolders } from "./folders.js";
 import { appendPdfParams, mountPdfOptions } from "./pdf_options.js";
 
@@ -124,7 +124,7 @@ export async function refreshJobs() {
         el(
           "td",
           { class: "actions" },
-          el("a", { class: "button small", href: url(`/jobs/${job.id}/results.csv`) }, "CSV"),
+          saveButton(`/jobs/${job.id}/results.csv`, `${fileStem(job.name || `job-${job.id.slice(0, 8)}`)}.csv`, "CSV", { class: "small", title: "Save this job's results as a CSV file" }),
           el("button", { class: "small", onclick: () => emit("export-open", { job_id: job.id, template_id: job.template_id }) }, "Export…"),
           job.pages ? el("button", { class: "small", onclick: () => emit("results-job", job.id) }, "Results") : null,
           counts.needs_review ? el("button", { class: "small", onclick: () => emit("review-job", job.id) }, "Review") : null,
