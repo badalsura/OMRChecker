@@ -727,18 +727,18 @@ class ScanIndex:
             "GROUP BY flag ORDER BY n DESC LIMIT 200",
             params,
         )
-        views = {
-            view: self.count_results(template_id=template_id, job_id=job_id, view=view)
-            for view in (
-                "all",
-                "flagged",
-                "unflagged",
-                "reviewed",
-                "not_reviewed",
-                "corrected",
-                "duplicates",
-            )
-        }
+        # One pass over the scans for every view count (a COUNT per view read a
+        # 200k-sheet job seven times)
+        counted = ("flagged", "unflagged", "reviewed", "not_reviewed", "corrected")
+        columns = ", ".join(
+            f"COALESCE(SUM(CASE WHEN {self.RESULT_VIEWS[v]} THEN 1 ELSE 0 END), 0) AS {v}"
+            for v in counted
+        )
+        row = self._query(f"SELECT COUNT(*) AS all_, {columns} FROM scans {where}", params)[0]
+        views = {"all": row["all_"], **{v: row[v] for v in counted}}
+        views["duplicates"] = self.count_results(
+            template_id=template_id, job_id=job_id, view="duplicates"
+        )
         return {"names": names, "flags": flags, "views": views}
 
     def duplicates_of(self, scan_id, across_jobs=False):
