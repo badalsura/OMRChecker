@@ -2,7 +2,7 @@
 import { api, loadTemplates, setApiKey, setUser, state, toast } from "./api.js";
 import { initAuth, loadAuth, loginRequired, openAccountMenu, showLogin } from "./auth.js";
 import { initChanges, onShowChanges, syncChangesTab } from "./activity.js";
-import { initExport } from "./export.js";
+import { initExport, refreshExports } from "./export.js";
 import { initJobs, onShowJobs } from "./jobs.js";
 import { bindToolbar, initResults, onShowResults } from "./results.js";
 import { initReview, refreshBadge } from "./review.js";
@@ -18,7 +18,10 @@ function showTab(name) {
   for (const section of document.querySelectorAll(".tab")) {
     section.classList.toggle("active", section.id === `tab-${name}`);
   }
-  if (name === "jobs") onShowJobs();
+  if (name === "jobs") {
+    onShowJobs();
+    refreshExports();
+  }
   if (name === "review") refreshBadge();
   if (name === "results") onShowResults();
   if (name === "changes") onShowChanges();

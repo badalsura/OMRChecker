@@ -381,6 +381,13 @@ this station.
 - **Aligned, full colour** showed a sheet the reader had found upside down (or sideways) turned the wrong way, while **Aligned** was right. The colour scan was being turned by the found orientation and then warped by the recorded transform, which already holds that turn. It is now turned once, so both aligned views match. **Original as background** also shows such a sheet upright, and stays upright after a hand placement.
 - **Place the page by hand** has **Turn image 90°** and **Turn image 180°**, which turn the scan itself. The old buttons are now **Turn template 180°/90°**. `GET /scans/{id}/views/original` takes `turn`, and `POST /scans/{id}/manual-align` takes the same `turn`.
 
+## Following exports
+
+- **Jobs › Exports** lists every export with its progress, time taken and who ran it, with **Download**, **Cancel** and **Delete**. Exports always kept running on the server after the Export window closed; there was just no screen to follow them.
+- The Export window has **Cancel export** and says the export keeps running if the window is closed.
+- An export left running when the server stopped is marked **interrupted** at the next start. A running export can't be deleted; cancel it first.
+- `POST /exports/{id}/cancel` is new.
+
 ## New settings at a glance
 
 | Setting | Where | Default | What it does |
@@ -424,6 +431,7 @@ this station.
 | `POST /activity/return` | Send sheets back to review, optionally to a person, with a note |
 | `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary` | Hand out flagged sheets to people in equal shares, take them back, and see each person's progress |
 | `POST /exports` | Takes `folder`: write the file straight into that server folder; the record carries `path` |
+| `POST /exports/{id}/cancel` | Stop a queued or running export |
 | `GET /templates/{id}/package` | One .zip of the template to import elsewhere with `POST /templates` |
 | `GET /results?assigned=` | `@me`, a user name, or `__none__` for sheets nobody has |
 | `GET /review`, `/review/counts`, bulk accept | Take a `flag` filter |

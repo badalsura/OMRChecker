@@ -64,6 +64,13 @@ class ExportRequest(BaseModel):
     wait: bool = Field(False, description="Run in the request and return when done")
 
 
+class ExportCancelled(Exception):
+    """Someone pressed Cancel on a running export."""
+
+
+ACTIVE = ("queued", "running")
+
+
 class ExportManager:
     def __init__(self, ctx):
         self.ctx = ctx
@@ -72,6 +79,30 @@ class ExportManager:
         self.profiles.mkdir(parents=True, exist_ok=True)
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="omr-export")
         self.lock = threading.Lock()
+        self.cancelled = set()
+        self.mark_interrupted()
+
+    def mark_interrupted(self):
+        """Exports left queued or running when the server stopped never finish."""
+        for path in self.root.glob("*.json"):
+            record = read_json(path)
+            if record and record.get("state") in ACTIVE:
+                self.file_of(record).unlink(missing_ok=True)
+                record.update(
+                    state="interrupted",
+                    error="The server stopped before this export finished; run it again",
+                    finished_at=record.get("finished_at") or time.time(),
+                )
+                write_json_atomic(path, record)
+
+    def cancel(self, export_id):
+        """Stop a queued or running export; its partial file is removed."""
+        record = self.get(export_id)
+        if record is None:
+            return None
+        if record.get("state") in ACTIVE:
+            self.cancelled.add(export_id)
+        return record
 
     # ---- profiles --------------------------------------------------------
     def profile_path(self, name):
@@ -255,7 +286,19 @@ class ExportManager:
     def run(self, record, profile, sql_url):
         export_id = record["id"]
         path = self.file_of(record)
+        rows_of = self.results_factory(record["filters"])
+
+        def results():
+            # Checked on every sheet, so Cancel stops any format promptly
+            for result in rows_of():
+                if export_id in self.cancelled:
+                    raise ExportCancelled()
+                yield result
+
+        if export_id in self.cancelled:
+            return self._cancelled(record, path)
         record["state"] = "running"
+        record["started_at"] = time.time()
         write_json_atomic(self.record_path(export_id), record)
 
         def progress(done):
@@ -264,7 +307,7 @@ class ExportManager:
 
         try:
             report = export_results(
-                self.results_factory(record["filters"]),
+                results,
                 record["format"],
                 path,
                 profile,
@@ -282,6 +325,8 @@ class ExportManager:
                 warnings=report["warnings"],
                 download_url=f"/exports/{export_id}/download",
             )
+        except ExportCancelled:
+            return self._cancelled(record, path)
         except ExportError as error:
             # Refused (e.g. a lossy cast): no partial file is left behind
             path.unlink(missing_ok=True)
@@ -295,6 +340,13 @@ class ExportManager:
         write_json_atomic(self.record_path(export_id), record)
         return record
 
+    def _cancelled(self, record, path):
+        self.cancelled.discard(record["id"])
+        path.unlink(missing_ok=True)
+        record.update(state="cancelled", error="Cancelled", finished_at=time.time())
+        write_json_atomic(self.record_path(record["id"]), record)
+        return record
+
     def file_of(self, record):
         if record.get("path"):
             return Path(record["path"])
@@ -304,6 +356,8 @@ class ExportManager:
         record = self.get(export_id)
         if record is None:
             return None
+        if record.get("state") in ACTIVE:
+            return False
         # A file written into the user's own folder stays there
         if not record.get("path"):
             self.file_of(record).unlink(missing_ok=True)
@@ -360,6 +414,14 @@ def register(app, ctx, secured):
             raise HTTPException(404, f"Export '{export_id}' not found")
         return record
 
+    @app.post("/exports/{export_id}/cancel", tags=["exports"], dependencies=secured)
+    def cancel_export(export_id: str):
+        """Stop a queued or running export (its partial file is removed)."""
+        record = manager.cancel(export_id)
+        if record is None:
+            raise HTTPException(404, f"Export '{export_id}' not found")
+        return record
+
     @app.get("/exports/{export_id}/download", tags=["exports"], dependencies=secured)
     def download_export(export_id: str):
         record = manager.get(export_id)
@@ -374,8 +436,11 @@ def register(app, ctx, secured):
 
     @app.delete("/exports/{export_id}", tags=["exports"], dependencies=secured)
     def delete_export(export_id: str):
-        if manager.delete(export_id) is None:
+        deleted = manager.delete(export_id)
+        if deleted is None:
             raise HTTPException(404, f"Export '{export_id}' not found")
+        if deleted is False:
+            raise HTTPException(409, "The export is still running: cancel it first")
         return {"deleted": export_id}
 
     @app.get("/export-profiles", tags=["exports"], dependencies=secured)

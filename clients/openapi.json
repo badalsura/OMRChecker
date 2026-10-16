@@ -5897,6 +5897,47 @@
         }
       }
     },
+    "/exports/{export_id}/cancel": {
+      "post": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Cancel Export",
+        "description": "Stop a queued or running export (its partial file is removed).",
+        "operationId": "cancel_export_exports__export_id__cancel_post",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Export Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/exports/{export_id}/download": {
       "get": {
         "tags": [

@@ -371,6 +371,28 @@ def test_api_exports_job_with_corrections(tmp_path):
         )
         assert missing.status_code == 422
 
+        # Cancel: a queued export stops before writing; it can't be deleted
+        # while active, and one left running by a stopped server is marked
+        manager = client.app.state.ctx.exports
+        held = []
+        manager.pool.submit, real_submit = (lambda *job: held.append(job)), manager.pool.submit
+        try:
+            queued = client.post("/exports", json={**body, "format": "csv", "wait": False}).json()
+        finally:
+            manager.pool.submit = real_submit
+        assert queued["state"] == "queued"
+        assert client.delete(f"/exports/{queued['id']}").status_code == 409
+        assert client.post(f"/exports/{queued['id']}/cancel").status_code == 200
+        held[0][0](*held[0][1:])
+        stopped = client.get(f"/exports/{queued['id']}").json()
+        assert stopped["state"] == "cancelled"
+        assert client.delete(f"/exports/{queued['id']}").status_code == 200
+        stale = {**stopped, "id": "stale", "state": "running"}
+        (manager.root / "stale.json").write_text(json.dumps(stale))
+        manager.mark_interrupted()
+        assert client.get("/exports/stale").json()["state"] == "interrupted"
+        client.delete("/exports/stale")
+
         # Lossy cast: refused, nothing to download
         body = {
             "format": "csv",
