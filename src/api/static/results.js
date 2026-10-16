@@ -84,6 +84,20 @@ export function initResults() {
     r.prefetched.clear();
     load(r.offset, true);
   });
+  // Check changes > Their sheets: one person's sheets of a template / job
+  on("results-assigned", ({ user, template_id: templateId, job_id: jobId }) => {
+    refreshJobs().then(() => {
+      const select = $("res-assigned");
+      if (![...select.options].some((o) => o.value === user)) select.append(el("option", { value: user }, user));
+      select.value = user;
+      if (templateId && [...$("res-template").options].some((o) => o.value === templateId)) $("res-template").value = templateId;
+      $("res-job").value = jobId || "";
+      $("res-view").value = "all";
+      document.querySelector('.tabs button[data-tab="results"]').click();
+      refreshFacets();
+      load(0);
+    });
+  });
   on("results-scan", (scanId) => {
     document.querySelector('.tabs button[data-tab="results"]').click();
     open(scanId);
@@ -204,10 +218,13 @@ function renderList() {
       el(
         "li",
         { class: selected ? "selected" : "", onclick: () => openAt(index), title: item.file_name },
+        // The sheet number (its file's place in the job) used to assign ranges
+        $("res-job").value && item.seq !== null && item.seq !== undefined ? el("span", { class: "muted small res-num", title: "Sheet number in this job" }, `#${item.seq + 1}`) : null,
         el("span", { class: "name" }, item.file_name || item.id.slice(0, 8)),
         item.flag_count && !item.verified ? el("span", { class: "chip flag", title: "fields flagged when read" }, `⚑${item.flag_count}`) : null,
         item.corrected ? el("span", { class: "chip corrected", title: "corrected" }, "✎") : null,
         item.verified ? el("span", { class: "chip ok", title: item.flag_count ? `verified (${item.flag_count} field(s) were flagged when read)` : "verified" }, "✓") : null,
+        item.approved ? el("span", { class: "chip ok", title: "approved (the administrator's second check)" }, "✓✓") : null,
         item.status === "error" ? chip("error", "error") : null,
         !item.verified && item.status === "needs_review" ? el("span", { class: "dot-flag", title: "needs review" }) : null
       )
@@ -273,6 +290,7 @@ async function open(scanId, { keepView = false, quiet = false } = {}) {
     const row = r.items.find((i) => i.id === data.scan_id);
     if (row) {
       row.verified = data.verified ? 1 : 0;
+      row.approved = data.approved ? 1 : 0;
       row.corrected = data.corrected ? 1 : 0;
       row.status = data.status;
     }
@@ -332,6 +350,7 @@ function applyPayload(data) {
   const item = r.items.find((i) => i.id === data.scan_id);
   if (item) {
     item.verified = data.verified ? 1 : 0;
+    item.approved = data.approved ? 1 : 0;
     item.corrected = data.corrected ? 1 : 0;
     item.status = data.status;
   }
@@ -1058,7 +1077,7 @@ function renderSide() {
   }
   const verified = d.verified;
   side.append(
-    el("div", { class: "res-head" }, el("strong", { class: "res-file", title: d.source_path || "" }, d.file_id || d.scan_id), el("div", { class: "row gap wrap" }, chip(d.status, d.status), d.corrected ? el("span", { class: "chip corrected" }, "corrected") : null, verified ? el("span", { class: "chip ok" }, `verified by ${verified.by}`) : el("span", { class: "chip" }, "not verified"), d.score !== null && d.score !== undefined ? el("span", { class: "chip" }, `score ${d.score}`) : null)),
+    el("div", { class: "res-head" }, el("strong", { class: "res-file", title: d.source_path || "" }, d.file_id || d.scan_id), el("div", { class: "row gap wrap" }, chip(d.status, d.status), d.corrected ? el("span", { class: "chip corrected" }, "corrected") : null, verified ? el("span", { class: "chip ok" }, `verified by ${verified.by}`) : el("span", { class: "chip" }, "not verified"), d.approved ? el("span", { class: "chip ok", title: "the administrator's second check" }, `approved by ${d.approved.by}`) : null, d.score !== null && d.score !== undefined ? el("span", { class: "chip" }, `score ${d.score}`) : null)),
     el("div", { class: "muted small res-path" }, d.resolved_path || d.source_path || ""),
     registrationSummary(d),
     (d.duplicates || []).length

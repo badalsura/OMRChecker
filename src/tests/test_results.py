@@ -493,13 +493,29 @@ def test_who_did_what_and_bulk_verify(tmp_path, spec):
             "/activity/verify", json={"scan_ids": [changed]}, headers={"X-User": "admin"}
         ).json()
         assert done == {"verified": [changed], "failed": []}
-        assert client.get("/activity/sheets").json()["total"] == 0
-        assert client.get("/activity/sheets?include_checked=true").json()["total"] == 1
+        # Verified is the reviewer's check: the sheet waits for approval
+        assert client.get("/activity/sheets").json()["total"] == 1
         assert client.get(f"/scans/{changed}/activity").json()["items"][0]["action"] == "verified"
-        # A change after the check puts the sheet back on the list
+        done = client.post(
+            "/activity/approve", json={"scan_ids": [changed]}, headers={"X-User": "admin"}
+        ).json()
+        assert done == {"approved": [changed], "failed": []}
+        assert client.get("/activity/sheets").json()["total"] == 0
+        listed = client.get("/activity/sheets?include_checked=true").json()
+        assert listed["total"] == 1
+        assert listed["items"][0]["approved"]["by"] == "admin"
+        assert client.get(f"/scans/{changed}").json()["approved"]["by"] == "admin"
+        # A change after the approval puts the sheet back on the list
         client.post(f"/scans/{changed}/corrections", json={"changes": {"q1": "B"}})
         assert client.get("/activity/sheets").json()["total"] == 1
+        assert not client.get(f"/scans/{changed}").json().get("approved")
         assert client.get(f"/scans/{untouched}/activity").json()["total"] == 1
+        # Approving a sheet nobody verified verifies it too
+        client.post("/activity/approve", json={"scan_ids": [untouched]})
+        record = client.get(f"/scans/{untouched}").json()
+        assert record["verified"] and record["approved"]
+        actions = [i["action"] for i in client.get(f"/scans/{untouched}/activity").json()["items"]]
+        assert actions[:2] == ["approved", "verified"]
 
 
 def test_undo_and_redo_a_sheet(tmp_path, spec):
@@ -585,6 +601,77 @@ def test_assign_send_back_and_filter(tmp_path, spec):
         cleared = client.post("/assignments/clear", json={"user": "asha"}).json()
         assert cleared["unassigned"] == 3
         assert client.get("/results", params={"assigned": "__none__"}).json()["total"] == 3
+
+
+def test_assign_by_sheet_numbers_move_and_take_back(tmp_path, spec):
+    folder = tmp_path / "inbox"
+    folder.mkdir()
+    for i in range(5):
+        cv2.imwrite(str(folder / f"s{i}.png"), sheet(spec, 50 + i)[0])
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        response = client.post(
+            "/jobs",
+            data={"template_id": template_id, "folder": str(folder), "save_images": "none"},
+        )
+        job_id = wait_for_job(client, response.json()["id"])["id"]
+        rows = client.get("/results", params={"job_id": job_id}).json()["items"]
+        by_number = {row["seq"] + 1: row["id"] for row in rows}
+        assert sorted(by_number) == [1, 2, 3, 4, 5]
+
+        # Sheet numbers need one job, and ranges may not overlap
+        body = {"ranges": [{"user": "asha", "first_sheet": 1, "last_sheet": 2}], "view": "all"}
+        assert client.post("/assignments", json=body).status_code == 422
+        overlap = {
+            "job_id": job_id,
+            "view": "all",
+            "ranges": [
+                {"user": "asha", "first_sheet": 1, "last_sheet": 3},
+                {"user": "bob", "first_sheet": 3},
+            ],
+        }
+        assert client.post("/assignments", json=overlap).status_code == 422
+        overlap["ranges"][1]["first_sheet"] = 4
+        done = client.post("/assignments", json=overlap).json()
+        assert done == {"assigned": {"asha": 3, "bob": 2}, "total": 5}
+        mine = client.get("/results", params={"job_id": job_id, "assigned": "bob"}).json()
+        assert {i["id"] for i in mine["items"]} == {by_number[4], by_number[5]}
+        summary = {u["user"]: u for u in client.get("/assignments/summary").json()["users"]}
+        assert (summary["asha"]["first_sheet"], summary["asha"]["last_sheet"]) == (1, 3)
+
+        # Move sheet 3 to bob; only unfinished ones when asked
+        client.post(f"/scans/{by_number[2]}/verify", headers={"X-User": "asha"})
+        moved = client.post(
+            "/assignments/move",
+            json={"user": "asha", "to": "bob", "job_id": job_id, "first_sheet": 2, "only_open": True},
+        ).json()
+        assert moved == {"moved": 1, "to": "bob"}
+        assert client.get(f"/scans/{by_number[3]}/overlay").json()["assigned_to"]["user"] == "bob"
+        assert client.get(f"/scans/{by_number[2]}/overlay").json()["assigned_to"]["user"] == "asha"
+        back = client.post(
+            "/assignments/clear",
+            json={"user": "bob", "job_id": job_id, "first_sheet": 5, "last_sheet": 5},
+        ).json()
+        assert back == {"unassigned": 1}
+        summary = {u["user"]: u for u in client.get("/assignments/summary").json()["users"]}
+        assert summary["asha"]["assigned"] == 2 and summary["asha"]["verified"] == 1
+        assert summary["bob"]["assigned"] == 2
+        assert summary["asha"]["last_active"]
+
+        # With sign-in on, work goes to existing, active accounts only
+        client.post("/auth/register", json={"username": "admin", "password": "secret-pass-1"})
+        token = client.post(
+            "/auth/login", json={"username": "admin", "password": "secret-pass-1"}
+        ).json()["token"]
+        auth = {"Authorization": f"Bearer {token}"}
+        refused = client.post(
+            "/assignments", json={"users": ["nobody"], "scan_ids": [by_number[1]]}, headers=auth
+        )
+        assert refused.status_code == 422 and "nobody" in refused.json()["detail"]
+        ok = client.post(
+            "/assignments", json={"users": ["admin"], "scan_ids": [by_number[1]]}, headers=auth
+        )
+        assert ok.status_code == 200
 
 
 def test_decode_a_box_drawn_around_a_code(tmp_path, spec):

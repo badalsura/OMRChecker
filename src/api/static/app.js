@@ -77,6 +77,8 @@ async function init() {
     await boot();
   });
   await loadAuth();
+  // Every window of the app (also one opened from Help) behaves as the app
+  if (state.auth.desktop && !isDesktop()) initDesktop();
   showUser();
   initScan();
   initReview();

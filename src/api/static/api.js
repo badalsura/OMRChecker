@@ -52,7 +52,8 @@ export async function api(path, { method = "GET", json, form, raw = false, retry
   if (response.status === 401 && retry && state.onUnauthorized && state.onUnauthorized()) {
     throw new ApiError("401: Sign in to continue", 401);
   }
-  if (response.status === 401 && retry) {
+  // The app window is local and never has an API key (a 401 there means sign in)
+  if (response.status === 401 && retry && !(state.auth && state.auth.desktop)) {
     const key = prompt("This server requires an API key:", state.apiKey);
     if (key !== null) {
       setApiKey(key.trim());

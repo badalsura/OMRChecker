@@ -91,7 +91,9 @@ class Engine:
     def start(self):
         try:
             self.port = base.pick_port("127.0.0.1", APP_PORT)
-            app = base.build_app(self.data_dir, self.workers, None)
+            # Local to this computer: no API key, whatever the environment says
+            os.environ.pop("OMR_API_KEY", None)
+            app = base.build_app(self.data_dir, self.workers, None, desktop=True)
             self.server = base.ServerThread(app, "127.0.0.1", self.port)
             self.server.start()
             if not self.server.wait_started(timeout=120):

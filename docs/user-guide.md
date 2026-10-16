@@ -17,8 +17,8 @@ sections that contain all the words you type, for example `double mark`,
 | Get a CSV / Excel file of the answers | 2. Export |
 | Look at one sheet, correct a bubble, verify it | 3. Results screen |
 | Re-read a sheet with other settings, or a sheet read upside down, mirrored or a row off | 3. Results screen → Regrade, Place the page by hand |
-| See who scanned, reviewed, changed, regraded or verified a sheet; check and verify changed sheets in bulk | 3. Results screen → Who did what, Check changes |
-| Hand flagged sheets out to reviewers, see your own sheets, send a sheet back to review | 3. Results screen → Check changes (Hand out review work, Send back); Results › Assigned to |
+| See who scanned, reviewed, changed, regraded or verified a sheet; check and approve their work in bulk | 3. Results screen → Who did what, Check changes |
+| Hand sheets out to reviewers (evenly or by sheet numbers), move or take back their work, see your own sheets, send a sheet back to review | 3. Results screen → Check changes (Hand out review work, Send back); Results › Assigned to |
 | Make or change a template (blocks, bubbles, roll number, barcode) | 4. Templates and the template editor |
 | Choose an alignment method (timing tracks, index points, corner markers) | 4. → Alignment |
 | Tune how dark a mark must be, double marks, light pencil | 5. → Review thresholds |
@@ -361,6 +361,7 @@ The API key is for **programs** that talk to the station (scanning scripts, the 
 - The station requires a key only when it was started with `--api-key <secret>` (or the `OMR_API_KEY` environment variable).
 - The **API key** button in the top bar lets you type the key into this browser. Leave it empty if the server has none. It is remembered by this browser.
 - If the station needs a key and the browser does not have it, the app asks "This server requires an API key:" the first time it is needed.
+- The **app** (the OMRChecker window) is local to its computer and never uses an API key: it has no API key button and never asks for one.
 - With sign-in turned on, a signed-in person does not need the key; programs can keep using the key.
 
 ### The top bar
@@ -1261,32 +1262,49 @@ A regrade needs the original scan file. If the file was moved, set a [path remap
 
 **Check changes** is its own tab, next to Results. When sign-in is on, only administrators see it; without sign-in everyone does. It has a **Template** and **Job** picker at the top, used by both of its parts.
 
-The work flow it supports: administrators hand flagged sheets out to reviewers (other administrators or reviewers), the reviewers work through the sheets assigned to them, and an administrator checks what they changed and does the final verification, or sends a sheet back.
+The work flow it supports: administrators hand sheets out to reviewers (other administrators or reviewers), the reviewers work through the sheets assigned to them, and an administrator checks what they did and **approves** it (a second check, on top of the reviewer's verification), or sends a sheet back.
 
 #### Hand out review work
 
-- **Which sheets:** Flagged, not verified (the usual choice) · Not reviewed · Errors · Corrected · All sheets.
-- **People:** names separated by commas. With sign-in on, the box suggests the accounts.
-- **At most:** hand out only this many sheets (empty = all that match).
+- **How:** **Split evenly between people**, or **Each person's sheet numbers**.
+- **Which sheets:** Flagged, not verified (the usual choice) · Not reviewed · Errors · Corrected · All sheets. With Flagged only flagged sheets are assigned; with All sheets every sheet is.
 - **only sheets nobody has yet:** on by default, so assigning again only hands out the rest. Untick it to move sheets that someone already has.
-- **Assign** splits the sheets into equal runs, in sheet order, between the people named. For example, 300 flagged sheets for "asha, bob, meena" gives each 100 consecutive sheets. Each sheet has one person; assigning it again moves it.
 
-Below it, a table shows per person: **Assigned**, **Still to review** (sheets with items waiting), **Nothing left to review** (not verified yet) and **Verified**, and the number of flagged sheets nobody has yet. **Their changes** fills that person's name into the list below. **Take back** removes all their assignments in this template and job.
+A sheet's **number** is its place in the job: 1 is the job's first file. Results shows it (#12) next to each sheet when a job is picked. The pages of one PDF share their file's number. Sheet numbers need one job picked at the top.
+
+**Split evenly:**
+
+- **People:** tick the people in the list; the search box above narrows a long list. With sign-in on the list holds the active accounts. Without sign-in it holds names already used, and you add a new one by typing it and pressing Enter.
+- **From sheet** / **To sheet** (optional): only sheets in this range of the job.
+- **At most:** hand out only this many sheets (empty = all that match).
+- **Assign** splits the matching sheets into equal runs, in sheet order, between the people ticked. For example, 300 flagged sheets for asha, bob and meena gives each 100 consecutive sheets. Each sheet has one person; assigning it again moves it.
+
+**Each person's sheet numbers:** one row per person with the first and last sheet (both included), for example asha 1 to 500 and bob 501 to 900. **+ Add a person** adds a row. Inside each range only the sheets chosen in **Which sheets** are assigned. Ranges may not overlap. The person box suggests names as you type.
+
+With sign-in on, work can only go to an active account: an unknown or disabled name is refused with a message naming it.
+
+Below it, a table shows per person: the lowest and highest **Sheets** they hold, **Assigned**, **Still to review** (not reviewed or verified yet), **Reviewed** (not verified yet), **Verified**, **Approved**, **Sent back**, **Last worked** (their last action), and the number of flagged sheets nobody has yet. Its buttons:
+
+- **Their sheets** opens Results with only that person's sheets (of this template and job).
+- **Their changes** fills that person's name into the list below.
+- **Change…** opens a line to **Move to** someone else or **Take back** (nobody): all their sheets, or sheets from / to a number, and with **only sheets not finished yet** (on by default) the sheets they already reviewed or verified stay with them.
 
 A reviewer finds their sheets in **Results › Assigned to › Me** (it also offers **Anyone** and **Nobody**). The side panel of an assigned sheet says who it is assigned to and by whom.
 
-#### Changed sheets
+#### Check and approve
 
-This lists every sheet people changed after scanning that is not verified since its last change. A change is: values corrected, values accepted in review, a regrade, an alignment by hand or typed values.
+This lists every sheet people verified or changed after scanning that is not approved since. A change is: values corrected, values accepted in review, a regrade, an alignment by hand, typed values, an undo or redo, a verification or one taken back. Any later change lists an approved sheet again and takes its approval away.
 
 Each row shows:
 
-- the sheet's file, status and when it was last changed,
+- the sheet's file, status, who verified and who approved it, and when it was last changed,
 - **Scanned:** who scanned it, **Assigned to:** who has it, and **Changed:** everyone who changed it, with what they did,
 - the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it,
-- **Open** (shows the sheet on the Results screen), **Verify** and **Send back**.
+- **Open** (shows the sheet on the Results screen), **Approve** and **Send back**.
 
-Above the table: a box to show only the changes of one person, **include sheets already verified** (to look back at checked sheets), and **‹ Newer** / **Older ›** for more pages (25 sheets each). **Verify ticked** verifies the ticked sheets and **Verify all on this page** every unverified sheet shown; both ask first. Verifying accepts the sheet's values as they are now, flagged ones included, exactly like **Verify ✓**. A verified sheet leaves the list until someone changes it again. Sheets that can't be verified (a failed sheet with no values) are named in the message.
+**Approve** is the administrator's second check, separate from **Verify ✓** on the Results screen. Approving a sheet nobody verified yet verifies it too (its values are accepted as they are now, flagged ones included), and asks first.
+
+Above the table: a box to show only the changes of one person, **include sheets already approved** (to look back at checked sheets), and **‹ Newer** / **Older ›** for more pages (25 sheets each). **Approve ticked** approves the ticked sheets and **Approve all on this page** every sheet shown; both ask first. Sheets that can't be approved (a failed sheet with no values) are named in the message. Results shows approved sheets with ✓✓, and **Approved (second check)** in its view list shows only them.
 
 **Send back** (or **Send ticked back**) returns sheets to review: their verification is taken back, and the items flagged when the sheet was read, plus every value someone changed, wait in the review queue again with their current values. It asks who to hand them to (leave it empty to keep the current person) and for an optional note. The Results side panel shows "Sent back to review by *name*: *note*". Undo on the sheet takes it back.
 
@@ -1296,7 +1314,7 @@ With sign-in on, only administrators can verify or unverify a sheet, on the Resu
 
 Every step is in the sheet's **Who did what** list: assigned (to whom, by whom), sent back (with the note), and all the changes.
 
-The same information is available to programs: `GET /activity/sheets`, `GET /scans/{id}/activity`, `GET /activity`, `POST /activity/verify`, `POST /activity/return`, `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary`, and `assigned=` on `GET /results`.
+The same information is available to programs: `GET /activity/sheets`, `GET /scans/{id}/activity`, `GET /activity`, `POST /activity/verify`, `POST /activity/approve`, `POST /activity/return`, `POST /assignments` (with `users`, or `ranges` of sheet numbers), `POST /assignments/move`, `POST /assignments/clear`, `GET /assignments/summary`, and `assigned=` and `view=approved` on `GET /results`.
 
 ### The Accuracy dialog
 

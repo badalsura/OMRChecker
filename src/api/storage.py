@@ -217,12 +217,15 @@ _MIGRATIONS = {
     "corrected": "INTEGER DEFAULT 0",
     "template_version": "TEXT",
     "primary_key": "TEXT",
+    # The administrator's second check (Check changes > Approve)
+    "approved": "INTEGER DEFAULT 0",
 }
 _LATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS ix_scans_key ON scans(job_id, primary_key);
 CREATE INDEX IF NOT EXISTS ix_scans_template_key ON scans(template_id, primary_key);
 CREATE INDEX IF NOT EXISTS ix_scans_flagged ON scans(template_id, job_id, flag_count);
 CREATE INDEX IF NOT EXISTS ix_scans_verified ON scans(template_id, job_id, verified);
+CREATE INDEX IF NOT EXISTS ix_activity_user ON activity(user, at);
 """
 
 SCAN_COLUMNS = [
@@ -243,6 +246,7 @@ SCAN_COLUMNS = [
     "corrected",
     "template_version",
     "primary_key",
+    "approved",
 ]
 
 
@@ -364,6 +368,7 @@ class ScanIndex:
                     1 if record.get("corrected") or is_corrected(record) else 0,
                     record.get("template_version"),
                     record.get("primary_key"),
+                    1 if record.get("approved") else 0,
                 )
             )
             for item in record.get("review") or []:
@@ -597,6 +602,7 @@ class ScanIndex:
         "reviewed": "(verified = 1 OR (flag_count > 0 AND review_count = 0))",
         "not_reviewed": "(verified = 0 AND NOT (flag_count > 0 AND review_count = 0))",
         "verified": "verified = 1",
+        "approved": "approved = 1",
         "corrected": "corrected = 1",
         "errors": "status = 'error'",
         # Another sheet of the same job shares this sheet's primary key
@@ -620,6 +626,7 @@ class ScanIndex:
         file=None,
         scan_ids=None,
         assigned=None,
+        sheets=None,
     ):
         if view and view not in self.RESULT_VIEWS:
             raise ValueError(f"Unknown view '{view}'")
@@ -640,12 +647,28 @@ class ScanIndex:
         if scan_ids:
             clauses.append(f"id IN ({','.join('?' * len(scan_ids))})")
             params.extend(scan_ids)
+        clauses.extend(self._sheet_range(sheets, params))
         if assigned == UNASSIGNED:
             clauses.append("id NOT IN (SELECT scan_id FROM assignments)")
         elif assigned:
             clauses.append("id IN (SELECT scan_id FROM assignments WHERE user = ?)")
             params.append(assigned)
         return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
+
+    @staticmethod
+    def _sheet_range(sheets, params, column="seq"):
+        """sheets: (first, last) sheet numbers, 1-based, either may be None.
+        A sheet's number is its file's place in the job (seq + 1): the pages
+        of one PDF share it."""
+        first, last = sheets or (None, None)
+        clauses = []
+        if first:
+            clauses.append(f"{column} >= ?")
+            params.append(int(first) - 1)
+        if last:
+            clauses.append(f"{column} <= ?")
+            params.append(int(last) - 1)
+        return clauses
 
     @staticmethod
     def _by_seq(job_id, order):
@@ -748,7 +771,7 @@ class ScanIndex:
         )
         # One pass over the scans for every view count (a COUNT per view read a
         # 200k-sheet job seven times)
-        counted = ("flagged", "unflagged", "reviewed", "not_reviewed", "corrected")
+        counted = ("flagged", "unflagged", "reviewed", "not_reviewed", "approved", "corrected")
         columns = ", ".join(
             f"COALESCE(SUM(CASE WHEN {self.RESULT_VIEWS[v]} THEN 1 ELSE 0 END), 0) AS {v}"
             for v in counted
@@ -780,12 +803,13 @@ class ScanIndex:
         with self.lock:
             self.conn.execute(
                 "UPDATE scans SET status=?, score=?, review_count=?, verified=?, "
-                "corrected=?, reviewed=?, primary_key=? WHERE id=?",
+                "approved=?, corrected=?, reviewed=?, primary_key=? WHERE id=?",
                 (
                     result.get("status"),
                     result.get("score"),
                     len(result.get("review") or []),
                     1 if result.get("verified") else 0,
+                    1 if result.get("approved") else 0,
                     1 if is_corrected(result) else 0,
                     1 if result.get("reviewed") else 0,
                     primary_key_of(result),
@@ -949,19 +973,55 @@ class ScanIndex:
         )
         return rows[0] if rows else None
 
+    # An assigned sheet its person has not finished: the Results "Not reviewed" view
+    OPEN = "(s.verified = 0 AND NOT (s.flag_count > 0 AND s.review_count = 0))"
+
+    def assigned_ids(
+        self, user, template_id=None, job_id=None, sheets=None, only_open=False
+    ):
+        """Scan ids assigned to user, in sheet order; only_open: those the
+        person has not finished (not reviewed, not verified)."""
+        where, params = self._filters(
+            **{"a.user": user, "a.template_id": template_id, "a.job_id": job_id}
+        )
+        clauses = [where[len("WHERE ") :]] if where else []
+        clauses.extend(self._sheet_range(sheets, params, "s.seq"))
+        if only_open:
+            clauses.append(self.OPEN)
+        rows = self._query(
+            "SELECT a.scan_id FROM assignments a JOIN scans s ON s.id = a.scan_id "
+            f"{'WHERE ' + ' AND '.join(clauses) if clauses else ''} "
+            "ORDER BY s.seq, s.rowid",
+            params,
+        )
+        return [row["scan_id"] for row in rows]
+
     def assignment_summary(self, template_id=None, job_id=None):
-        """Per assignee: sheets handed out, still waiting for review, reviewed
-        (nothing left to review, not verified) and verified."""
+        """Per assignee: sheets handed out, still to review, reviewed (not yet
+        verified), verified, approved, sent back to review, the sheet numbers
+        they hold and when they last did anything."""
         where, params = self._filters(**{"a.template_id": template_id, "a.job_id": job_id})
-        return self._query(
+        rows = self._query(
             "SELECT a.user, COUNT(*) AS assigned, "
-            "SUM(s.review_count > 0 AND s.verified = 0) AS to_review, "
-            "SUM(s.review_count = 0 AND s.verified = 0) AS reviewed, "
-            "SUM(s.verified = 1) AS verified "
+            f"SUM({self.OPEN}) AS to_review, "
+            f"SUM(s.verified = 0 AND NOT {self.OPEN}) AS reviewed, "
+            "SUM(s.verified = 1) AS verified, "
+            "SUM(s.approved = 1) AS approved, "
+            "SUM(EXISTS (SELECT 1 FROM activity r WHERE r.scan_id = s.id "
+            "AND r.action = 'returned')) AS sent_back, "
+            "MIN(s.seq) + 1 AS first_sheet, MAX(s.seq) + 1 AS last_sheet "
             f"FROM assignments a JOIN scans s ON s.id = a.scan_id {where} "
             "GROUP BY a.user ORDER BY a.user",
             params,
         )
+        for row in rows:
+            last = self._query(
+                "SELECT MAX(at) AS at FROM activity WHERE user = ? "
+                "AND action NOT IN ('assigned', 'scanned')",
+                (row["user"],),
+            )
+            row["last_active"] = last[0]["at"] if last else None
+        return rows
 
     def add_activity(self, rows):
         """rows: dicts with action, user, at and optional scan_id, job_id,
@@ -1024,8 +1084,8 @@ class ScanIndex:
         limit=50,
         offset=0,
     ):
-        """Sheets people changed after scanning, newest change first. Unless
-        include_checked, only those not verified since their last change."""
+        """Sheets people changed or verified, newest change first. Unless
+        include_checked, only those not approved since their last change."""
         clauses = [f"a.action IN ({','.join('?' * len(actions))})"]
         params = list(actions)
         for column, value in (
@@ -1038,17 +1098,18 @@ class ScanIndex:
                 params.append(value)
         having = ""
         if not include_checked:
-            having = (
-                "HAVING s.verified = 0 OR (verified_at IS NOT NULL "
-                "AND changed_at > verified_at)"
-            )
+            having = "HAVING approved_id IS NULL OR last_change > approved_id"
         base = (
             "SELECT s.id AS scan_id, s.file_name, s.status, s.verified, s.job_id, "
             "s.template_id, s.seq, MAX(a.at) AS changed_at, COUNT(a.id) AS changes, "
             "GROUP_CONCAT(DISTINCT a.user) AS users, "
-            "GROUP_CONCAT(DISTINCT a.action) AS actions, "
+            "GROUP_CONCAT(DISTINCT a.action) AS actions, MAX(a.id) AS last_change, "
             "(SELECT MAX(v.at) FROM activity v WHERE v.scan_id = s.id "
-            "AND v.action = 'verified') AS verified_at "
+            "AND v.action = 'verified') AS verified_at, "
+            "(SELECT MAX(p.id) FROM activity p WHERE p.scan_id = s.id "
+            "AND p.action = 'approved') AS approved_id, "
+            "(SELECT MAX(p.at) FROM activity p WHERE p.scan_id = s.id "
+            "AND p.action = 'approved') AS approved_at "
             "FROM activity a JOIN scans s ON s.id = a.scan_id "
             f"WHERE {' AND '.join(clauses)} GROUP BY s.id {having}"
         )

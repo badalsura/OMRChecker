@@ -105,6 +105,7 @@
               <option value="unflagged" data-label="Not flagged">Not flagged</option>
               <option value="not_reviewed" data-label="Not reviewed">Not reviewed</option>
               <option value="reviewed" data-label="Reviewed">Reviewed</option>
+              <option value="approved" data-label="Approved">Approved (second check)</option>
               <option value="corrected" data-label="Corrected">Corrected</option>
               <option value="errors" data-label="Errors">Errors</option>
               <option value="duplicates" data-label="Duplicates">Duplicates (same key)</option>
@@ -187,8 +188,14 @@
           <label class="field">Job <select id="chg-job"><option value="">All jobs</option></select></label>
         </div>
         <h2>Hand out review work</h2>
-        <p class="muted small">Assign sheets of the template and job above to people. They find them in Results with <b>Assigned to: me</b>, review them, and you verify their work below. The sheets are split into equal runs, in sheet order, between the people named.</p>
+        <p class="muted small">Assign sheets of the template and job above to people. They find them in Results with <b>Assigned to: me</b>, review them, and you approve their work below. A sheet's number is its place in the job (shown as #12 in Results when a job is picked).</p>
         <div class="row gap wrap">
+          <label class="field">How
+            <select id="chg-mode">
+              <option value="split">Split evenly between people</option>
+              <option value="ranges">Each person's sheet numbers</option>
+            </select>
+          </label>
           <label class="field">Which sheets
             <select id="chg-which">
               <option value="flagged">Flagged, not verified</option>
@@ -198,27 +205,43 @@
               <option value="all">All sheets</option>
             </select>
           </label>
-          <label class="field">People (comma between names) <input id="chg-people" list="chg-people-list" placeholder="asha, bob"></label>
-          <datalist id="chg-people-list"></datalist>
-          <label class="field">At most <input id="chg-limit" type="number" min="1" placeholder="all"></label>
           <label class="small"><input type="checkbox" id="chg-only-new" checked> only sheets nobody has yet</label>
+        </div>
+        <datalist id="chg-people-list"></datalist>
+        <div id="chg-split" class="row gap wrap">
+          <div class="field">People
+            <input id="chg-people-search" type="search" class="small" placeholder="search people, or type a new name and press Enter">
+            <div id="chg-people" class="chg-people"></div>
+          </div>
+          <label class="field">From sheet <input id="chg-from" type="number" min="1" placeholder="first"></label>
+          <label class="field">To sheet <input id="chg-to" type="number" min="1" placeholder="last"></label>
+          <label class="field">At most <input id="chg-limit" type="number" min="1" placeholder="all"></label>
+        </div>
+        <div id="chg-ranges" class="hidden">
+          <p class="muted small">One row per person: sheets from and to (included) of the job above. Only the sheets chosen in <b>Which sheets</b> inside each range are assigned.</p>
+          <div id="chg-range-rows"></div>
+          <button id="chg-range-add" class="small ghost">+ Add a person</button>
+        </div>
+        <div class="row gap wrap">
+          <span id="chg-preview" class="muted small"></span>
+          <span class="spacer"></span>
           <button id="chg-assign" class="primary">Assign</button>
         </div>
         <div id="chg-summary"></div>
       </div>
       <div class="panel">
-        <h2>Changed sheets</h2>
-        <p class="muted small">Sheets people changed after scanning (values changed or accepted, regraded, aligned or typed by hand) and nobody verified since. Check the settings and values, open a sheet to look at it, then verify it or send it back to review.</p>
+        <h2>Check and approve</h2>
+        <p class="muted small">Sheets reviewers verified or changed after scanning (values changed or accepted, regraded, aligned or typed by hand) that you have not approved since. Approve is your second check, separate from the reviewer's Verify: check the settings and values, open a sheet to look at it, then approve it or send it back to review. Any later change lists the sheet here again.</p>
         <div class="row gap wrap">
           <input id="chg-user" type="search" class="small" placeholder="changed by (user name)">
-          <label class="small"><input type="checkbox" id="chg-all"> include sheets already verified</label>
+          <label class="small"><input type="checkbox" id="chg-all"> include sheets already approved</label>
           <span id="chg-count" class="muted small"></span>
           <button id="chg-prev" class="small ghost">‹ Newer</button>
           <button id="chg-next" class="small ghost">Older ›</button>
           <span class="spacer"></span>
-          <button id="chg-verify-page">Verify all on this page</button>
+          <button id="chg-verify-page">Approve all on this page</button>
           <button id="chg-return" disabled>Send ticked back</button>
-          <button id="chg-verify" class="primary" disabled>Verify ticked</button>
+          <button id="chg-verify" class="primary" disabled>Approve ticked</button>
         </div>
         <div id="chg-table"></div>
       </div>
