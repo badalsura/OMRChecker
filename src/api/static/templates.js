@@ -40,6 +40,7 @@ function renderTable(templates) {
           { class: "actions" },
           el("button", { class: "small primary", onclick: () => openEditor(t.id) }, "Edit"),
           el("a", { class: "button small", href: url(`/templates/${t.id}/layout.png`), target: "_blank" }, "Layout"),
+          el("a", { class: "button small", href: url(`/templates/${t.id}/package`), download: "", title: "Download this template as one .zip to give to another system; they import it with Upload" }, "Download"),
           el("button", { class: "small", title: "Copy this layout (template, config, answer key, reference image) under a new name and open the copy", onclick: async () => { const copy = await duplicateTemplate(t); if (copy) openEditor(copy.id); } }, "Duplicate"),
           el("button", { class: "small", title: "Change the name; jobs, results and review items stay linked", onclick: () => renameTemplate(t) }, "Rename"),
           el(

@@ -456,3 +456,44 @@ def test_scoring_panel_model_is_accepted_by_the_engine(tmp_path, spec):
             f"/templates/{template_id}/validate", json={"evaluation": evaluation_json}
         ).json()
         assert checked["ok"], checked
+
+
+def test_package_carries_a_template_to_another_system(tmp_path, spec):
+    import zipfile
+
+    with make_client(tmp_path / "a") as client:
+        template_id = upload_template(client, spec, evaluation=evaluation())
+        image, _ = make_sheet(spec, seed=1)
+        client.post(
+            f"/templates/{template_id}/reference",
+            files={"file": ("ref.png", png_bytes(image), "image/png")},
+        )
+        original = client.get(f"/templates/{template_id}").json()
+        response = client.get(f"/templates/{template_id}/package")
+        assert response.status_code == 200, response.text
+        assert ".omr-template.zip" in response.headers["content-disposition"]
+        package = response.content
+    names = zipfile.ZipFile(io.BytesIO(package)).namelist()
+    assert "omr-package.json" in names and "template.json" in names
+    assert "_meta.json" not in names
+
+    with make_client(tmp_path / "b") as other:
+        def bring(name=None):
+            data = {"name": name} if name else {}
+            response = other.post(
+                "/templates",
+                files=[("files", ("exam.omr-template.zip", package, "application/zip"))],
+                data=data,
+            )
+            assert response.status_code == 201, response.text
+            return response.json()
+
+        imported = bring()
+        assert imported["name"] == original["name"]
+        assert imported["template"] == original["template"]
+        assert imported["evaluation"] == original["evaluation"]
+        assert imported["has_reference"] is True
+        assert "omr-package.json" not in imported["files"]
+        # Same name already here: the second import is told apart
+        assert bring()["name"] == f"{original['name']} (2)"
+        assert bring("Mine")["name"] == "Mine"

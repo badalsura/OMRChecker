@@ -350,6 +350,27 @@ def test_api_exports_job_with_corrections(tmp_path):
         assert rows[1][header.index("q1")] == "D"  # the corrected value
         assert rows[1][header.index("corrected")] is True
 
+        # Written straight into a folder; a second run does not overwrite it
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        saved = client.post(
+            "/exports", json={**body, "format": "csv", "folder": str(out_dir)}
+        ).json()
+        assert saved["state"] == "completed", saved
+        assert saved["path"] == str(out_dir / saved["file_name"])
+        assert (out_dir / saved["file_name"]).read_text().count("\n") == 4
+        again = client.post(
+            "/exports", json={**body, "format": "csv", "folder": str(out_dir)}
+        ).json()
+        assert again["path"] != saved["path"] and " (2)." in again["file_name"]
+        assert client.get(again["download_url"]).status_code == 200
+        client.delete(f"/exports/{again['id']}")
+        assert len(list(out_dir.iterdir())) == 2  # the user's file stays
+        missing = client.post(
+            "/exports", json={**body, "folder": str(tmp_path / "nope")}
+        )
+        assert missing.status_code == 422
+
         # Lossy cast: refused, nothing to download
         body = {
             "format": "csv",
@@ -393,7 +414,7 @@ def test_api_exports_job_with_corrections(tmp_path):
 
             time.sleep(0.1)
         assert state["state"] == "completed", state
-        assert len(client.get("/exports").json()["exports"]) == 3
+        assert len(client.get("/exports").json()["exports"]) == 4  # one more saved into a folder above
         assert client.delete(f"/exports/{record['id']}").status_code == 200
         assert client.post("/exports", json={"format": "doc"}).status_code == 422
 

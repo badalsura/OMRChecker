@@ -7,6 +7,7 @@ store reusable export profiles under <data_dir>/export_profiles/.
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, HTTPException, Query, Request
@@ -14,6 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from src.api.accounts import request_user
+from src.api.fs_routes import FolderError, checked_folder, folder_scope
 from src.api.results import DEFAULT_USER, ResultsError
 from src.api.storage import new_id, read_json, slugify, write_json_atomic
 from src.export import (
@@ -53,6 +55,11 @@ class ExportRequest(BaseModel):
     profile_name: Optional[str] = Field(None, description="A saved profile instead")
     sql_url: Optional[str] = Field(
         None, description="format=sql: SQLAlchemy URL, e.g. postgresql+psycopg://..."
+    )
+    folder: Optional[str] = Field(
+        None,
+        description="Write the file straight into this folder on the server "
+        "(an allowed folder) instead of the exports store; it can still be downloaded",
     )
     wait: bool = Field(False, description="Run in the request and return when done")
 
@@ -175,7 +182,16 @@ class ExportManager:
             "total": self.ctx.index.count_results(**filters),
         }
 
-    def create(self, body, user):
+    def target_path(self, folder, file_name):
+        """A free file name in the chosen folder: results.csv, results (2).csv, ..."""
+        stem, dot, ext = file_name.rpartition(".")
+        candidate, number = folder / file_name, 2
+        while candidate.exists():
+            candidate = folder / f"{stem} ({number}){dot}{ext}"
+            number += 1
+        return candidate
+
+    def create(self, body, user, scope=None):
         if body.format not in FORMATS:
             raise ExportError(f"format must be one of {list(FORMATS)}")
         profile = self.resolve_profile(body)
@@ -189,7 +205,14 @@ class ExportManager:
             limit = self.ctx.settings.pdf_sheet_limit
             asked = int(profile.pdf.get("maxSheets") or 500)
             profile.pdf["maxSheets"] = min(asked, limit) if limit > 0 else asked
+        folder = None
+        if body.folder:
+            try:
+                folder = checked_folder(scope, body.folder)
+            except FolderError as error:
+                raise ExportError(str(error))
         export_id = new_id()
+        file_name = self.file_name(body.format, filters)
         record = {
             "id": export_id,
             "format": body.format,
@@ -203,9 +226,15 @@ class ExportManager:
             "total": self.ctx.index.count_results(**filters),
             "warnings": [],
             "error": None,
-            "file_name": self.file_name(body.format, filters),
+            "file_name": file_name,
             "download_url": None,
         }
+        if folder is not None:
+            target = self.target_path(folder, file_name)
+            # Claim the name so two exports to one folder do not collide
+            target.touch()
+            record["path"] = str(target)
+            record["file_name"] = target.name
         write_json_atomic(self.record_path(export_id), record)
         job = (record, profile, body.sql_url)
         if body.wait:
@@ -225,7 +254,7 @@ class ExportManager:
 
     def run(self, record, profile, sql_url):
         export_id = record["id"]
-        path = self.root / f"{export_id}.{EXTENSIONS[record['format']]}"
+        path = self.file_of(record)
         record["state"] = "running"
         write_json_atomic(self.record_path(export_id), record)
 
@@ -267,13 +296,17 @@ class ExportManager:
         return record
 
     def file_of(self, record):
+        if record.get("path"):
+            return Path(record["path"])
         return self.root / f"{record['id']}.{EXTENSIONS[record['format']]}"
 
     def delete(self, export_id):
         record = self.get(export_id)
         if record is None:
             return None
-        self.file_of(record).unlink(missing_ok=True)
+        # A file written into the user's own folder stays there
+        if not record.get("path"):
+            self.file_of(record).unlink(missing_ok=True)
         self.record_path(export_id).unlink(missing_ok=True)
         return record
 
@@ -304,7 +337,7 @@ def register(app, ctx, secured):
         """
         user = request_user(request, None, DEFAULT_USER)
         try:
-            return manager.create(body, user)
+            return manager.create(body, user, folder_scope(ctx.settings, request))
         except ExportError as error:
             fail(error)
 

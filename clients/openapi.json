@@ -4920,6 +4920,47 @@
         }
       }
     },
+    "/templates/{template_id}/package": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Package Template",
+        "description": "One .zip with template.json, config, answer key, reference image and\nother assets, plus the template's name. Upload it on another system\n(Templates \u203a Upload, or POST /templates) to import the template.",
+        "operationId": "package_template_templates__template_id__package_get",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/templates/{template_id}/duplicate": {
       "post": {
         "tags": [
@@ -7044,6 +7085,18 @@
             ],
             "title": "Sql Url",
             "description": "format=sql: SQLAlchemy URL, e.g. postgresql+psycopg://..."
+          },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder",
+            "description": "Write the file straight into this folder on the server (an allowed folder) instead of the exports store; it can still be downloaded"
           },
           "wait": {
             "type": "boolean",

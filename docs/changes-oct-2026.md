@@ -371,6 +371,11 @@ this station.
 - With sign-in on, only administrators can verify sheets.
 - **Original as background** now shows the sheet after its turn, mirror and straighten, so a sheet regraded with Turn 180° no longer shows upside down. Hand placement works on that turned view.
 
+## Export straight to a folder, and template packages
+
+- The Export dialog has **Save to folder**: the file is written straight into a folder on the scanning computer, with no download step. Exports already went to disk on the server row by row; this only skips the copy through the browser.
+- Templates have a **Download** button that saves one *name*.omr-template.zip. Upload it on another system to import the template with its name, answer key and reference image.
+
 ## New settings at a glance
 
 | Setting | Where | Default | What it does |
@@ -413,6 +418,8 @@ this station.
 | `GET /activity/sheets`, `POST /activity/verify` | Changed sheets not verified since, and bulk verify |
 | `POST /activity/return` | Send sheets back to review, optionally to a person, with a note |
 | `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary` | Hand out flagged sheets to people in equal shares, take them back, and see each person's progress |
+| `POST /exports` | Takes `folder`: write the file straight into that server folder; the record carries `path` |
+| `GET /templates/{id}/package` | One .zip of the template to import elsewhere with `POST /templates` |
 | `GET /results?assigned=` | `@me`, a user name, or `__none__` for sheets nobody has |
 | `GET /review`, `/review/counts`, bulk accept | Take a `flag` filter |
 | `GET /review/summary` | Adds `by_flag` and `by_job` |

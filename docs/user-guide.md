@@ -852,7 +852,8 @@ Type notes:
 #### Preview, export and download
 
 - **Preview** shows the number of sheets and the first rows exactly as they will be written, with any warnings (amber) or errors (red). Hover over a column heading to see its field and type.
-- **Export** runs the export on the server with a progress bar ("running · N / M rows"). When it is ready, click **Download *file name* (N rows)**. Large exports keep memory use low, so even very large jobs can be exported.
+- **Save to folder** (optional): a folder on the computer running the scanner. Type it or click **Browse…**. The export is then written straight into that folder, so a large export needs no download afterwards. If a file of that name is already there, the new one is called "*name* (2)". Deleting the export from the list later keeps the file in your folder. Leave the box empty to download from the browser as before. The app remembers the folder.
+- **Export** runs the export on the server with a progress bar ("running · N / M rows"). When it is ready, click **Download *file name* (N rows)**, or, with a folder chosen, the dialog shows where the file was saved. The rows are written to the file as they are read, a few thousand at a time, so even very large jobs export without filling memory. A PDF is the exception: it is assembled in memory, which is why it has row and sheet limits.
 
 #### Export profiles
 
@@ -1440,6 +1441,7 @@ Buttons on each row:
 
 - **Edit** opens the editor.
 - **Layout** opens a picture of the layout drawn over the reference image in a new browser tab. Handy to print or send to someone.
+- **Download** saves the template as one file, *name*.omr-template.zip: the layout, reading options, answer key, reference image and other files, plus the template's name. To give the template to someone else, send them this file. On their system they choose it under **Upload** in the Templates tab (leave the name empty to keep the original name). If their system already has a template with that name, the imported one is called "*name* (2)". Alignment test sheets are not included.
 - **Duplicate** asks for a new name (suggested: "<name> copy") and copies the layout, its reading options, answer key and reference image, then opens the copy. Scans and results of the original stay with the original. Use this to make a variant (another exam with the same form, a different answer key) without risking the original.
 - **Rename** changes only the name. Past jobs, results and review items stay linked. You can also rename by clicking the title inside the editor.
 - **Delete** removes the template after you confirm. Stored scans are kept. New jobs can no longer use the template, so only delete templates you are finished with.

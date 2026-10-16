@@ -1,6 +1,7 @@
 // Export dialog: pick a format, build an export profile (columns, names, order,
 // types), preview it and run the export on the server (CSV, XLSX, PDF, SQL).
 import { api, chip, el, modal, on, safeStorage, toast, url } from "./api.js";
+import { openBrowser } from "./folders.js";
 
 const TYPES = ["text", "int", "decimal", "date", "bool"];
 const META = ["file_name", "file_id", "page", "scan_id", "job_id", "template_id", "status", "score", "source_path", "verified_by", "error", "created_at"];
@@ -187,7 +188,15 @@ async function openExport(filters) {
     renderMeta();
   };
 
-  const request = (extra) => ({ format: formatSelect.value, filters, profile: profile(), sql_url: formatSelect.value === "sql" ? s.sql.url : undefined, ...extra });
+  // Save straight into a folder on the server (the scanning PC) instead of the export store
+  const folderInput = el("input", { class: "mono", placeholder: "Leave empty to download from the browser", value: safeStorage("get", "omr_export_folder") || "", style: { minWidth: "22em" } });
+  const folderRow = el(
+    "div",
+    { class: "row gap wrap" },
+    el("label", { class: "field inline", title: "The file is written straight into this folder on the computer running the scanner, so large exports need no download" }, "Save to folder ", folderInput),
+    el("button", { class: "small", onclick: () => openBrowser(folderInput.value, (path) => (folderInput.value = path)) }, "Browse…")
+  );
+  const request = (extra) => ({ format: formatSelect.value, filters, profile: profile(), sql_url: formatSelect.value === "sql" ? s.sql.url : undefined, folder: folderInput.value.trim() || undefined, ...extra });
 
   const preview = async () => {
     previewBox.innerHTML = "Loading…";
@@ -210,6 +219,7 @@ async function openExport(filters) {
 
   const run = async () => {
     safeStorage("set", "omr_export_format", formatSelect.value);
+    safeStorage("set", "omr_export_folder", folderInput.value.trim());
     statusBox.innerHTML = "";
     let record;
     try {
@@ -240,6 +250,11 @@ async function openExport(filters) {
       return;
     }
     for (const w of record.warnings || []) statusBox.append(el("div", { class: "res-warning" }, w));
+    if (record.path) {
+      statusBox.append(el("div", { class: "res-warning preview" }, `Saved ${record.rows} rows to `, el("span", { class: "mono" }, record.path)));
+      toast("Export saved", "ok");
+      return;
+    }
     statusBox.append(el("a", { class: "button primary", href: url(record.download_url), download: record.file_name }, `Download ${record.file_name} (${record.rows} rows)`));
     toast("Export ready", "ok");
   };
@@ -310,6 +325,7 @@ async function openExport(filters) {
       { class: "exp" },
       el("div", { class: "row gap wrap" }, el("span", { class: "muted" }, "Sheets: "), chip(scopeText(filters), "ok"), el("span", { class: "spacer" }), profileSelect, el("button", { class: "small", onclick: saveProfile }, "Save profile…")),
       el("div", { class: "row gap wrap exp-format" }, el("label", { class: "field inline" }, "Format ", formatSelect), formatOptions),
+      folderRow,
       el("div", { class: "exp-cols" }, el("div", {}, el("h3", {}, "Fields"), el("div", { class: "exp-table-wrap" }, el("table", { class: "table" }, el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", {}, "Field"), el("th", {}, "Column name"), el("th", {}, "Type"), el("th", {}, ""))), fieldTable))), el("div", {}, el("h3", {}, "Sheet columns"), metaBox, el("h3", {}, "Per field"), optionBox, jsonDetails)),
       previewBox,
       statusBox

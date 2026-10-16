@@ -23,6 +23,10 @@ from src.api.storage import (
 from src.api.worker import build_engine, template_version
 
 META_FILE = "_meta.json"
+# Name and settings of a template package (GET /templates/{id}/package)
+PACKAGE_FILE = "omr-package.json"
+# Meta keys a package carries to the system that imports it
+PACKAGE_META = ("report", "report_confirmed", "generated", "reference")
 REFERENCE_NAMES = ("reference.png", "reference.jpg", "reference.jpeg")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 ASSET_SUFFIXES = IMAGE_SUFFIXES | {".json", ".onnx"}
@@ -144,6 +148,15 @@ class TemplateStore:
             if p.is_file() and p.name != META_FILE and not p.name.startswith(".")
         )
 
+    def free_name(self, name):
+        """name, or "name (2)", "name (3)", ... when a template already uses it."""
+        used = {str(item.get("name", "")).casefold() for item in self.list()}
+        candidate, number = name, 2
+        while candidate.casefold() in used:
+            candidate = f"{name} ({number})"
+            number += 1
+        return candidate
+
     def allocate_id(self, name):
         base = slugify(name)
         with self.lock:
@@ -177,6 +190,24 @@ class TemplateStore:
                 "template.json is not valid JSON",
                 [{"path": "template.json", "message": str(error)}],
             )
+        package = {}
+        if PACKAGE_FILE in staged:
+            try:
+                package = json.loads(staged.pop(PACKAGE_FILE)) or {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                package = {}
+            if not isinstance(package, dict):
+                package = {}
+        carried = {
+            key: value
+            for key, value in (package.get("meta") or {}).items()
+            if key in PACKAGE_META
+        }
+        if package.get("status") == "draft":
+            status = "draft"
+        if not name and not (extra or {}).get("name") and package.get("name"):
+            # A package keeps its name unless this system already uses it
+            name = self.free_name(str(package["name"]))
         name = name or (extra or {}).get("name") or "template"
         template_id = self.allocate_id(name)
         directory = self.root / template_id
@@ -196,6 +227,7 @@ class TemplateStore:
                 "status": status,
                 "created_at": now,
                 "updated_at": now,
+                **carried,
                 **(extra or {}),
             }
             if errors:
