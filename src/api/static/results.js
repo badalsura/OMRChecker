@@ -1460,12 +1460,45 @@ async function startPlacement(d) {
     const W = entry.meta.width;
     const H = entry.meta.height;
     const quad = page && page.length === 4 ? page.map((p) => p.slice()) : rectQuad(0, 0, W - 1, H - 1);
-    r.place = { scanId: d.scan_id, targets, quad, initial: quad.map((p) => p.slice()), active: null, busy: false };
+    r.place = { scanId: d.scan_id, targets, quad, initial: quad.map((p) => p.slice()), active: null, busy: false, turn: 0 };
     toast("Drag the corners (or the centre) until the boxes sit on the printed marks, then Regrade", "", 6000);
     renderSide();
     draw();
   } catch (error) {
     toast(error.message, "error", 5000);
+  }
+}
+
+// Turn the scan itself (not the page box) for hand placement: the original
+// view is fetched again turned, and the page box starts over on it
+async function turnPlacementImage(degrees) {
+  const p = r.place;
+  if (!p || !r.data) return;
+  p.turn = (p.turn + degrees) % 360;
+  const scanId = r.data.scan_id;
+  const entry = { scanId, loading: true, meta: null, image: null, error: null };
+  r.views.original = entry;
+  draw();
+  try {
+    entry.meta = await api(`/scans/${scanId}/views/original?turn=${p.turn}`);
+    entry.image = await loadImage(url(entry.meta.image_url));
+  } catch (error) {
+    entry.error = error.message.replace(/^\d+: /, "");
+    toast(entry.error, "error", 5000);
+  }
+  entry.loading = false;
+  if (r.place !== p || !entry.meta) return draw();
+  p.quad = rectQuad(0, 0, entry.meta.width - 1, entry.meta.height - 1);
+  p.initial = p.quad.map((q) => q.slice());
+  renderSide();
+  draw();
+}
+
+// Back to the original view as stored, after a placement on a turned image
+function untwistOriginal(place) {
+  if (place && place.turn) {
+    delete r.views.original;
+    loadViews();
   }
 }
 
@@ -1489,10 +1522,12 @@ function placementBox() {
       "div",
       { class: "row gap wrap" },
       el("button", { class: "small primary", disabled: p.busy || undefined, onclick: submitPlacement }, p.busy ? "Reading…" : "Regrade with this placement"),
-      el("button", { class: "small", onclick: () => turn(2) }, "Turn 180°"),
-      el("button", { class: "small", onclick: () => turn(1) }, "Turn 90°"),
+      el("button", { class: "small", title: "Turn the scan itself clockwise; the page box starts over on the turned scan", onclick: () => turnPlacementImage(90) }, "Turn image 90°"),
+      el("button", { class: "small", title: "Turn the scan itself upside down; the page box starts over on the turned scan", onclick: () => turnPlacementImage(180) }, "Turn image 180°"),
+      el("button", { class: "small", title: "Turn only the page box (the template) on the scan", onclick: () => turn(2) }, "Turn template 180°"),
+      el("button", { class: "small", title: "Turn only the page box (the template) on the scan", onclick: () => turn(1) }, "Turn template 90°"),
       el("button", { class: "small", onclick: () => { p.quad = p.initial.map((q) => q.slice()); draw(); } }, "Reset"),
-      el("button", { class: "small ghost", onclick: () => { r.place = null; renderSide(); draw(); } }, "Cancel")
+      el("button", { class: "small ghost", onclick: () => { r.place = null; untwistOriginal(p); renderSide(); draw(); } }, "Cancel")
     )
   );
 }
@@ -1504,10 +1539,11 @@ async function submitPlacement() {
   renderSide();
   try {
     const points = p.quad.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10]);
-    const data = await api(`/scans/${p.scanId}/manual-align`, { method: "POST", json: { points, kind: "corners" } });
+    const data = await api(`/scans/${p.scanId}/manual-align`, { method: "POST", json: { points, kind: "corners", turn: p.turn || 0 } });
     const changes = data && data.changes ? ` · ${data.changes.length} value(s) changed` : "";
     toast(`Read again with the page placed by hand${changes}`, "ok");
     r.place = null;
+    if (p.turn) delete r.views.original;
     await open(p.scanId);
     load(r.offset, true);
     emit("review-changed");

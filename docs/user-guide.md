@@ -967,7 +967,7 @@ All views use the exact geometry recorded when the sheet was read. Nothing is de
 |---|---|---|
 | **Aligned** (default) | The straightened page the engine actually read, after colour removal and conversion to grey. | Normal checking and correcting. |
 | **Aligned, full colour** | The same straightened page in its original colours. | Telling pencil from pen, or a student's mark from coloured print, when colour removal makes them look alike. |
-| **Original as background** | The scan in colour, after the turn, mirror and straighten the template or a regrade gives it, so a sheet regraded with **Turn 180°** shows upright here too. Every outline is mapped back onto it. | Checking whether the page was placed correctly, spotting a sheet read upside down or shifted by a row, and for the [failed-sheet tools](#failed-sheets-sheets-that-could-not-be-aligned). |
+| **Original as background** | The scan in colour, after the turn, mirror and straighten the template or a regrade gives it, and turned the way the reader found the sheet. So a sheet fed upside down shows upright here too, as it does in the aligned views. Every outline is mapped back onto it. | Checking whether the page was placed correctly, spotting a sheet read upside down or shifted by a row, and for the [failed-sheet tools](#failed-sheets-sheets-that-could-not-be-aligned). |
 
 **side by side** (S) splits the canvas into two panes, each labelled with its view name. Zooming, scrolling and hovering move both panes together, and the bubble under the mouse is highlighted in both. A common setup is **left: Original** with **View: Aligned**, so you see the raw scan and the read page together.
 
@@ -1189,8 +1189,9 @@ To place the page:
 - **Drag a corner circle** to stretch that corner. The corner you drag turns red and becomes the "selected" one.
 - **Drag the centre cross** to move the whole page.
 - **Arrow keys** nudge the selected corner by 1 pixel, or by 10 pixels with **Shift**. If no corner is selected, or you last dragged the centre, the arrows move the whole page.
-- **Turn 180°** swaps which scan corner counts as the page's top-left, for a sheet fed upside down.
-- **Turn 90°** turns it a quarter turn at a time.
+- **Turn image 90°** and **Turn image 180°** turn the scan itself (clockwise), so you can place the page on an upright picture. The page box starts over on the turned scan.
+- **Turn template 180°** swaps which scan corner counts as the page's top-left, without turning the picture.
+- **Turn template 90°** turns the page box a quarter turn at a time.
 - **Reset** returns to the starting placement.
 - **Cancel** (or **Esc**) leaves without changes.
 
@@ -1366,7 +1367,7 @@ Shortcuts work while the Results tab is open, no dialog is open, and you are not
 1. Open the sheet and choose **View › Original as background**. Turn on **borders** (B).
 2. Look at the dashed blue page outline and its **top-left** dot. If the dot is at the bottom of the page, the sheet was read upside down. If the bubble outlines sit one row above or below the printed bubbles, it was read a row off.
 3. For an upside-down sheet: press **R**, set **Turn the sheet** to **Upside down (180°)**, click **Preview**, check the changes, then click **Apply**.
-4. For a sheet a row off, or when turning does not help: press **R** and click **Place the page by hand…**. Use **Turn 180°** if needed. Then drag the corners, or the centre cross, until the red timing-mark boxes and grey bubble boxes sit on the printed ones. Fine-tune with the arrow keys (Shift for bigger steps).
+4. For a sheet a row off, or when turning does not help: press **R** and click **Place the page by hand…**. Use **Turn image 180°** (or **Turn image 90°**) if the scan is turned. Then drag the corners, or the centre cross, until the red timing-mark boxes and grey bubble boxes sit on the printed ones. Fine-tune with the arrow keys (Shift for bigger steps).
 5. Click **Regrade with this placement**, check the values, and verify the sheet.
 
 #### How to rescue a sheet that could not be read

@@ -4292,6 +4292,18 @@
               "default": "jpg",
               "title": "Format"
             }
+          },
+          {
+            "name": "turn",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "description": "view=original: turn it a further 90, 180 or 270 degrees clockwise",
+              "default": 0,
+              "title": "Turn"
+            },
+            "description": "view=original: turn it a further 90, 180 or 270 degrees clockwise"
           }
         ],
         "responses": {
@@ -4351,6 +4363,16 @@
               "pattern": "^(jpg|png)$",
               "default": "jpg",
               "title": "Format"
+            }
+          },
+          {
+            "name": "turn",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Turn"
             }
           }
         ],
@@ -7175,6 +7197,12 @@
             ],
             "title": "Names",
             "description": "Index point per click (kind=index)"
+          },
+          "turn": {
+            "type": "integer",
+            "title": "Turn",
+            "description": "The further clockwise turn of the original view clicked on (0, 90, 180, 270)",
+            "default": 0
           },
           "user": {
             "anyOf": [

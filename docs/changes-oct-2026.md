@@ -376,6 +376,11 @@ this station.
 - The Export dialog has **Save to folder**: the file is written straight into a folder on the scanning computer, with no download step. Exports already went to disk on the server row by row; this only skips the copy through the browser.
 - Templates have a **Download** button that saves one *name*.omr-template.zip. Upload it on another system to import the template with its name, answer key and reference image.
 
+## Turned sheets: full colour view and hand placement
+
+- **Aligned, full colour** showed a sheet the reader had found upside down (or sideways) turned the wrong way, while **Aligned** was right. The colour scan was being turned by the found orientation and then warped by the recorded transform, which already holds that turn. It is now turned once, so both aligned views match. **Original as background** also shows such a sheet upright, and stays upright after a hand placement.
+- **Place the page by hand** has **Turn image 90°** and **Turn image 180°**, which turn the scan itself. The old buttons are now **Turn template 180°/90°**. `GET /scans/{id}/views/original` takes `turn`, and `POST /scans/{id}/manual-align` takes the same `turn`.
+
 ## New settings at a glance
 
 | Setting | Where | Default | What it does |

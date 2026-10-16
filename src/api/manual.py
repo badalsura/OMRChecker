@@ -9,6 +9,7 @@ Two ways out, both on the original image:
 """
 
 import json
+import math
 import time
 
 import cv2
@@ -74,8 +75,19 @@ def _homography(clicks, targets):
     return matrix.astype(np.float64)
 
 
-def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None):
-    """Read the sheet again through a homography from clicked points."""
+def page_turn(page_homography, width):
+    """How far the page lies turned clockwise on the scan (0, 90, 180, 270),
+    from where the aligned page's top edge falls in the scan's pixels."""
+    inverse = np.linalg.inv(np.asarray(page_homography, np.float64))
+    ends = np.array([[0.0, 0.0, 1.0], [float(width - 1), 0.0, 1.0]]) @ inverse.T
+    (x0, y0), (x1, y1) = ends[:, :2] / ends[:, 2:3]
+    angle = math.degrees(math.atan2(y1 - y0, x1 - x0)) % 360
+    return int(round(angle / 90.0)) * 90 % 360
+
+
+def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None, turn=0):
+    """Read the sheet again through a homography from clicked points.
+    turn: the further clockwise turn of the original view they were made on."""
     from src.utils.image import ImageUtils
 
     with service.ctx.scan_lock(scan_id):
@@ -112,7 +124,9 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             # turn, mirror and straighten. Back to the scan's own pixels.
             from src.api.views_routes import apply_matrix, feed_transform
 
-            feed, _ = feed_transform(service, result, image.shape[1], image.shape[0])
+            feed, _ = feed_transform(
+                service, result, image.shape[1], image.shape[0], turn
+            )
             if feed is not None:
                 clicks = apply_matrix(np.linalg.inv(feed), clicks)
             matrix = _homography(clicks, goal)
@@ -162,6 +176,7 @@ def manual_align(service, scan_id, clicks, kind="corners", names=None, user=None
             geometry["steps"] = [step] + list(geometry.get("steps") or [])
             geometry["source_size"] = [int(image.shape[1]), int(image.shape[0])]
             geometry["alignment_method"] = f"manual_{kind}"
+            geometry["rotation"] = page_turn(geometry["page_homography"], width)
         record["manual_alignment"] = {
             "kind": kind,
             "points": [[float(x), float(y)] for x, y in clicks],

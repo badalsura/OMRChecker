@@ -49,6 +49,9 @@ class ManualAlignBody(BaseModel):
     points: List[List[float]] = Field(..., description="Clicked [x, y] in original pixels")
     kind: str = Field("corners", pattern="^(corners|index)$")
     names: Optional[List[str]] = Field(None, description="Index point per click (kind=index)")
+    turn: int = Field(
+        0, description="The further clockwise turn of the original view clicked on (0, 90, 180, 270)"
+    )
     user: Optional[str] = None
 
 
@@ -394,6 +397,7 @@ def register(app, ctx, secured):
                 body.kind,
                 body.names,
                 user_of(request, body.user),
+                body.turn % 360 if body.turn % 90 == 0 else 0,
             )
             return overlay_response(record)
         except ResultsError as error:

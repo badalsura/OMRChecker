@@ -920,3 +920,60 @@ def test_colour_template_renders_and_regrades(tmp_path, spec):
         ).json()
         assert preview["applied"] is False
         assert preview["changes"] == []  # a grey sheet reads the same either way
+
+
+@pytest.mark.parametrize(
+    "turn", [cv2.ROTATE_180, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]
+)
+def test_views_of_a_sheet_the_reader_turned_itself(tmp_path, turn):
+    """Timing marks find a turned sheet's orientation: the full colour view
+    matches the aligned page and the original shows upright, not turned twice."""
+    timing = default_spec(questions=20, roll_digits=4, with_zones=False)
+    image, truth = sheet(timing, 31)
+    questions = [f"q{i}" for i in range(1, 21)]
+
+    def picture(response):
+        assert response.status_code == 200, response.text
+        return cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_GRAYSCALE)
+
+    def gap(a, b):
+        b = cv2.resize(b, (a.shape[1], a.shape[0]))
+        return float(np.mean(np.abs(a.astype(int) - b.astype(int))))
+
+    with make_client(tmp_path) as client:
+        template_id = upload(client, timing.to_template())
+        scan_id = scan(client, template_id, cv2.rotate(image, turn))["scan_id"]
+        assert client.get(f"/scans/{scan_id}").json()["geometry"]["rotation"] in (90, 180, 270)
+        aligned = picture(client.get(f"/scans/{scan_id}/render/image?format=png"))
+        colour = picture(client.get(f"/scans/{scan_id}/views/color/image?format=png"))
+        original = picture(client.get(f"/scans/{scan_id}/views/original/image?format=png"))
+        assert gap(aligned, colour) < 2
+        assert gap(aligned, original) < 2
+        # Placing the page by hand on that upright view reads it right
+        view = client.get(f"/scans/{scan_id}/views/original").json()
+        w, h = view["width"] - 1, view["height"] - 1
+        placed = client.post(
+            f"/scans/{scan_id}/manual-align",
+            json={"points": [[0, 0], [w, 0], [w, h], [0, h]], "kind": "corners"},
+        )
+        assert placed.status_code == 200, placed.text
+        again = client.get(f"/scans/{scan_id}").json()
+        assert [again["responses"][q] for q in questions] == [
+            truth["answers"][q] for q in questions
+        ]
+        # The same on the view turned upside down by hand: the page's top-left
+        # is now the image's bottom-right
+        turned = client.get(f"/scans/{scan_id}/views/original?turn=180").json()
+        assert turned["turn"] == 180 and "turn=180" in turned["image_url"]
+        flipped = picture(client.get(turned["image_url"].replace("jpg", "png")))
+        assert gap(cv2.rotate(original, cv2.ROTATE_180), flipped) < 2
+        placed = client.post(
+            f"/scans/{scan_id}/manual-align",
+            json={"points": [[w, h], [0, h], [0, 0], [w, 0]], "kind": "corners", "turn": 180},
+        )
+        assert placed.status_code == 200, placed.text
+        again = client.get(f"/scans/{scan_id}").json()
+        assert [again["responses"][q] for q in questions] == [
+            truth["answers"][q] for q in questions
+        ]
+        assert client.get(f"/scans/{scan_id}/views/original?turn=45").status_code == 422
