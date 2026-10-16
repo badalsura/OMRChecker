@@ -49,7 +49,21 @@ def write_json_atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, indent=1, default=_json_default))
-    os.replace(tmp, path)
+    # Windows refuses the swap ("Access is denied") while another program,
+    # such as an antivirus scan or the search indexer, has the old file open
+    # for a moment: try again for about a second before giving up
+    for wait in (0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, None):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if wait is None:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise
+            time.sleep(wait)
 
 
 def read_json(path, default=None):

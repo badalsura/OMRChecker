@@ -542,7 +542,14 @@ class JobManager:
                 rate = job["throughput_per_s"] or 0
                 job["eta_s"] = round(remaining / rate) if rate > 0 else None
                 self._refresh_counts(job)
-                self._save(job)
+                try:
+                    self._save(job)
+                except OSError as error:
+                    # Progress only: the next save a second later catches up,
+                    # so a file held open by another program never fails the job
+                    if force:
+                        raise
+                    logger.warning(f"Job {job['id']}: progress not saved this time ({error})")
                 last_flush = time.time()
 
         def record(summaries, task):
