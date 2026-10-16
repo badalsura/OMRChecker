@@ -56,17 +56,19 @@ Current `cloudflared` builds need **Windows 10 or newer** (Go dropped Windows
 from a newer PC on the same network, or replace `cloudflared\cloudflared.exe`
 with an older release (Cloudflare may refuse releases older than a year).
 
-### App window (test builds)
+### App window
 
 `packaging/omr_app.py` opens our screens in their own window instead of a
 browser: no launcher dialog, no address bar, no reload, back, zoom or page
 menus. The engine runs on 127.0.0.1:8766 inside the app (local only) and stops
 when the window closes; starting the app again brings the open window to the
-front. Window size and place are kept in the data folder (`app_window.json`).
+front. Help, API docs and other pages of ours open in a second app window,
+other websites in the browser. Window size and place are kept in the data
+folder (`app_window.json`).
 
 The window is Microsoft WebView2 (pywebview 4.4.1, `requirements-app.txt`;
-needs .NET Framework 4.7.2+). `.github/workflows/build-app-test.yml` builds it
-twice (no OCR models in these test builds):
+needs .NET Framework 4.7.2+; the app says so, with the download page, when it
+or WebView2 is missing). The app build comes in two zips:
 
 | | Modern (Windows 10/11) | Legacy (Windows 7/8.1) |
 |---|---|---|
@@ -74,11 +76,10 @@ twice (no OCR models in these test builds):
 | Chromium | current | 109 |
 
 Both run the same screens, so the screens must keep working on Chromium 109.
-
 Microsoft's page lists only the newest two Fixed Version runtimes, so the
-legacy build takes runtime 109 from a URL (default: an archive copy) and refuses it
-unless every .exe and .dll in it carries a valid Microsoft signature (Google
-for widevinecdm.dll, the video DRM module Edge ships).
+build takes runtime 109 from an archive copy and refuses it unless every .exe
+and .dll in it carries a valid Microsoft signature (Google for
+widevinecdm.dll, the video DRM module Edge ships).
 
 ### Browser requirements
 
