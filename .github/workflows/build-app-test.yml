@@ -77,10 +77,12 @@ jobs:
           $version = $exe.VersionInfo.ProductVersion
           Write-Host "Runtime version $version"
           if (-not $version.StartsWith("109.")) { Write-Error "Expected runtime 109, got $version"; exit 1 }
-          # The .cab may come from a mirror: every program file must be signed by Microsoft
+          # The .cab may come from a mirror: every program file must be signed by
+          # Microsoft (Widevine, the video DRM module Edge ships, by Google)
           $bad = Get-ChildItem $exe.Directory.FullName -Recurse -Include *.exe,*.dll | ForEach-Object {
             $sig = Get-AuthenticodeSignature $_.FullName
-            if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") { "$($_.Name): $($sig.Status) $($sig.SignerCertificate.Subject)" }
+            $signer = if ($_.Name -eq "widevinecdm.dll") { "O=Google LLC" } else { "O=Microsoft Corporation" }
+            if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch $signer) { "$($_.Name): $($sig.Status) $($sig.SignerCertificate.Subject)" }
           }
           if ($bad) { $bad | Write-Host; Write-Error "Files without a valid Microsoft signature"; exit 1 }
           Move-Item $exe.Directory.FullName build\webview2

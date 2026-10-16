@@ -76,7 +76,8 @@ builds both; no OCR models in these test builds):
 
 Microsoft's page lists only the newest two Fixed Version runtimes, so the
 build takes runtime 109 from a URL (default: an archive copy) and refuses it
-unless every .exe and .dll in it carries a valid Microsoft signature.
+unless every .exe and .dll in it carries a valid Microsoft signature (Google
+for widevinecdm.dll, the video DRM module Edge ships).
 
 ### Browser requirements
 
