@@ -375,6 +375,9 @@ def parse_args(argv=None):
     parser.add_argument("--data-dir", help="data folder (default: as the launcher)")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--version", action="store_true")
+    parser.add_argument(
+        "--selftest", action="store_true", help="headless engine check (as the launcher's); result in the exit code and app.log"
+    )
     return parser.parse_args(argv)
 
 
@@ -391,6 +394,10 @@ def main(argv=None):
         stream = open(log_path(), "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stdout or stream
         sys.stderr = sys.stderr or stream
+
+    if args.selftest:
+        base.configure_environment()
+        return base.selftest(workers=args.workers or 2)
 
     instance = {}
     if not claim_single_instance(lambda: instance.get("show", lambda: None)()):

@@ -285,45 +285,58 @@ dist\OMRChecker\OMRChecker.exe --selftest
 Optional: put an icon at `packaging\omr.ico`, and Tesseract at `packaging\tesseract\`.
 
 GitHub Actions (`.github/workflows/build-windows.yml`) does the same on every
-`v*` tag or manual run and uploads the zip and the onefile exe as artifacts.
+`v*` tag or manual run. Its **build** input picks what is built:
+
+| Build | For | Artifacts | Installer |
+| --- | --- | --- | --- |
+| `app` | distribution: the app window (`OMR_APP=1`, packaging/omr_app.py) | `OMRChecker-app`: `OMRChecker-app-modern-win64.zip` (Windows 10/11), `OMRChecker-app-legacy-win64.zip` (Windows 7/8.1, WebView2 109 inside) | `OMRChecker-setup-*.exe` |
+| `server` | our own use: the launcher with remote access, LAN serving, `--bulk`, `--selftest` and every later server feature | `OMRChecker-server`: portable zip and onefile exe (**mode** input) | `OMRChecker-server-setup-*.exe` |
+| `all` (default) | both | both | both |
+
 Note: GitHub's runners are Windows Server 2022, so CI proves the build and the
 self test, not Windows 7 itself; run `OMRChecker.exe --selftest` once on a real
 Windows 7 machine before rolling out.
 
-### Online installer
+### Online installers
 
 A normal installed program instead of the portable folder: Start menu entry,
 optional desktop icon, uninstaller in Windows Settings. `Setup.exe` is small;
-while installing it downloads three files from the GitHub release, checks each
-one's SHA-256 and unpacks it into the program folder:
+while installing it downloads its files from the GitHub release, checks each
+one's SHA-256 and unpacks it into the program folder. The app's files are
+`OMRChecker-*`, the server's `OMRChecker-server-*`:
 
 | Download | Contents |
 | --- | --- |
-| `OMRChecker-app.zip` | the program itself (Python runtime, engine, web GUI) |
-| `OMRChecker-ocr-models.zip` | Tesseract and PaddleOCR models, `ocr_build.json` |
-| `OMRChecker-tools.zip` | `tesseract\`, `cloudflared\` |
+| `*-program.zip` | the program itself (Python runtime, engine, screens) |
+| `*-ocr-models.zip` | Tesseract and PaddleOCR models, `ocr_build.json` |
+| `*-tools.zip` | `tesseract\` (server: and `cloudflared\`) |
+| `OMRChecker-webview2-109.zip` | app only, when needed: Windows 7/8.1, and Windows 10/11 without WebView2 |
+| `ndp48-x86-x64-allos-enu.exe` | app only, when needed: Microsoft's .NET Framework 4.8, where .NET is older than 4.7.2 (Windows 7/8.1) |
 
-* Installs to `C:\Program Files\OMRChecker` for all users (admin), or, if
-  the user chooses "only for me", to their own programs folder.
+* The app installs to `C:\Program Files\OMRChecker`, the server to
+  `C:\Program Files\OMRChecker Server` (its own entry, so both can be
+  installed); "only for me" installs into the user's own programs folder.
+* .NET Framework 4.8 needs an admin install: with "only for me" on a PC that
+  needs it, Setup stops and says so. After installing it Setup asks to restart.
 * Data always goes to `%LOCALAPPDATA%\OMRChecker\omr_data` (the installer
   writes `installed.ini` next to the exe to say so), so upgrading or
   uninstalling never touches scans, templates or settings.
-* Without internet, put the three zips next to `Setup.exe`; they are used
-  instead of the downloads.
+* Offline installer: put the release's other files next to `Setup.exe`; they
+  are used instead of the downloads.
 * Running a newer `Setup.exe` upgrades in place.
 * Setup refuses a folder that already holds other files, because uninstalling
   removes the whole program folder.
 
-To publish one, push a `v*` tag, or run the workflow with **installer_release**
-set to a tag such as `v1.0.0`. The `installer` job splits the tested onedir
-build into the three zips, builds `Setup.exe` with Inno Setup 6.7.1
-(`packaging/installer/OMRChecker.iss`), publishes all four files as that
-**public** GitHub release, then installs from the release on the runner,
-runs `--selftest` and uninstalls again.
+To publish, push a `v*` tag, or run the workflow with **installer_release**
+set to a tag such as `v1.0.0`. The `installer` job (once per build) splits the
+tested onedir build into the zips, builds `Setup.exe` with Inno Setup 6.7.1
+(`packaging/installer/OMRChecker.iss`, `/DServer=1` for the server), publishes
+the files as that **public** GitHub release, then installs from the release on
+the runner, runs `--selftest` and uninstalls again.
 
 Windows 7: GitHub only accepts TLS 1.2. Windows 7 SP1 has TLS 1.2 but older,
 unpatched systems may not use it for downloads, so the download may fail there
-(not tested). Use the three zips next to `Setup.exe` on such PCs.
+(not tested). Use the offline installer on such PCs.
 
 ### Linux / source
 
