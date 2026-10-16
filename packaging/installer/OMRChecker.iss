@@ -227,6 +227,24 @@ begin
       'Run Setup again and choose to install for all users, or have an administrator install .NET Framework 4.8 first.';
 end;
 
+// The "Ready to install" page says what else Setup will do on this computer
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := '';
+  if MemoDirInfo <> '' then Result := Result + MemoDirInfo + NewLine + NewLine;
+  if MemoGroupInfo <> '' then Result := Result + MemoGroupInfo + NewLine + NewLine;
+  if MemoTasksInfo <> '' then Result := Result + MemoTasksInfo + NewLine + NewLine;
+  if DotNetNeeded or WebView2Needed then
+  begin
+    Result := Result + 'Also needed on this computer:' + NewLine;
+    if DotNetNeeded then
+      Result := Result + Space + 'Microsoft .NET Framework 4.8 (installed automatically; Windows may need to restart afterwards, and can take several minutes)' + NewLine;
+    if WebView2Needed then
+      Result := Result + Space + 'Microsoft Edge WebView2 Runtime 109 (placed in the program folder)' + NewLine;
+  end;
+end;
+
 function NeedRestart: Boolean;
 begin
   // .NET Framework usually finishes after a restart

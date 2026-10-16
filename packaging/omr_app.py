@@ -262,8 +262,76 @@ def _runtime_visible_to_pywebview(version):
         winreg.OpenKey, winreg.QueryValueEx = real_open, real_query
 
 
+class MissingPart(Exception):
+    """Something Windows must have for the window: shown to the user, not just logged."""
+
+    def __init__(self, message, url):
+        super().__init__(message)
+        self.url = url
+
+
+DOTNET_URL = "https://dotnet.microsoft.com/download/dotnet-framework/net48"
+WEBVIEW2_URL = "https://developer.microsoft.com/microsoft-edge/webview2/"
+
+
+def _registry_value(root, path, name):
+    import winreg
+
+    try:
+        with winreg.OpenKey(root, path) as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except OSError:
+        return None
+
+
+def check_windows_parts(runtime):
+    """.NET 4.7.2+ (pythonnet) and a WebView2 runtime, before loading either."""
+    if sys.platform != "win32":
+        return
+    import winreg
+
+    release = _registry_value(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full", "Release")
+    if not isinstance(release, int) or release < 461808:
+        raise MissingPart(
+            f"{base.DISPLAY_NAME} needs Microsoft .NET Framework 4.8, which is not installed on this computer.\n\n"
+            "Install it (an administrator may be needed, and Windows may ask to restart), then start the app again.\n\n"
+            "Open the download page now?",
+            DOTNET_URL,
+        )
+    if runtime:
+        return
+    client = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    found = [
+        _registry_value(winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\" + client, "pv"),
+        _registry_value(winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\" + client, "pv"),
+        _registry_value(winreg.HKEY_CURRENT_USER, "Software\\" + client, "pv"),
+    ]
+    if not any(v and v != "0.0.0.0" for v in found):
+        raise MissingPart(
+            f"{base.DISPLAY_NAME} needs the Microsoft Edge WebView2 Runtime, which is not installed on this computer.\n\n"
+            "Install the Evergreen runtime, or use the legacy download of the app, which carries its own.\n\n"
+            "Open the download page now?",
+            WEBVIEW2_URL,
+        )
+
+
+def tell_user(message, url=None):
+    """A plain Windows message box (a windowed exe has no console)."""
+    print(message, file=sys.stderr)
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    MB_OK, MB_YESNO, MB_ICONWARNING, IDYES = 0x0, 0x4, 0x30, 6
+    style = (MB_YESNO if url else MB_OK) | MB_ICONWARNING
+    answer = ctypes.windll.user32.MessageBoxW(None, message, base.DISPLAY_NAME, style)
+    if url and answer == IDYES:
+        open_outside(url)
+
+
 def run_webview2(engine, state, instance):
     runtime = webview2_runtime()
+    check_windows_parts(runtime)
     if runtime:
         allow_sandbox(runtime)
         os.environ["WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"] = str(runtime)
@@ -411,8 +479,12 @@ def main(argv=None):
     state = WindowState(data_dir)
     try:
         run_webview2(engine, state, instance)
+    except MissingPart as missing:
+        tell_user(str(missing), missing.url)
+        return 3
     except Exception:
         traceback.print_exc()
+        tell_user(f"{base.DISPLAY_NAME} could not open its window.\n\nDetails are in {log_path()}")
         return 1
     finally:
         state.save()
