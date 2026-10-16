@@ -112,6 +112,9 @@ TIMING_MARK_OPTIONS_SCHEMA = {
         # Mean residual (template px) of any page region above which the
         # sheet goes to review
         "maxRegionResidual": positive_number,
+        # Share (0-1) of timing marks + index points left unmatched above
+        # which the sheet goes to review
+        "maxUnmatchedShare": {"type": "number", "minimum": 0, "maximum": 1},
     },
 }
 

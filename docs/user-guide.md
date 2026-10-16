@@ -1635,14 +1635,14 @@ The side list shows each block with its border status (and "(bubbles)" when it w
 
 ### Alignment: lining each sheet up with the template
 
-Before any bubble is read, each scan is turned, shifted and stretched so that it matches the template page. Pick the method under **Options → Alignment**. The section title shows the current method, e.g. "Alignment · Timing tracks".
+Before any bubble is read, each scan is turned, shifted and stretched so that it matches the template page. Pick the method under **Options → Alignment**. The section title shows the current method, e.g. "Alignment · Timing tracks + index points".
 
 #### Alignment method
 
 | Choice | Best for | Needs |
 |---|---|---|
 | **None (sheets are already straight)** | Scans that are already perfectly straight and cropped to the page. | Nothing. Any shift in the scan shifts every bubble. |
-| **Timing tracks** | Forms with rows of solid black marks along the edges (most machine-read forms). The most precise and robust choice. | The tracks drawn in the track editor (or at least 4 index points). |
+| **Timing tracks + index points** | Forms with rows of solid black marks along the edges (most machine-read forms), with or without extra index points (corner squares, dots). The marks and the points are fitted together. The most precise and robust choice. | The tracks drawn in the track editor (or at least 4 index points). New templates flag a sheet when more than 15% of the marks and points together don't match (see `maxUnmatchedShare` below). |
 | **Index points only (no timing tracks)** | Forms without timing tracks that have a few distinct printed marks: corner squares of any size, dots, L-shaped corners. Works like corner markers, but each mark keeps its own size and shape and no marker picture is needed. | 4 or more index points (5 or more lets a wrong match be caught). Choosing it keeps index points already set, or fills in the marks the generator suggested; add more with **+ Add index point**. The panel shows how many points there are and warns below 4. Search radius and Max leftover error work as for tracks. |
 | **Corner markers** | Forms with four identical printed squares or symbols near the corners. | A picture of the marker, uploaded with the template files. |
 | **Page edges** | Scans that show background around the paper. | A visible paper edge. |
@@ -1672,6 +1672,7 @@ Expert options with no form control (set in **Edit JSON**, inside the timing-tra
 | `jointFit` | on | Fit the page to the index points, timing marks and printed block corners together. |
 | `trimMargins` | on | Report and trim scan margins that lie outside the template page. |
 | `maxRegionResidual` | off | Send a sheet to review (flag `alignment_residual`) when the leftover error in any part of the page is above this many pixels. |
+| `maxUnmatchedShare` | off (0.15 in templates made in the editor) | Send a sheet to review (flag `alignment_unmatched`) when more than this share of the timing marks and index points together could not be matched. 0.15 means 15%: with 36 marks and 4 index points (40 in all), a sheet with 7 or more unmatched is flagged. In the editor, tick **Flag sheets where too many marks and index points don't match** to turn it on (15% to start) and change the % in **Unmatched share that flags a sheet (%)** under it; untick it to turn the flag off. Each sheet's counts are kept in its geometry as `unmatched_points`. |
 
 #### Corner markers options
 
@@ -1759,7 +1760,7 @@ With 4 or more index points and no tracks, the template switches to aligning on 
 | Set up with | **+ Add track** | **+ Add index point**, Calibrate on samples | Marker image file and Marker width share |
 | Choose it when | The form has tracks | The form has no tracks but has a few printed marks, or to make tracks safer | The form only has four matching corner symbols and you have a picture of one |
 
-A generated template may set four corner squares up as a short track called `corners` under **Timing tracks**; that works like corner markers but is matched like a track.
+A generated template may set four corner squares up as a short track called `corners` under **Timing tracks + index points**; that works like corner markers but is matched like a track.
 
 ### Groups (grouped fields)
 
@@ -1973,7 +1974,7 @@ They work while the Templates tab is open and you are not typing in a box (Ctrl+
 
 ### How to add timing tracks
 
-1. Under **Options → Alignment**, choose **Timing tracks**.
+1. Under **Options → Alignment**, choose **Timing tracks + index points**.
 2. Click **+ Add track** and drag a box over the whole strip of marks on one edge. Repeat for each track (usually left and right, sometimes top and bottom).
 3. Check the numbers: every printed mark should have an orange rectangle. Use **Edit marks** to remove false marks or add missed ones.
 4. Check **Mark width** / **Mark height** against the printed marks.
@@ -1981,7 +1982,7 @@ They work while the Templates tab is open and you are not typing in a box (Ctrl+
 
 ### How to add index points
 
-1. Make sure the Alignment method is **Timing tracks** (with or without tracks).
+1. Make sure the Alignment method is **Timing tracks + index points** (with or without tracks).
 2. Click **+ Add index point**. Suggested marks are circled.
 3. Click each printed mark you want to use, or drag a box around a small one. Spread them over the page, at least one in each corner area, and include one that has no twin at the opposite corner so upside-down sheets can be told apart.
 4. Without tracks, add at least 4 (5 or more is safer). The template then aligns on them.
@@ -2151,6 +2152,7 @@ These always send their field, zone or sheet to review when they happen. Many on
 | `orientation_ambiguous` | sheet | timing-mark alignment | Another orientation of the sheet fits the timing marks almost as well. |
 | `registration_suspect` | sheet | timing-mark alignment, or a grid-fit minimum set | The marks fit almost as well slid by one mark, or the bubbles sit poorly on the grid. |
 | `alignment_residual` | sheet | `maxRegionResidual` set | Part of the sheet is still off the template after alignment by more than that. |
+| `alignment_unmatched` | sheet | `maxUnmatchedShare` set | More than that share of the timing marks and index points together could not be matched. |
 | `index_point_missing` | sheet | required index points | A required index point was not found. |
 | `sent_back` | field or zone | always | An administrator sent the sheet back to review and this value had been changed. |
 

@@ -421,7 +421,7 @@ class GeometryRecorder:
             "blocks": blocks or {},
             "steps": [dict(s) for s in self.steps],
         }
-        for key in ("index_points", "alignment_method"):
+        for key in ("index_points", "alignment_method", "unmatched_points"):
             if key in self.info:
                 geometry[key] = self.info[key]
         return geometry
