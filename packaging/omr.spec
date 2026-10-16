@@ -12,6 +12,9 @@ Build mode via the OMR_BUILD_MODE environment variable:
 
 OMR_CONSOLE=0 hides the console window (the Tk window is the UI); default 1
 keeps it so --bulk / --selftest print progress.
+OMR_APP=1 builds the app window (packaging/omr_app.py, WebView2) instead of the
+launcher; no console, no Tk. The legacy build's WebView2 runtime 109 is not
+bundled here: the build copies it into dist/OMRChecker/webview2.
 OMR_NO_TK=1 leaves Tk out (the launcher then runs as a console server); needed
 with Python builds whose Tcl/Tk is linked statically (e.g. uv's standalone
 CPython on Linux), which PyInstaller 5.x cannot collect.
@@ -33,6 +36,11 @@ MODE = os.environ.get("OMR_BUILD_MODE", "onedir").lower()
 CONSOLE = os.environ.get("OMR_CONSOLE", "1") != "0"
 WITH_TK = os.environ.get("OMR_NO_TK", "0") in ("0", "", "false")
 NAME = "OMRChecker"
+APP = os.environ.get("OMR_APP", "0") not in ("0", "", "false")
+if APP:
+    CONSOLE = False
+    WITH_TK = False
+ENTRY = "omr_app.py" if APP else "omr_desktop.py"
 
 
 def tree(source, target, skip=("node_modules", "test", "tests", "__pycache__", ".git")):
@@ -75,8 +83,10 @@ datas += tree("packaging/tesseract", "tesseract", skip=())
 # OCR models and choices from packaging/fetch_ocr_models.py (packaging/ocr_models.md)
 datas += tree("packaging/tessdata", "tessdata", skip=())
 datas += tree("packaging/models/paddleocr", "models/paddleocr", skip=())
-# cloudflared for the launcher's "Start remote" (packaging/prepare_bundle.py)
-datas += tree("packaging/cloudflared", "cloudflared", skip=())
+# cloudflared for the launcher's "Start remote" (packaging/prepare_bundle.py):
+# a server-build feature, so the app leaves it out even when it is in place
+if not APP:
+    datas += tree("packaging/cloudflared", "cloudflared", skip=())
 if (ROOT / "packaging" / "ocr_build.json").is_file():
     datas.append((str(ROOT / "packaging" / "ocr_build.json"), "."))
 datas += optional(collect_data_files, "zxingcpp")
@@ -139,10 +149,18 @@ excludes = [
 ]
 if not WITH_TK:
     excludes += ["tkinter", "_tkinter"]
+if APP:
+    # pywebview 4.4.1 + pythonnet: WebView2 through WinForms
+    hiddenimports += ["omr_desktop", "webview", "webview.platforms.winforms", "webview.platforms.edgechromium", "clr"]
+    hiddenimports += optional(collect_submodules, "webview.platforms")
+    datas += optional(collect_data_files, "webview")
+    binaries += optional(collect_dynamic_libs, "webview")
+    # not the Qt/GTK/CEF back ends pywebview can also load
+    excludes += ["webview.platforms.qt", "webview.platforms.gtk", "webview.platforms.cef", "webview.platforms.cocoa"]
 
 a = Analysis(  # noqa: F821
-    [str(ROOT / "packaging" / "omr_desktop.py")],
-    pathex=[str(ROOT)],
+    [str(ROOT / "packaging" / ENTRY)],
+    pathex=[str(ROOT), str(ROOT / "packaging")],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

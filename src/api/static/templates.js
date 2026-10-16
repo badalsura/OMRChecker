@@ -1,5 +1,5 @@
 // Templates tab: list, upload, auto-generate, and open the editor.
-import { api, chip, displayName, el, errorList, fmtTime, loadTemplates, on, toast, url } from "./api.js";
+import { api, chip, displayName, el, errorList, fileStem, fmtTime, loadTemplates, on, saveButton, toast, url } from "./api.js";
 import { TemplateEditor } from "./editor.js";
 import { duplicateTemplate, renameTemplate } from "./template_ops.js";
 
@@ -40,7 +40,7 @@ function renderTable(templates) {
           { class: "actions" },
           el("button", { class: "small primary", onclick: () => openEditor(t.id) }, "Edit"),
           el("a", { class: "button small", href: url(`/templates/${t.id}/layout.png`), target: "_blank" }, "Layout"),
-          el("a", { class: "button small", href: url(`/templates/${t.id}/package`), download: "", title: "Download this template as one .zip to give to another system; they import it with Upload" }, "Download"),
+          saveButton(`/templates/${t.id}/package`, `${fileStem(t.name || t.id)}.omr-template.zip`, "Download", { class: "small", title: "Save this template as one .zip to give to another system; they import it with Upload" }),
           el("button", { class: "small", title: "Copy this layout (template, config, answer key, reference image) under a new name and open the copy", onclick: async () => { const copy = await duplicateTemplate(t); if (copy) openEditor(copy.id); } }, "Duplicate"),
           el("button", { class: "small", title: "Change the name; jobs, results and review items stay linked", onclick: () => renameTemplate(t) }, "Rename"),
           el(
@@ -88,6 +88,8 @@ async function upload() {
   const form = new FormData();
   const name = document.getElementById("tpl-name").value.trim();
   if (name) form.append("name", name);
+  // New templates start with every optional review flag off
+  form.append("flags_off", "true");
   for (const f of files) form.append("files", f, f.name);
   try {
     const detail = await api("/templates", { method: "POST", form });

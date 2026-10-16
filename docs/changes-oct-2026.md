@@ -395,6 +395,10 @@ this station.
 - The sign-in page shows the full logo with "Technological Solutions & Consulting" (`branding/logo.png`, `logo` in `branding.json`, `GET /branding` returns `logo_url`).
 - In dark mode the icon and logo sit on a white tile, so the grey and navy stay readable.
 
+## Save As for every download
+
+- Export, job CSV, template package, scan results CSV and editor JSON downloads open a Save As box (Chrome, Edge and the app window), then stream the file from the server straight into the chosen file. Closing the box saves nothing. Firefox and Safari keep their normal download.
+
 ## New settings at a glance
 
 | Setting | Where | Default | What it does |

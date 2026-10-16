@@ -161,6 +161,8 @@ def test_flagged_group_review_item():
             "name": "Roll",
             "flags": ["multi_marked"],
             "fields": ["roll1", "roll2", "roll3"],
+            # Only the column that needs a look
+            "field_flags": {"roll3": ["multi_marked"]},
         }
     ]
     # Not repeated when a column is already in the review list
@@ -201,3 +203,43 @@ def test_reapply_records_groups_and_corrections_clear_them(tmp_path):
 def test_group_options_must_name_known_keys(tmp_path):
     with pytest.raises(Exception):
         make_engine(tmp_path, groupOptions={"Roll": {"blank": " "}})
+
+
+def test_multi_mark_flag_turned_off_does_not_flag_the_group(tmp_path):
+    """review_flags without multi_marked: the column keeps its multi
+    placeholder but neither it nor its group goes to review."""
+    engine = make_engine(tmp_path, groupOptions={"Roll": {}})
+    columns = copy.deepcopy(COLUMNS)
+    columns[2] = col("12", ["multi_marked"], review=False)
+    columns[3] = col("4")
+    _omr, fields = read(columns)
+    result = reapply_rules({"status": "ok", "fields": fields, "zones": {}}, engine.template)
+    assert result["groups"]["Roll"]["columns"][2] == {
+        "name": "roll3",
+        "state": "multi",
+        "flagged": False,
+    }
+    assert not result["groups"]["Roll"]["flagged"]
+    assert result["review"] == []
+    assert result["status"] == "ok"
+
+
+def test_results_mark_only_the_flagged_columns_of_a_group():
+    from src.api.results import group_highlights
+
+    groups = {
+        "Roll": {
+            "columns": [
+                {"name": "roll1", "state": "ok", "flagged": False},
+                {"name": "roll2", "state": "issue", "flagged": True},
+                {"name": "roll3", "state": "ok", "flagged": False},
+            ]
+        }
+    }
+    item = {"kind": "custom_label", "name": "Roll", "fields": ["roll1", "roll2", "roll3"]}
+    # A sheet read before review items named their flagged columns
+    marks = group_highlights({"groups": groups, "review": [item], "fields": {}})
+    assert sorted(marks) == ["roll2"]
+    item["field_flags"] = {"roll2": ["group_issue"]}
+    marks = group_highlights({"groups": groups, "review": [item], "fields": {}})
+    assert sorted(marks) == ["roll2"]

@@ -521,7 +521,10 @@ def test_generator_routes(tmp_path, spec, monkeypatch):
         assert response.status_code == 201, response.text
         detail = response.json()
         tid = detail["id"]
-        assert detail["config"] == {"review_params": {"max_unmarked_fill_ratio": 0.35}}
+        # A generated template starts with every optional review flag off
+        assert detail["config"] == {
+            "review_params": {"max_unmarked_fill_ratio": 0.35, "review_flags": []}
+        }
         assert detail["report"]["sheet_names"] == ["s1.png"]
         assert detail["report"]["labels"]["format"] == "xlsx"
         monkeypatch.delitem(sys.modules, "src.template_gen")

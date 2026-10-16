@@ -222,7 +222,7 @@ const NON_RIGID = [
 ];
 const ALIGN_METHODS = [
   ["", "None (sheets are already straight)"],
-  ["TimingMarkAlignment", "Timing tracks"],
+  ["TimingMarkAlignment", "Timing tracks + index points"],
   ["IndexPoints", "Index points only (no timing tracks)"],
   ["CropOnMarkers", "Corner markers"],
   ["CropPage", "Page edges"],
@@ -241,7 +241,7 @@ function defaultOptions(name, ed) {
   const ref = ed.detail?.reference_url ? (ed.doc.preProcessors || []).map((p) => p.options?.reference || p.options?.relativePath).find(Boolean) || "reference.png" : "reference.png";
   switch (name) {
     case "TimingMarkAlignment":
-      return { tracks: {}, markDimensions: [20, 10] };
+      return { tracks: {}, markDimensions: [20, 10], maxUnmatchedShare: DEFAULT_UNMATCHED_SHARE };
     case "CropOnMarkers":
       return { relativePath: "omr_marker.jpg", sheetToMarkerWidthRatio: 17 };
     case "CropPage":
@@ -254,6 +254,10 @@ function defaultOptions(name, ed) {
       return {};
   }
 }
+
+const UNMATCHED_SWITCH = "Flag sheets where too many marks and index points don't match";
+const UNMATCHED_LABEL = "Unmatched share that flags a sheet (%)";
+const DEFAULT_UNMATCHED_SHARE = 0.15;
 
 export function renderAlignment(ed) {
   const doc = ed.doc;
@@ -303,6 +307,20 @@ export function renderAlignment(ed) {
     });
   const o = proc?.options || {};
   const num = (label, key, placeholder, step = "any") => labeled(label, numberInput(o[key], (v) => setOpt(key, v), placeholder, step), "align");
+  // The switch turns the flag on (15% unless a % was set before) or off;
+  // the % is stored as a share (15 -> 0.15) and is shown only while it is on
+  const unmatchedShare = () => {
+    const on = o.maxUnmatchedShare != null;
+    const box = el("div", {}, ticked(UNMATCHED_SWITCH, on, (v) => {
+      if (!v) ed.lastUnmatchedShare = o.maxUnmatchedShare;
+      setOpt("maxUnmatchedShare", v ? ed.lastUnmatchedShare ?? DEFAULT_UNMATCHED_SHARE : null);
+    }, "align"));
+    if (on) {
+      const percent = Math.round(o.maxUnmatchedShare * 1000) / 10;
+      box.append(labeled(UNMATCHED_LABEL, numberInput(percent, (v) => setOpt("maxUnmatchedShare", v === null ? DEFAULT_UNMATCHED_SHARE : Math.min(100, Math.max(0, v)) / 100), "15"), "align"));
+    }
+    return box;
+  };
   const tick = (label, key) => ticked(label, o[key], (v) => setOpt(key, v || null), "align");
   const text = (label, key, placeholder) => {
     const input = el("input", { value: o[key] ?? "", placeholder });
@@ -316,7 +334,8 @@ export function renderAlignment(ed) {
     body.push(
       el("div", { class: n >= 4 ? "muted small" : "chip error" }, `${n} index point(s)${n < 4 ? ": at least 4 are needed" : n < 5 ? ": 5 or more lets a wrong match be caught" : ""}. Add or edit them with the tools below.`),
       num("Search radius", "searchRadius", "default"),
-      num("Max leftover error", "maxResidual", "default")
+      num("Max leftover error", "maxResidual", "default"),
+      unmatchedShare()
     );
   } else if (proc?.name === "TimingMarkAlignment") {
     const tracks = Object.entries(o.tracks || {});
@@ -325,6 +344,7 @@ export function renderAlignment(ed) {
       num("Search radius", "searchRadius", "default"),
       num("Minimum matched marks", "minMatchedMarks", "default", "1"),
       num("Max leftover error", "maxResidual", "default"),
+      unmatchedShare(),
       // upside-down detection: the "Detect upside-down sheets" switch with the tracks below
       labeled(
         "Bend to fit the marks (nonRigid)",

@@ -27,7 +27,7 @@ from src.api.storage import read_json, write_json_atomic
 RECENT_LIMIT = 10
 MAX_FOLDERS = 1000
 COUNT_LIMIT = 5000  # entries looked at per folder in a listing
-CHECK_LIMIT = 200000  # files looked at by a (recursive) check
+CHECK_LIMIT = 10_000_000  # entries (files and folders) looked at by a (recursive) check: 1 crore
 IMAGE_SUFFIXES = INPUT_SUFFIXES - {".pdf"}
 
 

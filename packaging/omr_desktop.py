@@ -141,10 +141,12 @@ def pick_port(host, preferred):
 
 
 # --------------------------------------------------------------------- server
-def build_app(data_dir, workers, api_key):
+def build_app(data_dir, workers, api_key, desktop=False):
     from src.api.app import create_app
 
     overrides = {"workers": workers}
+    if desktop:
+        overrides["desktop"] = True
     if api_key:
         overrides["api_key"] = api_key
     # create_app serves the bundled in-browser reader at /browser

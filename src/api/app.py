@@ -345,10 +345,17 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             ..., description="template.json plus assets, or one .zip of the folder"
         ),
         name: Optional[str] = Form(None),
+        flags_off: bool = Form(
+            False,
+            description="Start with every optional review flag off unless config.json "
+            "chooses its own (the screens send true)",
+        ),
     ):
         staged = [(upload.filename or "file", read_upload(upload)) for upload in files]
         try:
-            template_id, _ = ctx.templates.create_from_files(name, staged)
+            template_id, _ = ctx.templates.create_from_files(
+                name, staged, flags_off=flags_off
+            )
         except TemplateError as error:
             return JSONResponse(
                 status_code=422, content={"detail": str(error), "errors": error.errors}
@@ -562,6 +569,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 name or "generated",
                 staged,
                 status="draft",
+                flags_off=True,
                 extra={
                     "report": report,
                     "generated": True,
@@ -991,7 +999,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         files: Optional[List[UploadFile]] = File(None),
         folder: Optional[str] = Form(None, description="Server-side folder to read"),
         recursive: bool = Form(True),
-        save_images: str = Form(SAVE_REVIEW),
+        save_images: str = Form(SAVE_NONE),
         workers: Optional[int] = Form(None),
         prefetch: Optional[int] = Form(
             None, ge=0, le=10000, description="Files read into memory ahead of the workers (0 = off)"

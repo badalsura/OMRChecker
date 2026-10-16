@@ -93,6 +93,9 @@ class TimingMarkAlignment(ImagePreprocessor):
         self.joint_fit = options.get("jointFit", True)
         self.trim_margins = options.get("trimMargins", True)
         self.max_region_residual = options.get("maxRegionResidual")
+        # Review the sheet when more than this share of the timing marks and
+        # index points together went unmatched (0.15 = 15%)
+        self.max_unmatched_share = options.get("maxUnmatchedShare")
         self.mark_w, self.mark_h = options["markDimensions"]
         self.size_tolerance = options.get("sizeTolerance", DEFAULT_SIZE_TOLERANCE)
         self.search_radius = options.get(
@@ -1091,6 +1094,20 @@ class TimingMarkAlignment(ImagePreprocessor):
                         "missing": missing,
                     }
                 )
+        unmatched = self.unmatched_points(fit)
+        if unmatched:
+            info["unmatched_points"] = unmatched
+            share = self.max_unmatched_share
+            if share is not None and unmatched["unmatched"] > share * unmatched["total"]:
+                review.append(
+                    {
+                        "kind": "sheet",
+                        "name": "alignment_unmatched",
+                        "flags": ["alignment_unmatched"],
+                        **unmatched,
+                        "max_unmatched_share": share,
+                    }
+                )
         if len(self.expected):
             review.extend(self.ambiguity_review(fit))
         if self.trim_margins:
@@ -1098,6 +1115,22 @@ class TimingMarkAlignment(ImagePreprocessor):
         if review:
             info["review"] = review
         return info
+
+    def unmatched_points(self, fit):
+        """Timing marks and index points the fit could not match, of all of them."""
+        marks = int(len(self.expected))
+        points = len(self.index_points)
+        total = marks + points
+        if not total:
+            return None
+        missed = (marks - int(fit.get("matched", 0))) + (
+            points - int(fit.get("index_found", 0)) if points else 0
+        )
+        return {
+            "unmatched": int(max(missed, 0)),
+            "total": int(total),
+            "share": round(max(missed, 0) / total, 4),
+        }
 
     def margin_trim(self, image, homography):
         """Template px of the scan that lie outside the template page, per side."""

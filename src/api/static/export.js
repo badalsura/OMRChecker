@@ -1,6 +1,6 @@
 // Export dialog: pick a format, build an export profile (columns, names, order,
 // types), preview it and run the export on the server (CSV, XLSX, PDF, SQL).
-import { api, chip, el, emit, fmtDuration, fmtTime, modal, on, safeStorage, toast, url } from "./api.js";
+import { api, chip, el, emit, fmtDuration, fmtTime, modal, on, safeStorage, saveButton, toast } from "./api.js";
 import { openBrowser } from "./folders.js";
 
 const TYPES = ["text", "int", "decimal", "date", "bool"];
@@ -37,7 +37,7 @@ export async function refreshExports() {
     const start = record.started_at || record.created_at;
     const actions = [];
     if (record.state === "completed") {
-      actions.push(el("a", { class: "button small primary", href: url(record.download_url), download: record.file_name }, "Download"));
+      actions.push(saveButton(record.download_url, record.file_name, "Save as…", { class: "small primary", title: "Choose where to save the file" }));
     }
     if (record.state === "paused") {
       actions.push(el("button", { class: "small primary", title: "Carry on from where it stopped", onclick: () => exportAction(record, "resume") }, "Resume"));
@@ -363,7 +363,7 @@ async function openExport(filters) {
       toast("Export saved", "ok");
       return;
     }
-    statusBox.append(el("a", { class: "button primary", href: url(record.download_url), download: record.file_name }, `Download ${record.file_name} (${record.rows} rows)`));
+    statusBox.append(saveButton(record.download_url, record.file_name, `Save ${record.file_name} as… (${record.rows} rows)`, { class: "primary" }));
     toast("Export ready", "ok");
   };
 

@@ -255,7 +255,7 @@ class ResultsService:
             previous = read_json(path)
             if previous is not None:
                 UndoStack(path.parent).push(previous, action, user or DEFAULT_USER)
-        write_json_atomic(path, result)
+        write_json_atomic(path, result, compact=True)
 
     def undo(self, scan_id, user=None, direction="undo"):
         """Undo (or redo) the last change of a sheet. Returns (result, step)."""
@@ -266,7 +266,9 @@ class ResultsService:
             restored, step = stack.move(current, user, direction)
             if restored is None:
                 raise ResultsError(f"Nothing to {direction} on this sheet", 409)
-            write_json_atomic(self.result_path(scan_id), restored)
+            # Undo and redo are changes: the sheet waits for approval again
+            restored.pop("approved", None)
+            write_json_atomic(self.result_path(scan_id), restored, compact=True)
             self.ctx.index.add_scans([{**summarize(restored), "read_review": None}])
             self.ctx.index.set_scan_state(restored)
             self.ctx.index.sync_review_items(restored)
@@ -674,6 +676,8 @@ class ResultsService:
     def finish_edit(self, result, resolved, action="correction", user=None):
         """Recompute responses/score/status and persist file + index."""
         template_id = result.get("template_id")
+        # Any change takes back the administrator's approval
+        result.pop("approved", None)
         try:
             with self.engines.engine(result) as (engine, _):
                 recompute(result, engine)
@@ -738,6 +742,7 @@ class ResultsService:
             result = self.load(scan_id)
             if not verified:
                 was = result.pop("verified", None)
+                result.pop("approved", None)
                 self.save(result, "unverify" if was else None, user)
                 self.ctx.index.set_scan_state(result)
                 self.ctx.index.set_outcomes(scan_id, [])
@@ -778,6 +783,21 @@ class ResultsService:
             self.ctx.data.training, result, events, self.aligned_for_training(scan_id)
         )
         return result, records
+
+    def approve(self, scan_id, user=None):
+        """The administrator's second check of a sheet a reviewer verified or
+        changed. A sheet nobody verified yet is verified first."""
+        user = user or DEFAULT_USER
+        if not self.load(scan_id).get("verified"):
+            self.verify(scan_id, user)
+        with self.ctx.scan_lock(scan_id):
+            result = self.load(scan_id)
+            if not result.get("verified"):
+                raise ResultsError("The sheet changed meanwhile; open it again", 409)
+            result["approved"] = {"by": user, "at": time.time()}
+            self.save(result, "approve", user)
+            self.log_activity(result, "approved", user)
+        return result
 
     # ---- regrade -------------------------------------------------------------
     def regrade(
@@ -1090,19 +1110,34 @@ def group_highlights(result):
         if reason not in reasons:
             reasons.append(reason)
 
-    for group, details in (result.get("groups") or {}).items():
+    groups = result.get("groups") or {}
+
+    def flagged_columns(details):
+        # Sheets read before columns carried "flagged" go by their state
+        return [
+            column.get("name")
+            for column in details.get("columns") or []
+            if isinstance(column, dict)
+            and column.get("flagged", column.get("state") in ("multi", "issue"))
+        ]
+
+    for group, details in groups.items():
         if not isinstance(details, dict):
             continue
         for column in details.get("columns") or []:
-            if isinstance(column, dict) and column.get("state") in ("multi", "issue"):
+            if isinstance(column, dict) and column.get("name") in flagged_columns(details):
                 add(column.get("name"), f"{group}: {column['state']}")
     for item in result.get("review") or []:
         for column, flags in (item.get("field_flags") or {}).items():
             for flag in flags or ["needs_review"]:
                 add(column, f"{item.get('name')}: {flag}")
-        if not item.get("field_flags"):
-            for column in item.get("fields") or []:
-                add(column, f"{item.get('name')}: needs review")
+        if item.get("field_flags"):
+            continue
+        # A grouped value's item (older sheets): its flagged columns, not all
+        group = groups.get(item.get("name"))
+        columns = flagged_columns(group) if isinstance(group, dict) else []
+        for column in columns or item.get("fields") or []:
+            add(column, f"{item.get('name')}: needs review")
     return marks
 
 
@@ -1260,6 +1295,7 @@ def overlay_payload(result, info):
         "scoring": result.get("scoring") or None,
         "error": result.get("error"),
         "verified": result.get("verified"),
+        "approved": result.get("approved"),
         "corrected": is_corrected(result),
         "regrade": result.get("regrade"),
         "returned": result.get("returned"),

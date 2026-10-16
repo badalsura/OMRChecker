@@ -48,7 +48,7 @@ class UndoStack:
             "at": time.time(),
         }
         self.dir.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(self.dir / f"{step['id']}.json", result)
+        write_json_atomic(self.dir / f"{step['id']}.json", result, compact=True)
         zones = self.dir.parent / "zones"
         if action in IMAGE_ACTIONS and zones.is_dir():
             shutil.copytree(zones, self.dir / f"{step['id']}.zones")

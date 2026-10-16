@@ -287,6 +287,26 @@ def test_non_rigid_auto_and_region_residual(tmp_path, spec):
     assert strict.status == "needs_review"
 
 
+def test_unmatched_share_of_marks_and_index_points(tmp_path, spec):
+    image, _ = index_sheet(spec, 9)
+    # A point that is not printed: one of all the marks and points goes unmatched
+    ghost = {"name": "ghost", "center": [600, 600], "size": [16, 16], "shape": "circle", "required": False}
+    template = spec.to_template()
+    options = template["preProcessors"][0]["options"]
+    options["indexPoints"] = index_points([ghost])
+    options["maxUnmatchedShare"] = 0.5
+    loose = OMREngine(write(tmp_path, template, "a")).scan(image)
+    counts = loose.geometry["unmatched_points"]
+    assert counts["unmatched"] >= 1 and counts["total"] > counts["unmatched"]
+    assert not [r for r in loose.review if r.get("name") == "alignment_unmatched"]
+
+    options["maxUnmatchedShare"] = 0.0
+    strict = OMREngine(write(tmp_path, template, "b")).scan(image)
+    items = [r for r in strict.review if r.get("name") == "alignment_unmatched"]
+    assert items and items[0]["flags"] == ["alignment_unmatched"]
+    assert strict.status == "needs_review"
+
+
 # --------------------------------------------------------------------------- blocks
 
 

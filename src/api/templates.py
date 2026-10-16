@@ -32,6 +32,24 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 ASSET_SUFFIXES = IMAGE_SUFFIXES | {".json", ".onnx"}
 
 
+
+def flags_off_by_default(directory):
+    """A new template starts with every optional review flag off: its
+    config.json gets review_flags [] unless it already chose its own.
+    Templates made before keep the engine's default list."""
+    path = Path(directory) / "config.json"
+    try:
+        config = json.loads(path.read_text()) if path.exists() else {}
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return
+    if not isinstance(config, dict):
+        return
+    review = config.setdefault("review_params", {})
+    if not isinstance(review, dict) or "review_flags" in review:
+        return
+    review["review_flags"] = []
+    path.write_text(json.dumps(config, indent=2))
+
 class TemplateError(Exception):
     def __init__(self, message, errors=None):
         super().__init__(message)
@@ -167,9 +185,13 @@ class TemplateStore:
         return candidate
 
     # ---- create / update -------------------------------------------------
-    def create_from_files(self, name, files, validate=True, status="ready", extra=None):
+    def create_from_files(
+        self, name, files, validate=True, status="ready", extra=None, flags_off=False
+    ):
         """
         files: list of (filename, bytes). A single .zip is extracted.
+        flags_off: a template made on the screens starts with every optional
+        review flag off (see flags_off_by_default).
         Raises TemplateError with readable errors when the folder is invalid.
         """
         staged = {}
@@ -218,6 +240,8 @@ class TemplateStore:
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(content)
+            if flags_off:
+                flags_off_by_default(directory)
             errors = validate_template_dir(directory) if validate else []
             if errors and status != "draft":
                 raise TemplateError("Template is invalid", errors)

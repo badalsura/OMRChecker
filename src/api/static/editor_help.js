@@ -92,6 +92,8 @@ export const HELP = {
   "review:Min marked bubbles per sheet": "Flag the whole sheet when fewer bubbles are marked (catches pens removed by colour dropout). 0 = off.",
   "review:Flags that send a field to review": "Which problems put a field in the review queue. Unticked flags are still shown in the results.",
   // alignment
+  "align:Flag sheets where too many marks and index points don't match": "On: a sheet goes to review (flag alignment_unmatched) when more of its timing marks and index points, counted together, fail to match than the % below. Off: no such flag. New templates start with it on at 15%.",
+  "align:Unmatched share that flags a sheet (%)": "15 flags a sheet when more than 15 of every 100 timing marks and index points could not be matched. Lower is stricter. Cleared, it goes back to 15.",
   "align:Alignment method": "How each sheet is lined up with the template before reading. Timing tracks or corner markers are the most precise. Index points only: 4 or more distinct printed marks (squares, dots, corner markers of any size) matched without timing tracks; 5 or more lets a wrong match be caught.",
   "align:Search radius": "How far (template px) a mark may sit from where the template expects it.",
   "align:Minimum matched marks": "Fewer matched timing marks than this rejects the sheet.",

@@ -18,6 +18,8 @@ class Settings:
     data_dir: Path
     # Optional shared secret, sent by clients in the X-API-Key header
     api_key: Optional[str] = None
+    # Served to the app window only (packaging/omr_app.py): local, never an API key
+    desktop: bool = False
     # Worker processes for bulk jobs (0 = one per CPU core)
     workers: int = 0
     # Per uploaded file limit

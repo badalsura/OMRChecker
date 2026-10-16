@@ -2,6 +2,7 @@
 import { api, loadTemplates, setApiKey, setUser, state, toast } from "./api.js";
 import { initAuth, loadAuth, loginRequired, openAccountMenu, showLogin } from "./auth.js";
 import { initChanges, onShowChanges, syncChangesTab } from "./activity.js";
+import { initDesktop, isDesktop } from "./desktop.js";
 import { initExport, refreshExports } from "./export.js";
 import { initJobs, onShowJobs } from "./jobs.js";
 import { bindToolbar, initResults, onShowResults } from "./results.js";
@@ -53,6 +54,7 @@ async function applyBranding() {
 }
 
 async function init() {
+  if (isDesktop()) initDesktop();
   applyBranding();
   for (const button of document.querySelectorAll(".tabs button")) {
     button.addEventListener("click", () => showTab(button.dataset.tab));
@@ -75,6 +77,8 @@ async function init() {
     await boot();
   });
   await loadAuth();
+  // Every window of the app (also one opened from Help) behaves as the app
+  if (state.auth.desktop && !isDesktop()) initDesktop();
   showUser();
   initScan();
   initReview();
