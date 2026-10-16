@@ -408,3 +408,16 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .regrade-thumb { flex: none; text-align: center; }
 .regrade-thumb canvas { border: 1px solid var(--border); background: #fff; max-width: 220px; }
 @media (max-width: 700px) { .regrade-image { flex-direction: column; } }
+
+/* App window (packaging/omr_app.py): local only, so no API key; buttons, tabs
+   and pictures behave like an app's, not a web page's */
+body.desktop #api-key-btn { display: none; }
+body.desktop button,
+body.desktop .tabs,
+body.desktop label,
+body.desktop th,
+body.desktop h1,
+body.desktop h2,
+body.desktop h3 { user-select: none; -webkit-user-select: none; }
+body.desktop img,
+body.desktop a { -webkit-user-drag: none; }

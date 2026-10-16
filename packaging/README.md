@@ -56,6 +56,28 @@ Current `cloudflared` builds need **Windows 10 or newer** (Go dropped Windows
 from a newer PC on the same network, or replace `cloudflared\cloudflared.exe`
 with an older release (Cloudflare may refuse releases older than a year).
 
+### App window (test builds)
+
+`packaging/omr_app.py` opens our screens in their own window instead of a
+browser: no launcher dialog, no address bar, no reload, back, zoom or page
+menus. The engine runs on 127.0.0.1:8766 inside the app (local only) and stops
+when the window closes; starting the app again brings the open window to the
+front. Window size and place are kept in the data folder (`app_window.json`).
+
+Two window engines are being compared (`.github/workflows/build-app-test.yml`
+builds both; no OCR models in these test builds):
+
+| | WebView2 (`OMR_APP_ENGINE=webview2`) | Qt (`OMR_APP_ENGINE=qt`) |
+|---|---|---|
+| Chromium | 109 (Fixed Version runtime in `webview2\`) | 83 (Qt 5.15 WebEngine) |
+| Extra needs | .NET Framework 4.7.2+ | none |
+| Save As | the page's own Save As box | the window's Save As box |
+| Python pins | `requirements-app-webview2.txt` | `requirements-app-qt.txt` |
+
+Microsoft's page lists only the newest two Fixed Version runtimes, so the
+build takes runtime 109 from a URL (default: an archive copy) and refuses it
+unless every .exe and .dll in it carries a valid Microsoft signature.
+
 ### Browser requirements
 
 The GUI uses ES modules plus optional chaining (`?.`), nullish coalescing (`??`)

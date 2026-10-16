@@ -1,0 +1,4 @@
+# App window, Qt engine (packaging/omr_app.py), on top of requirements-win7.txt.
+# Qt 5.15 is the last Qt for Windows 7; its WebEngine is Chromium 83.
+PySide2==5.15.2.1                # cp35.cp36.cp37.cp38.cp39.cp310-none-win_amd64
+shiboken2==5.15.2.1

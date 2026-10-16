@@ -12,6 +12,9 @@ Build mode via the OMR_BUILD_MODE environment variable:
 
 OMR_CONSOLE=0 hides the console window (the Tk window is the UI); default 1
 keeps it so --bulk / --selftest print progress.
+OMR_APP_ENGINE=webview2|qt builds the app window (packaging/omr_app.py) with that
+window engine instead of the launcher; no console, no Tk. The WebView2 runtime
+is not bundled here: the build copies it into dist/OMRChecker/webview2.
 OMR_NO_TK=1 leaves Tk out (the launcher then runs as a console server); needed
 with Python builds whose Tcl/Tk is linked statically (e.g. uv's standalone
 CPython on Linux), which PyInstaller 5.x cannot collect.
@@ -33,6 +36,13 @@ MODE = os.environ.get("OMR_BUILD_MODE", "onedir").lower()
 CONSOLE = os.environ.get("OMR_CONSOLE", "1") != "0"
 WITH_TK = os.environ.get("OMR_NO_TK", "0") in ("0", "", "false")
 NAME = "OMRChecker"
+APP_ENGINE = os.environ.get("OMR_APP_ENGINE", "").lower()
+if APP_ENGINE not in ("", "webview2", "qt"):
+    raise SystemExit(f"OMR_APP_ENGINE must be webview2 or qt, not {APP_ENGINE!r}")
+if APP_ENGINE:
+    CONSOLE = False
+    WITH_TK = False
+ENTRY = "omr_app.py" if APP_ENGINE else "omr_desktop.py"
 
 
 def tree(source, target, skip=("node_modules", "test", "tests", "__pycache__", ".git")):
@@ -139,10 +149,22 @@ excludes = [
 ]
 if not WITH_TK:
     excludes += ["tkinter", "_tkinter"]
+if APP_ENGINE == "webview2":
+    # pywebview 4.4.1 + pythonnet: WebView2 through WinForms
+    hiddenimports += ["omr_desktop", "webview", "webview.platforms.winforms", "webview.platforms.edgechromium", "clr"]
+    hiddenimports += optional(collect_submodules, "webview.platforms")
+    datas += optional(collect_data_files, "webview")
+    binaries += optional(collect_dynamic_libs, "webview")
+    # not the Qt/GTK/CEF back ends pywebview can also load
+    excludes += ["webview.platforms.qt", "webview.platforms.gtk", "webview.platforms.cef", "webview.platforms.cocoa"]
+elif APP_ENGINE == "qt":
+    excludes.remove("PySide2")
+    hiddenimports += ["omr_desktop", "PySide2.QtWebEngineWidgets", "PySide2.QtWebEngineCore"]
+    excludes += ["webview"]
 
 a = Analysis(  # noqa: F821
-    [str(ROOT / "packaging" / "omr_desktop.py")],
-    pathex=[str(ROOT)],
+    [str(ROOT / "packaging" / ENTRY)],
+    pathex=[str(ROOT), str(ROOT / "packaging")],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

@@ -1,0 +1,10 @@
+# App window, WebView2 engine (packaging/omr_app.py), on top of requirements-win7.txt.
+# pywebview 4.4.1 ships the WebView2 SDK 1.0.1518.46, the one made for runtime 109
+# (the last runtime for Windows 7/8). Needs .NET Framework 4.7.2 or later.
+pywebview==4.4.1
+pythonnet==3.0.5                 # py3-none-any, Python 3.7-3.13
+clr-loader==0.2.7.post0
+cffi==1.17.1                     # cp38-win_amd64
+pycparser==2.22
+bottle==0.13.4
+proxy-tools==0.1.0               # source only (pure Python)
