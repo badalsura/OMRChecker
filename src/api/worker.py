@@ -344,6 +344,7 @@ def summarize(record):
         "created_at",
         "template_version",
         "primary_key",
+        "read_pass",
     )
     summary = {key: record.get(key) for key in keys}
     if record.get("key_fields"):

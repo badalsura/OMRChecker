@@ -235,6 +235,8 @@ _MIGRATIONS = {
     "primary_key": "TEXT",
     # The administrator's second check (Check changes > Approve)
     "approved": "INTEGER DEFAULT 0",
+    # Test mode (speed_params.fast_pass): "fast" kept, "full" read again
+    "read_pass": "TEXT",
 }
 _LATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS ix_scans_key ON scans(job_id, primary_key);
@@ -263,6 +265,7 @@ SCAN_COLUMNS = [
     "template_version",
     "primary_key",
     "approved",
+    "read_pass",
 ]
 
 
@@ -385,6 +388,7 @@ class ScanIndex:
                     record.get("template_version"),
                     record.get("primary_key"),
                     1 if record.get("approved") else 0,
+                    record.get("read_pass"),
                 )
             )
             for item in record.get("review") or []:
@@ -529,6 +533,15 @@ class ScanIndex:
             f"SELECT status, COUNT(*) AS n FROM scans {where} GROUP BY status", params
         )
         return {row["status"]: row["n"] for row in rows}
+
+    def read_pass_counts(self, job_id=None, template_id=None):
+        """{"fast": n, "full": n} of sheets read with the fast pass on."""
+        where, params = self._filters(job_id=job_id, template_id=template_id)
+        where = f"{where} AND read_pass IS NOT NULL" if where else "WHERE read_pass IS NOT NULL"
+        rows = self._query(
+            f"SELECT read_pass, COUNT(*) AS n FROM scans {where} GROUP BY read_pass", params
+        )
+        return {row["read_pass"]: row["n"] for row in rows}
 
     def pending_reviews(
         self,

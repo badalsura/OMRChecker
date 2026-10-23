@@ -1099,3 +1099,17 @@ def test_templates_made_on_the_screens_start_with_flags_off(tmp_path, spec):
         assert create("true", own)["review_params"]["review_flags"] == ["multi_marked"]
         # Programs through the API keep the engine's default list
         assert not (create("false") or {}).get("review_params")
+
+
+def test_read_pass_counts_per_job(tmp_path):
+    from src.api.worker import summarize
+
+    index = ScanIndex(tmp_path / "index.sqlite3")
+    records = [
+        {"scan_id": f"s{i}", "job_id": "j1", "template_id": "t", "status": "ok", "read_pass": rp}
+        for i, rp in enumerate(["fast", "fast", "full", None])
+    ]
+    index.add_scans([summarize(r) for r in records])
+    assert index.read_pass_counts(job_id="j1") == {"fast": 2, "full": 1}
+    assert index.read_pass_counts(job_id="other") == {}
+    index.close()

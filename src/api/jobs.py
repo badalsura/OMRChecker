@@ -548,6 +548,12 @@ class JobManager:
     def _refresh_counts(self, job):
         job["counts"] = self.index.status_counts(job_id=job["id"])
         job["pages"] = sum(job["counts"].values())
+        # Fast pass (test mode): sheets kept from the half-size read vs read again in full
+        passes = self.index.read_pass_counts(job_id=job["id"])
+        if passes:
+            job["read_passes"] = {"fast": passes.get("fast", 0), "full": passes.get("full", 0)}
+        else:
+            job.pop("read_passes", None)
 
     def _run(self, job):
         # Clock for the job's time taken and live speed: starts before the

@@ -120,7 +120,7 @@ export async function refreshJobs() {
         el("td", {}, el("div", {}, job.name || job.id.slice(0, 8)), el("div", { class: "muted small" }, job.label || (job.source === "folder" ? job.folder || "folder" : job.source === "batch" ? "camera / single uploads" : "upload"))),
         el("td", {}, names[job.template_id] || job.template_id),
         el("td", {}, chip(job.state, job.state)),
-        el("td", {}, el("div", { class: "progress" }, el("div", { style: { width: `${pct}%` } })), el("div", { class: "muted small" }, `${job.processed_files || 0} / ${total} files · ${pct}%`)),
+        el("td", {}, el("div", { class: "progress" }, el("div", { style: { width: `${pct}%` } })), el("div", { class: "muted small" }, `${job.processed_files || 0} / ${total} files · ${pct}%`), fastPassLine(job)),
         el("td", {}, counts.ok || 0),
         el("td", {}, counts.needs_review || 0),
         el("td", {}, counts.error || 0),
@@ -161,6 +161,18 @@ export async function refreshJobs() {
 }
 
 // Delete a job and every result it produced, after a confirmation
+// Test mode (fast pass): how many sheets kept the half-size read
+function fastPassLine(job) {
+  const p = job.read_passes;
+  if (!p || !(p.fast + p.full)) return null;
+  const share = Math.round((100 * p.fast) / (p.fast + p.full));
+  return el(
+    "div",
+    { class: "muted small", title: "Fast pass (Speed › test mode): sheets whose half-size read was kept, and sheets it was not good enough for, which were read again in full" },
+    `Fast pass: ${p.fast.toLocaleString()} kept (${share}%) · ${p.full.toLocaleString()} read again in full`
+  );
+}
+
 async function jobAction(job, action) {
   try {
     await api(`/jobs/${job.id}/${action}`, { method: "POST" });
