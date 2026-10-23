@@ -163,6 +163,11 @@ class Context:
         return image
 
 
+def form_flag(value):
+    """A true/false form field sent as text ("true", "false", "1", "0", "on", "off")."""
+    return str(value).strip().lower() not in ("false", "0", "no", "off", "")
+
+
 def has_crops(result):
     """Crops come from the stored aligned image or from the original + geometry."""
     return bool(result.get("has_images") or result.get("geometry"))
@@ -998,14 +1003,14 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         template_id: str = Form(...),
         files: Optional[List[UploadFile]] = File(None),
         folder: Optional[str] = Form(None, description="Server-side folder to read"),
-        recursive: bool = Form(True),
+        recursive: str = Form("true", description="false: only the folder's own files"),
         save_images: str = Form(SAVE_NONE),
         workers: Optional[int] = Form(None),
         prefetch: Optional[int] = Form(
             None, ge=0, le=10000, description="Files read into memory ahead of the workers (0 = off)"
         ),
         name: Optional[str] = Form(None),
-        start: bool = Form(True, description="false: add more files, then /start"),
+        start: str = Form("true", description="false: add more files, then /start"),
         pdf_dpi: Optional[str] = Form(None, description="PDF render DPI or 'auto'"),
         pdf_page: Optional[str] = Form(
             None, description="PDF pages: '1', '2-4', '3-' or 'all'"
@@ -1018,6 +1023,10 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         ),
     ):
         require_template(template_id)
+        # Strings, not bools: FastAPI 0.16x reads a bool form field that was
+        # not sent as false (an unticked checkbox), losing the true default
+        recursive = form_flag(recursive)
+        start = form_flag(start)
         pdf_params = editor_routes.parse_pdf_params(pdf_dpi, pdf_page)
         if save_images not in (SAVE_ALL, SAVE_REVIEW, SAVE_NONE):
             raise HTTPException(400, "save_images must be all, review or none")
