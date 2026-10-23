@@ -252,3 +252,9 @@ def test_border_never_slides_a_block_by_a_pitch(tmp_path, bordered_spec):
     assert "border_slide" in result.fields[label]["flags"]
     assert result.fields[label]["needs_review"]
     assert not wrong_answers(result, truth)
+
+
+def test_template_schema_accepts_editor_lock(tmp_path, bordered_spec):
+    template = rectify_template(bordered_spec, {})
+    template["editorLocked"] = True
+    assert OMREngine(write_template(tmp_path, template)).template is not None

@@ -1222,6 +1222,7 @@ function onKey(e) {
   else if (k === "s") setViewOption("side", !r.side);
   else if (k === "n" || k === "Tab") cycleFlagged(e.shiftKey ? -1 : 1);
   else if (k === "r") showRegrade();
+  else if (k === "p") placeOpenSheet();
   else if (k === "e" && r.selected) select(r.selected, true);
   else return;
   e.preventDefault();
@@ -1259,6 +1260,7 @@ export function bindToolbar() {
     safeStorage("set", "omr_res_advance", r.autoAdvance ? "1" : "0");
   });
   $("res-regrade").addEventListener("click", showRegrade);
+  $("res-place").addEventListener("click", placeOpenSheet);
   $("res-undo").addEventListener("click", () => undoStep("undo"));
   $("res-redo").addEventListener("click", () => undoStep("redo"));
   $("res-delete").addEventListener("click", deleteScan);
@@ -1464,6 +1466,12 @@ function placeCorners() {
     [w - 1, h - 1],
     [0, h - 1],
   ];
+}
+
+// Place by hand for the open sheet (toolbar button and P)
+function placeOpenSheet() {
+  if (!r.data || r.place) return;
+  startPlacement(r.data);
 }
 
 async function startPlacement(d) {

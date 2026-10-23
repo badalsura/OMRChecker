@@ -339,6 +339,10 @@ TEMPLATE_SCHEMA = {
                 }
             },
         },
+        "editorLocked": {
+            "description": "Template editor only: blocks and zones can't be moved or resized on the page",
+            "type": "boolean",
+        },
         "primaryKey": {
             "description": "Output columns that identify a sheet; sheets sharing them are duplicates",
             "type": "array",

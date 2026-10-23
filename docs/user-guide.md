@@ -1184,7 +1184,7 @@ Clicks must land on the **Original** view. In side-by-side mode, click in the Or
 
 #### "Place the page by hand…"
 
-This tool is offered on failed sheets, and for **any** sheet from the Regrade dialog (**Place the page by hand…**). Use it for a sheet that was read but is out of place, for example shifted by a row or turned the wrong way.
+This tool is offered on failed sheets, and for **any** sheet from the **Place by hand** button in the sheet toolbar (next to **Regrade…**), the **P** key, or the Regrade dialog (**Place the page by hand…**). Use it for a sheet that was read but is out of place, for example shifted by a row or turned the wrong way.
 
 The view switches to **Original**, and the template is drawn over the scan:
 
@@ -1369,6 +1369,7 @@ Shortcuts work while the Results tab is open, no dialog is open, and you are not
 | **S** | Side by side on/off |
 | **B** | Borders on/off |
 | **R** | Open the Regrade dialog |
+| **P** | Place the page by hand |
 | **Esc** | Cancel a barcode/QR scan, or leave "place the page by hand". In a value box: put the value back and leave the box. |
 | **Enter** (in a value box) | Save the value |
 | **Arrow keys** (while placing the page) | Nudge the selected corner or the whole page by 1 px. With **Shift**: 10 px. |
@@ -1393,7 +1394,7 @@ Shortcuts work while the Results tab is open, no dialog is open, and you are not
 1. Open the sheet and choose **View › Original as background**. Turn on **borders** (B).
 2. Look at the dashed blue page outline and its **top-left** dot. If the dot is at the bottom of the page, the sheet was read upside down. If the bubble outlines sit one row above or below the printed bubbles, it was read a row off.
 3. For an upside-down sheet: press **R**, set **Turn the sheet** to **Upside down (180°)**, click **Preview**, check the changes, then click **Apply**.
-4. For a sheet a row off, or when turning does not help: press **R** and click **Place the page by hand…**. Use **Turn image 180°** (or **Turn image 90°**) if the scan is turned. Then drag the corners, or the centre cross, until the red timing-mark boxes and grey bubble boxes sit on the printed ones. Fine-tune with the arrow keys (Shift for bigger steps).
+4. For a sheet a row off, or when turning does not help: press **P** (or click **Place by hand** in the sheet toolbar). Use **Turn image 180°** (or **Turn image 90°**) if the scan is turned. Then drag the corners, or the centre cross, until the red timing-mark boxes and grey bubble boxes sit on the printed ones. Fine-tune with the arrow keys (Shift for bigger steps).
 5. Click **Regrade with this placement**, check the values, and verify the sheet.
 
 #### How to rescue a sheet that could not be read
@@ -1496,6 +1497,7 @@ Opening a template shows the editor: a toolbar across the top, the page (the can
 | **+ Zone** (Z) | Then drag on the page to draw a new zone. The dropdown next to it picks the zone type: **barcode**, **qrcode**, **ocr**, **icr** or **image**. |
 | **Duplicate** (Ctrl+D) | Copies the selected block or zone (see "Drawing and moving blocks"). |
 | **Delete** (Del) | Deletes the selected block or zone. |
+| **🔓 Lock placement** (L) | Locks the position and size of every block and zone on the page, so a stray drag while you edit a block's options can't move it. While locked (the button reads **🔒 Locked**), a click still selects a block or zone and a drag pans the page, but nothing can be dragged, resized or moved with the arrow keys. The side panel still works, including typed positions, and new blocks and zones can still be drawn. Click it again to unlock. The lock is saved with the template (`"editorLocked": true` in template.json), so press **Save** to keep it. It has no effect on reading. |
 | **−** / **Fit** / **+** | Zoom out, fit the page in the window (F), zoom in. |
 | **grid N px** | Snap grid for drawing, moving and resizing: 1, 2, **5** (default), 10 or 20 template pixels. Use 1 for fine work. |
 | **edges** | On by default. Moving or resizing snaps to the edges and centres of other blocks and zones, shown with pink dashed guide lines. Untick it when the snapping gets in the way of small corrections. |
@@ -1936,8 +1938,9 @@ They work while the Templates tab is open and you are not typing in a box (Ctrl+
 | Ctrl+Shift+Z or Ctrl+Y | Redo |
 | Ctrl+D | Duplicate the selection |
 | Del or Backspace | Delete the selection |
-| Arrow keys | Move the selection 1 px (Shift: 10 px) |
+| Arrow keys | Move the selection 1 px (Shift: 10 px); not while placement is locked |
 | B / Z | Draw a block / a zone |
+| L | Lock or unlock placement |
 | Esc | Cancel drawing or a tool; otherwise clear the selection |
 | Tab / Shift+Tab | Select the next / previous block or zone |
 | F | Fit the page |

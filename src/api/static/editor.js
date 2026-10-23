@@ -112,6 +112,7 @@ export class TemplateEditor {
     this.undoBtn = btn("Undo", "Undo (Ctrl+Z)", () => this.doUndo());
     this.redoBtn = btn("Redo", "Redo (Ctrl+Shift+Z)", () => this.doRedo());
     this.addBlockBtn = btn("+ Block", "Draw a new bubble block (B)", () => this.setMode("add-block"));
+    this.lockBtn = btn("🔓 Lock placement", "Lock or unlock the position and size of every block and zone on the page, so editing their options can't move them by accident (L)", () => this.toggleLock());
     this.addZoneBtn = btn("+ Zone", "Draw a new barcode / QR / OCR / ICR zone (Z)", () => this.setMode("add-zone"));
     this.zoneTypeSel = el("select", { class: "small", title: "Type of new zones" }, (state.caps?.zone_types || ["barcode", "qrcode", "ocr", "icr"]).map((t) => el("option", { value: t }, t)));
     const gridSel = el(
@@ -147,6 +148,7 @@ export class TemplateEditor {
       this.zoneTypeSel,
       btn("Duplicate", "Duplicate selection (Ctrl+D)", () => this.duplicate()),
       btn("Delete", "Delete selection (Del)", () => this.deleteSelected(), "small danger"),
+      this.lockBtn,
       el("span", { class: "sep" }),
       btn("−", "Zoom out (-)", () => this.zoom(1 / 1.25)),
       btn("Fit", "Fit page (F)", () => this.fit()),
@@ -418,7 +420,7 @@ export class TemplateEditor {
         const tz = testZones[o.name];
         this.label(o, `${o.name}${o.raw.type ? ` (${o.raw.type})` : ""}${tz ? " = " + (tz.value === null || tz.value === undefined || tz.value === "" ? "∅" : tz.value) : ""}`, tz?.needs_review ? "#d0342c" : color);
       }
-      if (isSel) this.drawHandles(o);
+      if (isSel && !this.locked()) this.drawHandles(o);
     }
     drawAlignment(this); // timing tracks and index points (editor_tracks.js)
     drawBorders(this); // printed boxes while picking a block border
@@ -553,7 +555,7 @@ export class TemplateEditor {
       this.drag = { type: "create" };
       return;
     }
-    const handle = this.hitHandle(p);
+    const handle = this.locked() ? null : this.hitHandle(p);
     if (handle) {
       const o = this.info(this.selected);
       this.drag = { type: "resize", handle, start: p, orig: { ...o }, snapshot: JSON.stringify(this.doc) };
@@ -564,7 +566,12 @@ export class TemplateEditor {
       this.toggleMulti(o);
       return;
     }
-    if (o) {
+    if (o && this.locked()) {
+      // Placement locked: a click selects, a drag pans the view
+      this.multi = [];
+      this.select(o);
+      this.drag = { type: "pan", sx: e.clientX, sy: e.clientY, ox: this.view.ox, oy: this.view.oy };
+    } else if (o) {
       this.multi = [];
       this.select(o);
       this.drag = { type: "move", start: p, orig: { x: o.x, y: o.y }, snapshot: JSON.stringify(this.doc) };
@@ -788,6 +795,10 @@ export class TemplateEditor {
     this.undoBtn.disabled = !this.undo.length;
     this.redoBtn.disabled = !this.redo.length;
     this.saveBtn.textContent = this.dirty ? "Save •" : "Save";
+    if (this.lockBtn) {
+      this.lockBtn.textContent = this.locked() ? "🔒 Locked" : "🔓 Lock placement";
+      this.lockBtn.classList.toggle("active", this.locked());
+    }
   }
 
   doUndo() {
@@ -975,9 +986,24 @@ export class TemplateEditor {
     });
   }
 
+  // Blocks and zones can't be dragged, resized or nudged on the page while
+  // locked; typed positions and the side panel still work
+  locked() {
+    return !!this.doc?.editorLocked;
+  }
+
+  toggleLock() {
+    this.edit(() => {
+      if (this.locked()) delete this.doc.editorLocked;
+      else this.doc.editorLocked = true;
+    });
+    toast(this.locked() ? "Placement locked: blocks and zones can't be moved on the page (Save to keep it)" : "Placement unlocked", "", 4000);
+  }
+
   nudge(dx, dy) {
     const o = this.info(this.selected);
     if (!o) return;
+    if (this.locked()) return toast("Placement is locked: unlock it in the toolbar to move this", "", 3000);
     const now = Date.now();
     const key = `${o.kind}/${o.name}`;
     if (!this.lastNudge || this.lastNudge.key !== key || now - this.lastNudge.at > 1000) {
@@ -1076,6 +1102,7 @@ export class TemplateEditor {
       this.select(list[(i + (e.shiftKey ? -1 : 1) + list.length) % list.length]);
     } else if (!mod && e.key === "b") this.setMode("add-block");
     else if (!mod && e.key === "z") this.setMode("add-zone");
+    else if (!mod && e.key === "l") this.toggleLock();
     else if (!mod && e.key === "f") this.fit();
     else if (e.key === "+" || e.key === "=") this.zoom(1.25);
     else if (e.key === "-") this.zoom(1 / 1.25);
