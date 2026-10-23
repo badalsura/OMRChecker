@@ -74,8 +74,11 @@ class OnnxCropClassifier(CropClassifier):
         if threads:
             options.intra_op_num_threads = threads
             options.inter_op_num_threads = 1
+        # CPU only: the models are tiny (32x32 crops), and on a Mac
+        # get_available_providers() lists CoreML first, which would compile a
+        # CoreML copy in every worker process and run slower than the CPU
         self.session = ort.InferenceSession(
-            str(model_path), options, providers=ort.get_available_providers()
+            str(model_path), options, providers=["CPUExecutionProvider"]
         )
         self.input_name = self.session.get_inputs()[0].name
 

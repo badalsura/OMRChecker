@@ -98,6 +98,7 @@ CONFIG_SCHEMA = {
                             "border_slide",
                             "kept_darker_mark",
                             "faint_second_mark",
+                            "out_of_page",
                         ],
                     },
                 },

@@ -206,6 +206,12 @@ def tesseract_config(psm, whitelist=None, tessdata=None, patterns_file=None):
         config = f"--tessdata-dir {tessdata} " + config
     if patterns_file and " " not in patterns_file:
         config += f" --user-patterns {patterns_file}"
+    # The split also breaks a whitelist at a space or quote ("A-Z " for names
+    # cut it short and passed the rest as a stray argument); Tesseract keeps
+    # word spaces without them being whitelisted
+    whitelist = "".join(
+        c for c in whitelist or "" if not c.isspace() and c not in "'\"\\"
+    )
     if whitelist:
         config += f" -c tessedit_char_whitelist={whitelist}"
     return config

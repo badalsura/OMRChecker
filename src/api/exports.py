@@ -121,14 +121,17 @@ class ExportManager:
             gate = self.gates.setdefault(export_id, threading.Event())
             if paused:
                 gate.clear()
-            else:
-                gate.set()
             started = export_id in self.live
             record["state"] = "paused" if paused else ("running" if started else "queued")
             if paused:
                 record["paused_at"] = time.time()
             write_json_atomic(self.record_path(export_id), record)
-            return dict(record)
+            snapshot = dict(record)
+            if not paused:
+                # Released last: a resumed export can finish at once, and its
+                # "completed" must not be overwritten by this "running"
+                gate.set()
+            return snapshot
 
     def wait_if_paused(self, export_id):
         gate = self.gates.get(export_id)
@@ -356,8 +359,9 @@ class ExportManager:
             write_json_atomic(self.record_path(export_id), record)
 
         def progress(done):
-            record["rows"] = done
-            write_json_atomic(self.record_path(export_id), record)
+            with self.lock:
+                record["rows"] = done
+                write_json_atomic(self.record_path(export_id), record)
 
         try:
             report = export_results(
@@ -372,7 +376,7 @@ class ExportManager:
                 sql_url=sql_url,
                 progress=progress,
             )
-            record.update(
+            outcome = dict(
                 state="completed",
                 rows=report["rows"],
                 columns=report["columns"],
@@ -384,14 +388,15 @@ class ExportManager:
         except ExportError as error:
             # Refused (e.g. a lossy cast): no partial file is left behind
             path.unlink(missing_ok=True)
-            record.update(state="failed", error=str(error))
+            outcome = dict(state="failed", error=str(error))
         except Exception as error:  # keep the record readable
             logger.error(f"Export {export_id} failed: {error}")
             if path.exists():
                 path.unlink()
-            record.update(state="failed", error=f"{type(error).__name__}: {error}")
-        record["finished_at"] = time.time()
-        write_json_atomic(self.record_path(export_id), record)
+            outcome = dict(state="failed", error=f"{type(error).__name__}: {error}")
+        with self.lock:  # not interleaved with a Pause / Resume writing the record
+            record.update(outcome, finished_at=time.time())
+            write_json_atomic(self.record_path(export_id), record)
         self._forget(export_id)
         return record
 

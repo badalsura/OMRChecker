@@ -729,6 +729,7 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `faint_second_mark` | no (the field is also `multi_marked`, which is) | A second, lightly filled bubble turned the answer into a double mark (the "strict double marks" rule). | Is the lighter bubble a real second answer or a poor erasure? |
 | `border_slide` | yes | The printed box around the block would have moved the bubbles too far (close to a whole bubble), so that correction was not used. | Is the block's bubble grid sitting correctly on the printed bubbles? Open the sheet on the Results tab with the overlay on. |
 | `rectify_failed` | no | The printed box around the block could not be fitted (not found, too distorted, or a worse fit), so the page alignment was kept for this block. | If added to review: check the answers of the block line up with the printed bubbles. |
+| `out_of_page` | always | Part of a bubble in this field lies outside the page, so it could not be read (it counts as unmarked). | Is the sheet cut off or badly aligned, or does the template place bubbles too close to the page edge? |
 
 **Joined values (roll numbers and other grouped columns)**
 
@@ -750,6 +751,8 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `read_error` | always | Reading the zone failed with an error. | Type the value by hand. If it happens on many sheets, report it. |
 | `engine_disagree` | always (when the template asks for it) | Two text-reading engines read different text. | Which reading is right. |
 | `low_char_confidence` | always | At least one character was read with low confidence. | Each character, especially look-alikes (0/O, 1/7, 5/S). |
+| `unread_box` | always | A handwriting box has ink, but no character could be read from it. | Type the character written in that box. |
+| `icr_alignment` | always | Reading the handwriting as one line gave a different number of characters than boxes with ink, so some boxes were read on their own. | Each character against its box, especially repeated digits (00) and digits that cross into the next box. |
 | `decoded_by_fallback` | no | The code was read by a backup barcode reader. | Usually fine; only recorded. |
 | `not_read` | no | The zone was not read on this sheet. | Only recorded. |
 

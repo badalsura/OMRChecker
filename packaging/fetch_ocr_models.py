@@ -94,25 +94,60 @@ def fetch_tessdata(variants, langs, force=False):
 
 
 def dictionary_from_yml(text):
-    """character_dict list from a PaddleX inference.yml (no PyYAML needed)."""
+    """character_dict list from a PaddleX inference.yml.
+
+    Entries are kept exactly, in order: the model's class i is entry i, and
+    some entries are themselves whitespace (PP-OCRv5's first is U+3000, the
+    ideographic space). str.strip() would turn those into "" and the loader
+    would then shift every later character by one. PyYAML is used when it is
+    installed (PaddlePaddle depends on it); the fallback parser only trims
+    ASCII spaces and tabs around the YAML syntax.
+    """
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml is not None:
+        try:
+            found = _find_key(yaml.safe_load(text), "character_dict")
+        except Exception:
+            found = None
+        if isinstance(found, list) and found:
+            return ["" if c is None else str(c) for c in found]
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        if line.strip().startswith("character_dict:"):
-            indent = len(line) - len(line.lstrip())
+        if line.strip(" \t").startswith("character_dict:"):
+            indent = len(line) - len(line.lstrip(" \t"))
             chars = []
             for item in lines[i + 1 :]:
-                stripped = item.strip()
-                if not stripped.startswith("- ") and stripped != "-":
-                    if len(item) - len(item.lstrip()) <= indent and stripped:
+                body = item.lstrip(" \t")
+                if not (body.startswith("- ") or body.rstrip(" \t") == "-"):
+                    if len(item) - len(body) <= indent and body.strip(" \t"):
                         break
                     continue
-                value = item.strip()[2:] if stripped != "-" else ""
+                value = body[2:] if body.startswith("- ") else ""
+                value = value.rstrip("\r")
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                    value = value[1:-1]
-                    if '\\"' in value or "''" in value:
-                        value = value.replace('\\"', '"').replace("''", "'")
+                    quote, value = value[0], value[1:-1]
+                    if quote == "'":
+                        value = value.replace("''", "'")
+                    else:
+                        value = value.replace('\\"', '"').replace("\\\\", "\\")
                 chars.append(value)
             return chars
+    return None
+
+
+def _find_key(node, key):
+    if isinstance(node, dict):
+        if key in node:
+            return node[key]
+        node = list(node.values())
+    if isinstance(node, list):
+        for item in node:
+            found = _find_key(item, key)
+            if found is not None:
+                return found
     return None
 
 
