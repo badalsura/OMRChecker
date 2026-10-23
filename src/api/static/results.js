@@ -1181,6 +1181,7 @@ function renderSide() {
   if (d.returned && !d.verified) side.append(el("div", { class: "res-warning" }, `Sent back to review by ${d.returned.by}${d.returned.note ? `: “${d.returned.note}”` : ""}`));
   side.append(historyBox(d.scan_id));
   renderViewNotes();
+  if (d.dropout_fallback) side.append(el("div", { class: "muted small" }, `Read in plain grey: ${d.dropout_fallback.blank_questions} of ${d.dropout_fallback.questions} questions came out blank with the colour removal (dropout fallback)`));
   if (d.regrade) side.append(el("div", { class: "muted small" }, `Regraded by ${d.regrade.by} with `, el("code", {}, JSON.stringify({ ...d.regrade.template_overrides, ...d.regrade.config_overrides }))));
   syncUndo();
   $("res-verify").textContent = verified ? "Unverify" : "Verify ✓";

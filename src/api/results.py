@@ -406,6 +406,7 @@ class ResultsService:
         one the engine read (view "dropout") or the same page with the print
         kept (view "print", the copy block borders were searched on).
         """
+        from src.color import GREY
         from src.geometry import print_kept_image, warp_to_aligned
         from src.utils.image import ImageUtils
 
@@ -450,7 +451,11 @@ class ResultsService:
                     ),
                 )
             elif image.ndim == 3:
-                image = template.prepare_image(image)[0]
+                # A sheet the dropout fallback read in plain grey shows that way
+                fallback = (result.get("dropout_fallback") or {}).get("read")
+                image = template.prepare_image(
+                    image, GREY if fallback == "grey" else None
+                )[0]
 
             processors = template.pre_processors
 

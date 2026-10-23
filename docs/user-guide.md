@@ -2151,6 +2151,8 @@ These always send their field, zone or sheet to review when they happen. Many on
 | `fallback_used` | check | a check set to review fallbacks | The first source was missing, so a later source was used. |
 | `all_sources_missing` | check | a check set to review it | None of the check's sources could be read. |
 | `too_few_marks` | sheet | **Min marked bubbles per sheet** above 0 | The whole sheet has fewer marked bubbles than that. |
+| `dropout_blank` | sheet | colour removal with **If most questions come out blank** set to *only send the sheet to review* | More than the set share of the questions came out blank with the colour removal. |
+| `dropout_fallback` | sheet | colour removal with **If most questions come out blank** set to *read again in grey and send to review* | The sheet was read again in plain grey because most questions came out blank with the colour removal. |
 | `poor_image` | sheet | an image-quality minimum set | The scan is too blurred, dark, light or low in contrast (see the image-quality gate below). |
 | `orientation_ambiguous` | sheet | timing-mark alignment | Another orientation of the sheet fits the timing marks almost as well. |
 | `registration_suspect` | sheet | timing-mark alignment, or a grid-fit minimum set | The marks fit almost as well slid by one mark, or the bubbles sit poorly on the grid. |
@@ -2420,9 +2422,10 @@ Many answer sheets are printed in a light colour (pink, red, orange, light blue)
 | **Colour to remove** (One colour only) | #E8618C | Pick with the colour picker or type a hex code like `#E8618C`. |
 | **Tolerance** (One colour only) | 60 (5–150) | How different a colour may be from the picked one and still be removed. Higher removes more shades. |
 | **Strength** (any mode except Grey) | 1 (0–1) | Blends plain grey (0) with the full removal (1). |
+| **If most questions come out blank (ink in the removed colour)** (any mode except Grey; `colorDropoutFallback`) | off | For students who fill the bubbles in the colour that is removed (for example red ink on a red-print sheet with red removal): their marks are removed with the print and the sheet would read blank. Tick it, then set **Blank questions above (%)** (50 to start) and **Then**: *read the sheet again in plain grey* (`"action": "grey"`, the default), *read again in grey and send to review* (`grey_and_flag`, flag `dropout_fallback`), or *only send the sheet to review* (`flag`, flag `dropout_blank`). A question counts as blank when none of its bubbles is marked; text and barcode zones don't count. Only sheets over the limit are read twice. A sheet read again in grey says so in its side panel on the Results screen, and its pictures show the grey reading. In template.json: `"colorDropoutFallback": {"blankShare": 0.5, "action": "grey"}`. |
 
 **What goes wrong if set badly.**
-- Students who used a pen of the same colour as the print lose their marks with it. Use **Min marked bubbles per sheet** in Review thresholds to catch these sheets.
+- Students who used a pen of the same colour as the print lose their marks with it. Tick **If most questions come out blank** to read those sheets again in grey, or use **Min marked bubbles per sheet** in Review thresholds to catch them.
 - *Brightest channel* removes blue pen as well as print; do not use it if students may answer in blue pen.
 - *One colour* with a tolerance that is too high starts removing pen and pencil; too low leaves part of the print, which can then read as marks.
 - Removing the print also removes printed timing marks or borders in that colour, which can break alignment. Check the **After** view.

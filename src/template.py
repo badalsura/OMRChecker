@@ -29,6 +29,11 @@ class Template:
 
         json_object = open_template_with_defaults(template_path, overrides)
         self.color_dropout = normalize_dropout(json_object.get("colorDropout"))
+        # Re-read in plain grey (or flag) a sheet whose dropout reading comes
+        # out mostly blank, e.g. bubbles filled in the dropped ink colour
+        self.dropout_fallback = dropout_fallback_of(
+            json_object.get("colorDropoutFallback")
+        )
         # Template-level alignment settings over config alignment_params
         self.alignment = dict(json_object.get("alignment") or {})
         (
@@ -103,16 +108,20 @@ class Template:
         """True when sheets should be decoded in colour (some dropout isn't plain grey)."""
         return self.color_dropout.mode != "grey" or bool(self.zone_dropout_specs())
 
-    def prepare_image(self, image):
+    def prepare_image(self, image, page_dropout=None):
         """
         Turn a loaded sheet into (grey page image, {dropout spec: grey variant}).
 
         A grey (2-D) image is used as-is with no variants. Variants are only
         computed for zones whose colorDropout differs from the page's.
+        page_dropout replaces the page's colorDropout for this image (the
+        dropout fallback reads with GREY).
         """
         if image is None or image.ndim == 2:
             return image, {}
-        grey = apply_dropout(image, self.color_dropout)
+        grey = apply_dropout(
+            image, self.color_dropout if page_dropout is None else page_dropout
+        )
         variants = {
             spec: apply_dropout(image, spec) for spec in self.zone_dropout_specs()
         }
@@ -481,3 +490,20 @@ class Bubble:
 
     def __str__(self):
         return str([self.x, self.y])
+
+
+DROPOUT_FALLBACK_ACTIONS = ("grey", "grey_and_flag", "flag")
+
+
+def dropout_fallback_of(spec):
+    """{"blank_share", "action"} from colorDropoutFallback, or None when off."""
+    if not spec:
+        return None
+    share = spec.get("blankShare")
+    if share is None:
+        return None
+    action = spec.get("action", "grey")
+    if action not in DROPOUT_FALLBACK_ACTIONS:
+        raise ValueError(f"Unknown colorDropoutFallback action {action!r}")
+    return {"blank_share": float(share), "action": action}
+

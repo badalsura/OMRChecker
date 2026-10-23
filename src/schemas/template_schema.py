@@ -585,6 +585,15 @@ TEMPLATE_SCHEMA = {
             **COLOR_DROPOUT_SCHEMA,
             "description": "How a colour scan is turned into the grey image that is read (default: plain grey)",
         },
+        "colorDropoutFallback": {
+            "description": "When more than blankShare of the bubble questions come out blank with the colour dropout (ink in the dropped colour), read the sheet again in plain grey ('grey'), do that and flag it ('grey_and_flag'), or only flag it ('flag')",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "blankShare": zero_to_one_number,
+                "action": {"type": "string", "enum": ["grey", "grey_and_flag", "flag"]},
+            },
+        },
         "zones": {
             "description": "Non-bubble regions to read: barcodes, QR codes, printed text (OCR) and handwriting (ICR)",
             "type": "object",
