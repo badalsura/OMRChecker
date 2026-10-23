@@ -31,6 +31,7 @@ async function startJob() {
   const files = [...document.getElementById("job-files").files].filter((f) => ACCEPTED.test(f.name));
   const folder = document.getElementById("job-folder").value.trim();
   if (!files.length && !folder) return toast("Choose files or enter a server folder", "error");
+  if (document.getElementById("job-watch").checked && (files.length || !folder)) return toast("Watching works on a server folder alone: clear the chosen files", "error", 6000);
   const status = document.getElementById("job-upload-status");
   const button = document.getElementById("job-start");
   const base = () => {
@@ -53,6 +54,11 @@ async function startJob() {
       const form = base();
       form.append("folder", folder);
       form.append("recursive", includeSubfolders() ? "true" : "false");
+      if (document.getElementById("job-watch").checked) {
+        form.append("watch", "true");
+        const interval = document.getElementById("job-watch-interval").value;
+        if (interval) form.append("watch_interval_s", interval);
+      }
       job = await api("/jobs", { method: "POST", form });
     } else {
       const parts = chunk(files, UPLOAD_CHUNK);
@@ -103,7 +109,7 @@ export async function refreshJobs() {
   body.innerHTML = "";
   let active = false;
   for (const job of data.jobs) {
-    if (["queued", "running", "uploading"].includes(job.state)) active = true;
+    if (["queued", "running", "uploading", "watching"].includes(job.state)) active = true;
     const total = job.total_files || 0;
     const pct = total ? Math.round((100 * (job.processed_files || 0)) / total) : 0;
     const counts = job.counts || {};
@@ -134,10 +140,13 @@ export async function refreshJobs() {
           ["paused", "interrupted", "failed"].includes(job.state)
             ? el("button", { class: "small primary", title: "Read the remaining sheets", onclick: () => jobAction(job, "resume") }, "Resume")
             : null,
-          counts.error && ["completed", "paused", "interrupted", "failed"].includes(job.state) && job.source !== "batch"
+          job.options?.watch?.active && ["watching", "queued", "running", "paused"].includes(job.state)
+            ? el("button", { class: "small", title: `Stop reading new files from ${job.options.watch.folder}; sheets being read finish first`, onclick: () => jobAction(job, "stop-watching") }, "Stop watching")
+            : null,
+          counts.error && ["completed", "paused", "interrupted", "failed", "watching"].includes(job.state) && job.source !== "batch"
             ? el("button", { class: "small", title: "Read the sheets that ended in an error again (reviewed sheets are kept)", onclick: () => jobAction(job, "rescan-errors") }, "Rescan errors")
             : null,
-          ["queued", "running", "uploading", "paused", "interrupted"].includes(job.state)
+          ["queued", "running", "uploading", "paused", "interrupted", "watching"].includes(job.state)
             ? el("button", { class: "small danger", onclick: () => cancelJob(job) }, "Cancel")
             : el("button", { class: "small danger ghost", title: "Delete this job and its results", onclick: () => deleteJob(job) }, "Delete")
         )
@@ -155,7 +164,7 @@ export async function refreshJobs() {
 async function jobAction(job, action) {
   try {
     await api(`/jobs/${job.id}/${action}`, { method: "POST" });
-    toast(action === "pause" ? "Pausing: sheets being read finish first" : action === "rescan-errors" ? "Reading the error sheets again" : "Job resumed", "ok");
+    toast(action === "pause" ? "Pausing: sheets being read finish first" : action === "stop-watching" ? "Stopped watching the folder" : action === "rescan-errors" ? "Reading the error sheets again" : "Job resumed", "ok");
   } catch (error) {
     toast(error.message, "error", 6000);
   }

@@ -54,6 +54,8 @@ COMPLETED, FAILED, CANCELLED, INTERRUPTED = (
 )
 # Stopped on request; sheets read so far are kept and Resume reads the rest
 PAUSED = "paused"
+# A folder job that has read everything so far and waits for new files
+WATCHING = "watching"
 # Files read ahead of the workers by default (a few MB of scans in memory)
 DEFAULT_PREFETCH = 128
 PREFETCH_READERS = 4
@@ -105,6 +107,11 @@ def shutdown_now(executor):
         executor.shutdown(wait=True)
 
 
+def watching(job):
+    """The job keeps reading new files from its folder."""
+    return bool(((job.get("options") or {}).get("watch") or {}).get("active"))
+
+
 def collect_folder(folder, recursive=True):
     folder = Path(folder)
     pattern = "**/*" if recursive else "*"
@@ -116,6 +123,11 @@ def collect_folder(folder, recursive=True):
 
 
 class JobManager:
+    # Read by the folder watcher (src/api/watch.py)
+    INPUT_SUFFIXES = INPUT_SUFFIXES
+    WATCH_STATES = {WATCHING, QUEUED, RUNNING, PAUSED}
+    PAUSED_STATE = PAUSED
+
     def __init__(self, data, index, templates, settings):
         self.data = data
         self.index = index
@@ -134,6 +146,9 @@ class JobManager:
         self.task_fn = job_task
         self.thread = None
         self.stopping = threading.Event()
+        from src.api.watch import FolderWatcher
+
+        self.watcher = FolderWatcher(self)
 
     # ---- lifecycle -----------------------------------------------------
     def start(self):
@@ -143,8 +158,12 @@ class JobManager:
         self.thread.start()
         for job_file in sorted(self.data.jobs.glob("*.json")):
             job = read_json(job_file)
+            if job and watching(job) and job.get("state") in (WATCHING, PAUSED):
+                self.watcher.add(job["id"])
             if not job or job.get("state") not in (QUEUED, RUNNING, INTERRUPTED):
                 continue
+            if watching(job):
+                self.watcher.add(job["id"])
             if self.settings.resume_jobs:
                 job["state"] = QUEUED
                 self._save(job)
@@ -153,6 +172,7 @@ class JobManager:
             else:
                 job["state"] = INTERRUPTED
                 self._save(job)
+        self.watcher.start()
 
     def stop(self):
         self.stopping.set()
@@ -215,6 +235,9 @@ class JobManager:
                 else max(0, int(options["prefetch"])),
                 # Per-job PDF rendering {"pdf_dpi", "pdf_page"}; None = config.json
                 "pdf_params": options.get("pdf_params"),
+                # Keep reading new files from a folder: {"folder", "recursive",
+                # "interval_s", "active"} (src/api/watch.py)
+                **({"watch": dict(options["watch"], active=True)} if options.get("watch") else {}),
             },
             "name": options.get("name") or "",
             # Who started the job (the person the sheets are "scanned by")
@@ -237,6 +260,43 @@ class JobManager:
             self.enqueue(job)
         else:
             self.live[job_id] = job
+        if watching(job):
+            self.watcher.add(job_id)
+        return job
+
+    # ---- watched folders -------------------------------------------------
+    def watch_found(self, job_id, paths):
+        """New complete files in a watched folder: add them and read them."""
+        job = self.live.get(job_id)
+        live = job is not None
+        if not live:
+            job = self.get(job_id)
+            if job is None or job.get("state") != WATCHING:
+                return
+        if paths:
+            self.add_files(job, paths)
+        # Also files added while the last run was finishing
+        if not live and job.get("total_files", 0) > job.get("processed_files", 0):
+            with self.lock:
+                if job_id in self.live:
+                    return
+            self.enqueue(job)
+
+    def stop_watching(self, job_id):
+        """Stop reading new files; sheets being read finish first."""
+        with self.lock:
+            job = self.live.get(job_id)
+            stored = job is None
+            if stored:
+                job = self.get(job_id)
+            if job is None or not watching(job):
+                return job
+            job["options"]["watch"]["active"] = False
+            if stored and job.get("state") == WATCHING:
+                job["state"] = COMPLETED
+                job["finished_at"] = time.time()
+            self._save(job)
+        self.watcher.discard(job_id)
         return job
 
     # ---- batches: single uploads (phone photos) grouped by exam ----------
@@ -392,7 +452,7 @@ class JobManager:
         if (
             job is None
             or job.get("source") == BATCH
-            or job.get("state") not in (COMPLETED, PAUSED, INTERRUPTED, FAILED)
+            or job.get("state") not in (COMPLETED, PAUSED, INTERRUPTED, FAILED, WATCHING)
         ):
             return None
         seqs = self.index.error_seqs(job_id)
@@ -414,7 +474,7 @@ class JobManager:
             return job
         if job is None:
             job = self.get(job_id)
-            if job is not None and job.get("state") in (PAUSED, INTERRUPTED):
+            if job is not None and job.get("state") in (PAUSED, INTERRUPTED, WATCHING):
                 job["state"] = CANCELLED
                 job["finished_at"] = time.time()
                 self._save(job)
@@ -464,6 +524,9 @@ class JobManager:
             finally:
                 if job["state"] == RUNNING:
                     job["state"] = INTERRUPTED if self.stopping.is_set() else COMPLETED
+                if job["state"] == COMPLETED and watching(job):
+                    job["state"] = WATCHING
+                    self.watcher.add(job_id)
                 job["finished_at"] = time.time()
                 self._refresh_counts(job)
                 self._save(job)

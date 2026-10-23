@@ -286,6 +286,10 @@
               <label class="small"><input id="job-recursive" type="checkbox" checked> Include subfolders <span class="help-i" tabindex="0" title="Also read the sheets in every folder inside this one. Untick to read only the files directly in this folder.">ⓘ</span></label>
               <span id="job-folder-check" class="small muted"></span>
             </div>
+            <div class="row gap wrap">
+              <label class="small"><input id="job-watch" type="checkbox"> Keep watching this folder <span class="help-i" tabindex="0" title="After reading what is in the folder now, the job keeps reading every new file that arrives in it until you press Stop watching. A file is read only once it has finished copying: its size has stopped changing for a few seconds, it can be opened, and its end is complete.">ⓘ</span></label>
+              <label class="small">look every <input id="job-watch-interval" type="number" min="1" max="3600" step="1" placeholder="5" style="width: 4.5em"> s</label>
+            </div>
             <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running this program (on the portable app, that is this PC) or on a network drive it can reach.</div>
             <div class="small muted">Examples: Windows <code>D:\scans\batch-01</code> · network share <code>\\server\scans\batch-01</code> · Linux <code>/srv/scans/batch-01</code></div>
           </div>

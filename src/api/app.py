@@ -1010,6 +1010,12 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         pdf_page: Optional[str] = Form(
             None, description="PDF pages: '1', '2-4', '3-' or 'all'"
         ),
+        watch: bool = Form(
+            False, description="Keep reading new files dropped into the folder until stopped"
+        ),
+        watch_interval_s: Optional[float] = Form(
+            None, ge=1, le=3600, description="Seconds between looks at a watched folder (default 5)"
+        ),
     ):
         require_template(template_id)
         pdf_params = editor_routes.parse_pdf_params(pdf_dpi, pdf_page)
@@ -1017,11 +1023,21 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(400, "save_images must be all, review or none")
         if not files and not folder and start:
             raise HTTPException(400, "Upload files or give a server-side folder")
+        if watch and not folder:
+            raise HTTPException(400, "Watching needs a server-side folder")
         folder_files = []
+        watch_options = None
         if folder:
-            folder_files = jobs_module.collect_folder(resolve_folder(folder, request), recursive)
-            if not folder_files and not files:
+            resolved = resolve_folder(folder, request)
+            folder_files = jobs_module.collect_folder(resolved, recursive)
+            if not folder_files and not files and not watch:
                 raise HTTPException(400, "No images or PDFs found in that folder")
+            if watch:
+                watch_options = {
+                    "folder": str(resolved),
+                    "recursive": bool(recursive),
+                    "interval_s": watch_interval_s or 5,
+                }
         job = ctx.jobs.create(
             template_id,
             [],
@@ -1033,6 +1049,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 "name": name,
                 "pdf_params": pdf_params,
                 "created_by": request_user(request, None, DEFAULT_USER),
+                "watch": watch_options,
             },
             start=False,
         )
@@ -1124,6 +1141,13 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(409, f"Job is {job['state']}; error sheets can be read again once it has stopped")
         job, files = done
         return {**ctx.jobs.get(job_id), "rescan_files": files}
+
+    @app.post("/jobs/{job_id}/stop-watching", tags=["jobs"], dependencies=secured)
+    def stop_watching_job(job_id: str):
+        job = ctx.jobs.stop_watching(job_id)
+        if job is None:
+            raise HTTPException(404, f"Job '{job_id}' not found")
+        return ctx.jobs.get(job_id)
 
     @app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=secured)
     def cancel_job(job_id: str):

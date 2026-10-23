@@ -119,7 +119,7 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .chip.needs_review, .chip.draft, .chip.queued, .chip.uploading, .chip.flag { background: var(--warn-soft); color: var(--warn); }
 .chip.error, .chip.failed, .chip.cancelled, .chip.interrupted { background: var(--err-soft); color: var(--err); }
 .chip.paused { background: var(--warn-soft); color: var(--warn); }
-.chip.running, .chip.reading { background: var(--accent-soft); color: var(--accent); }
+.chip.running, .chip.reading, .chip.watching { background: var(--accent-soft); color: var(--accent); }
 
 .progress { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; min-width: 120px; }
 .progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }

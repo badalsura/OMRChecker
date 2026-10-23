@@ -537,6 +537,8 @@ Then choose where the sheets come from. Use one of the two boxes.
 | **Browse…** | — | Opens **Choose a folder on the server**: a folder browser of the server's drives and folders. **Drives** goes back to the list of drives, **← Back** to the previous folder, **↑ Up** to the parent folder. Each folder shows how many images and PDFs are directly inside it. **Select this folder** puts the path in the box. |
 | **Recent folders…** | — | The last 10 folders jobs were started from. Pick one to fill the box. |
 | **Include subfolders** | ticked | Also reads the sheets in every folder inside this one. Untick to read only the files directly in the folder. |
+| **Keep watching this folder** | off | After reading what is in the folder now, the job keeps reading every new file that arrives in it, until you press **Stop watching**. See [Watching a folder](#watching-a-folder). Works with a server folder alone (no uploaded files). |
+| **look every … s** | 5 | How often a watched folder is looked at, in seconds (1 to 3600). |
 
 An administrator can limit which server folders may be read. In that case the browser shows only the allowed folders, and with none allowed for your account it says so: upload the files instead, or ask an administrator.
 
@@ -572,6 +574,7 @@ The list shows the 50 newest jobs. While any job is queued or running and the ta
 | *interrupted* | The server stopped (closed, crashed or the PC restarted) while the job was running. Normally interrupted jobs restart by themselves when the server starts again; if this has been turned off on the server, press **Resume**. |
 | *failed* | The job stopped because of a problem, for example the reader processes kept crashing. **Resume** continues it. |
 | *cancelled* | Stopped for good with **Cancel**. Sheets already read keep their results. |
+| *watching* | A job with **Keep watching this folder** has read every file so far and waits for new ones. A new file turns it *queued* and *running* again for a moment, then back to *watching*. |
 
 #### Job actions
 
@@ -581,10 +584,11 @@ The list shows the 50 newest jobs. While any job is queued or running and the ta
 | **Export…** | always | Opens the Export dialog limited to this job (see Export below). |
 | **Results** | the job has sheets | Opens the Results tab filtered to this job. |
 | **Review** | sheets need review | Opens the Review queue filtered to this job. |
+| **Stop watching** | a watching job (watching, queued, running or paused) | Stops reading new files from the folder. Sheets being read finish first, then the job is *completed*. "Stopped watching the folder." |
 | **Pause** | queued or running | Lets the sheets being read now finish, then stops. "Pausing: sheets being read finish first." |
 | **Resume** | paused, interrupted or failed | Reads the remaining sheets. Sheets that already have results are not read again. |
 | **Rescan errors** | the job has error sheets and is completed, paused, interrupted or failed | Reads the sheets that ended in an error again, for example after fixing the template or putting back a missing file. Sheets someone already reviewed are kept. For a paused, interrupted or failed job it also reads the rest. Not available for the Single uploads and camera jobs. |
-| **Cancel** | uploading, queued, running, paused or interrupted | Asks first. The remaining sheets will not be read; the ones already read keep their results. A cancelled job cannot be resumed, so to stop for now and continue later use **Pause**. |
+| **Cancel** | uploading, queued, running, paused, interrupted or watching | Asks first. The remaining sheets will not be read; the ones already read keep their results. A cancelled job cannot be resumed, so to stop for now and continue later use **Pause**. |
 | **Delete** | finished jobs | Deletes the job and all its sheet results: values, corrections, review items and stored images. You must type `delete` to confirm. It cannot be undone. Scans in a server folder are not touched; uploaded copies are deleted. The deletion is recorded in the audit log with your name. |
 
 #### When something goes wrong while reading
@@ -594,6 +598,20 @@ The app is built so that one bad sheet does not stop a job of thousands:
 - **A sheet that crashes the reader, or hangs.** If a reader process crashes, or is still on one sheet after 300 seconds, the readers are restarted. The sheets they had are read again one at a time, and the one that fails on its own is stored as an error ("Reading this sheet took longer than 300 s; it was skipped", or "…crashed the reader"). The rest of the job carries on. Use **Rescan errors** later to try those sheets again. The time limit is a server setting (`OMR_SHEET_TIMEOUT_S`, 0 = no limit; the desktop exe in bulk mode has `--sheet-timeout`).
 - **Readers that keep crashing.** After 20 restarts in a row the job stops as *failed* ("The reader processes kept crashing; Resume continues the job").
 - **The PC or server stops.** Each job remembers its list of files. When the server starts again, unfinished jobs are queued again and continue where they left off, skipping sheets that already have results. A sheet read again after a crash replaces its earlier result, so you do not get duplicates. (A server administrator can turn the automatic restart off with `OMR_RESUME_JOBS=0`; the jobs then show as *interrupted* until you press **Resume**.)
+
+#### Watching a folder
+
+Tick **Keep watching this folder** on the New Job screen for a folder that a scanner, a shared drive or other people keep filling. The job first reads what is already in the folder, then looks at it every few seconds (**look every … s**, 5 by default) and reads each new file as it arrives. The job's progress and counts grow as files come in.
+
+A file is read only once it has finished arriving, so a scan that is still being copied is never read half-way:
+
+1. Its size and modified time must stay the same over two looks at least 3 seconds apart, and it must not have been changed in the last 3 seconds.
+2. It must open for reading. Windows refuses while the copying program still holds the file.
+3. Its end must be complete: a JPEG must end with its end marker, a PNG with its last chunk (IEND), a PDF with `%%EOF`. A file that still looks cut off after 2 minutes is read anyway, so a damaged file shows up as an error sheet instead of being skipped quietly.
+
+Names that copy programs use while a file is arriving are ignored: `.tmp`, `.part`, `.partial`, `.crdownload`, `.download`, `.filepart`, names starting with `~$`, and hidden files (starting with `.`).
+
+Each file is read once. A file that is replaced with a new version (a different size or modified time) is read again as a new sheet; a file that is deleted is simply no longer looked at. The files already read are remembered in the job's `.watch` file next to it in the jobs folder, so a watching job carries on after the server or app restarts, without reading old files again. **Pause** and **Resume** work as for other jobs: while paused, new files wait in the folder. **Stop watching** ends the job; **Cancel** stops it for good.
 
 #### How to read a large batch from a folder
 
