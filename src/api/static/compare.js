@@ -30,6 +30,7 @@ const c = {
   fields: null, // {scan_id, list} for the all-fields list
   peek: null, // a matching field picked in that list (zoom and page box)
   filter: "",
+  alt: null, // {scan_id, view, img, meta} of the colour or original page once loaded
 };
 
 export function initCompare() {
@@ -233,6 +234,7 @@ function showSheet(sheet) {
   c.history = [];
   c.fields = null;
   c.peek = null;
+  c.alt = null;
   const firstOpen = sheet.items.findIndex((item) => !item.source);
   c.idx = firstOpen >= 0 ? firstOpen : 0;
   const main = document.getElementById("cmp-main");
@@ -244,7 +246,7 @@ function showSheet(sheet) {
   const inner = el("div", { class: "cmp-page-inner" }, img, shownImg);
   for (const [i, item] of sheet.items.entries()) {
     const box = boxStyle(item.box);
-    if (box) inner.append(el("div", { class: "cmp-box", "data-i": i, style: box, title: item.name, onclick: () => go(i) }));
+    if (box) inner.append(el("div", { class: "cmp-box", "data-i": i, "data-name": item.name, style: box, title: `${item.name}: theirs ${item.external || "(blank)"} · ours ${item.ours || "(blank)"}`, onclick: () => go(i) }));
   }
   main.append(
     el(
@@ -254,7 +256,7 @@ function showSheet(sheet) {
       el(
         "div",
         { class: "cmp-side" },
-        el("div", { class: "cmp-file" }, el("strong", {}, sheet.file_name || sheet.scan_id.slice(0, 8)), sheet.key ? el("span", { class: "muted" }, ` · key ${sheet.key}`) : null, sheet.row_no ? el("span", { class: "muted" }, ` · their row ${sheet.row_no}`) : null),
+        el("div", { class: "cmp-file", title: sheet.file_name || sheet.scan_id }, el("strong", {}, sheet.file_name || sheet.scan_id.slice(0, 8)), sheet.key ? el("span", { class: "muted" }, ` · key ${sheet.key}`) : null, sheet.row_no ? el("span", { class: "muted" }, ` · their row ${sheet.row_no}`) : null),
         el(
           "div",
           { class: "row gap wrap" },
@@ -265,6 +267,7 @@ function showSheet(sheet) {
         ),
         sheet.state === "done" ? el("div", { class: "rv-meta" }, `Reconciled by ${sheet.done_by || "someone"}: saving changes it.`) : null,
         el("canvas", { class: "cmp-zoom", width: 420, height: 150 }),
+        el("div", { class: "muted small", id: "cmp-zoom-view" }),
         el("div", { id: "cmp-current" }),
         el("input", { id: "cmp-filter", class: "small", placeholder: "Show only: q1..q50, roll", value: c.filter, hidden: !c.all, spellcheck: "false", oninput: (e) => { c.filter = e.target.value; render(); } }),
         el("div", { class: `cmp-list${c.all ? " all" : ""}`, id: "cmp-list" }),
@@ -301,6 +304,7 @@ function toggleAll() {
   if (c.all && !c.fields) return loadFields();
   matchBoxes();
   render();
+  focusBox();
 }
 
 async function loadFields() {
@@ -315,6 +319,7 @@ async function loadFields() {
   }
   matchBoxes();
   render();
+  focusBox();
 }
 
 // In the all-fields list the agreeing fields get a quiet box on the page too
@@ -325,8 +330,9 @@ function matchBoxes() {
   for (const field of c.fields.list) {
     if (field.state === "mismatch") continue;
     const box = boxStyle(field.box);
-    if (box) inner.append(el("div", { class: "cmp-box match", "data-name": field.name, style: box, title: `${field.name}: ${field.external || "(blank)"} = ${field.ours || "(blank)"}`, onclick: () => peek(field), hidden: c.view === "original" }));
+    if (box) inner.append(el("div", { class: "cmp-box match", "data-name": field.name, style: box, title: `${field.name}: ${field.external || "(blank)"} = ${field.ours || "(blank)"}`, onclick: () => peek(field) }));
   }
+  placeBoxes();
 }
 
 function peek(field) {
@@ -334,8 +340,7 @@ function peek(field) {
   if (i >= 0) return go(i);
   c.peek = field;
   render();
-  const node = document.querySelector(`.cmp-box.match[data-name="${CSS.escape(field.name)}"]`);
-  if (node) node.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  focusBox();
 }
 
 // Names to show: "q1..q50, roll" (ranges and names), or any text in the name
@@ -385,24 +390,70 @@ function cycleView() {
   showView();
 }
 
-// The original scan has its own coordinates: no boxes on it (the zoom keeps
-// showing the field on the aligned page)
+// The colour page shares the aligned page's coordinates; on the original
+// scan each box follows the outline mapped back through the page transform
+// (a box with no outline there, such as a joined value, is hidden)
 async function showView() {
   const button = document.getElementById("cmp-view");
   if (button) button.lastChild.textContent = ` ${VIEW_NAMES[c.view]}`;
   const alt = document.querySelector(".cmp-alt");
   if (!alt || !c.sheet) return;
   const aligned = c.view === "aligned";
-  c.image.hidden = !aligned;
-  alt.hidden = aligned;
-  for (const node of document.querySelectorAll(".cmp-box")) node.hidden = c.view === "original";
-  if (aligned) return;
+  const loaded = c.alt && c.alt.view === c.view && c.alt.scan_id === c.sheet.scan_id;
+  c.image.hidden = !aligned && Boolean(loaded);
+  alt.hidden = aligned || !loaded;
+  placeBoxes();
+  drawZoom();
+  if (aligned || loaded) return;
   const scanId = c.sheet.scan_id;
+  const view = c.view;
   try {
-    const data = await api(`/scans/${scanId}/views/${c.view}`);
-    if (c.sheet && c.sheet.scan_id === scanId) alt.src = url(data.image_url);
+    const meta = await api(`/scans/${scanId}/views/${view}`);
+    if (!c.sheet || c.sheet.scan_id !== scanId || c.view !== view) return;
+    const img = new Image();
+    img.src = url(meta.image_url);
+    await img.decode();
+    if (!c.sheet || c.sheet.scan_id !== scanId || c.view !== view) return;
+    c.alt = { scan_id: scanId, view, img, meta };
+    alt.src = img.src;
   } catch (error) {
-    toast(error.message, "error", 5000);
+    if (c.view === view) toast(`${VIEW_NAMES[view]}: ${error.message}`, "error", 5000);
+    return;
+  }
+  showView();
+}
+
+function altFor(view) {
+  return c.alt && c.sheet && c.alt.view === view && c.alt.scan_id === c.sheet.scan_id ? c.alt : null;
+}
+
+// [x, y, w, h] of a field on the original scan, from the mapped outline
+function originalBox(name) {
+  const alt = altFor("original");
+  const map = alt && alt.meta.map;
+  if (!map) return null;
+  const quad = (map.fields[name] && map.fields[name].box) || map.zones[name];
+  if (!quad) return null;
+  const xs = quad.map((p) => p[0]);
+  const ys = quad.map((p) => p[1]);
+  return { box: [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)], quad, size: [alt.meta.width, alt.meta.height] };
+}
+
+function placeBoxes() {
+  if (!c.sheet) return;
+  const original = c.view === "original" && altFor("original");
+  for (const node of document.querySelectorAll(".cmp-box")) {
+    const name = node.dataset.name;
+    const item = node.dataset.i !== undefined ? c.sheet.items[Number(node.dataset.i)] : (c.fields && c.fields.list.find((f) => f.name === name));
+    if (!item) continue;
+    let style = null;
+    if (!original) style = boxStyle(item.box);
+    else {
+      const mapped = originalBox(name);
+      style = mapped ? boxStyle(mapped.box, mapped.size) : null;
+    }
+    node.hidden = !style || (c.view === "original" && !original);
+    if (style) Object.assign(node.style, style);
   }
 }
 
@@ -441,8 +492,7 @@ async function recompare() {
   toast(`Compared again: ${data.sheet.items.length} mismatch${data.sheet.items.length === 1 ? "" : "es"} (was ${before})`, "", 3000);
 }
 
-function boxStyle(box) {
-  const size = c.sheet.page_size;
+function boxStyle(box, size = c.sheet.page_size) {
   if (!box || !size) return null;
   const [x, y, w, h] = box;
   const pad = 4;
@@ -515,17 +565,43 @@ function render() {
       )
     );
   }
+  // The current row stays in view in the list
+  const row = list.querySelector(".cmp-row.current");
+  if (row) {
+    const head = list.querySelector(".cmp-row.head");
+    const top = row.offsetTop - (head ? head.offsetHeight : 0);
+    if (top < list.scrollTop || row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = Math.max(0, top - list.clientHeight / 3);
+  }
   progressLine();
   drawZoom();
 }
 
+// The close-up is cut from the page shown: aligned, colour or original
+// (on the original only where the field has a mapped outline)
+function zoomSource(item) {
+  const size = c.sheet.page_size;
+  if (c.view === "color" && altFor("color")) {
+    const img = altFor("color").img;
+    return { img, box: item.box, scale: [img.naturalWidth / size[0], img.naturalHeight / size[1]] };
+  }
+  if (c.view === "original") {
+    const mapped = originalBox(item.name);
+    if (mapped) {
+      const img = altFor("original").img;
+      return { img, box: mapped.box, quad: mapped.quad, scale: [img.naturalWidth / mapped.size[0], img.naturalHeight / mapped.size[1]] };
+    }
+  }
+  const img = c.image;
+  return { img, box: item.box, scale: [img.naturalWidth / size[0], img.naturalHeight / size[1]] };
+}
+
 function drawZoom() {
   const canvas = document.querySelector(".cmp-zoom");
-  const img = c.image;
   const item = c.peek || (c.sheet && c.sheet.items[c.idx]);
-  if (!canvas || !img || !img.naturalWidth || !item || !item.box || !c.sheet.page_size) return;
-  const scale = img.naturalWidth / c.sheet.page_size[0];
-  const [x, y, w, h] = item.box.map((v) => v * scale);
+  if (!canvas || !c.image || !item || !item.box || !c.sheet.page_size) return;
+  const { img, box, quad, scale } = zoomSource(item);
+  if (!img.naturalWidth) return;
+  const [x, y, w, h] = [box[0] * scale[0], box[1] * scale[1], box[2] * scale[0], box[3] * scale[1]];
   const pad = Math.max(16, h * 0.8);
   const sx = Math.max(0, x - pad);
   const sy = Math.max(0, y - pad);
@@ -540,12 +616,30 @@ function drawZoom() {
   ctx.drawImage(img, sx, sy, sw, sh, dx, dy, sw * fit, sh * fit);
   ctx.strokeStyle = "#ff8c00";
   ctx.lineWidth = 2;
-  ctx.strokeRect(dx + (x - sx) * fit - 3, dy + (y - sy) * fit - 3, w * fit + 6, h * fit + 6);
+  if (quad) {
+    ctx.beginPath();
+    quad.forEach(([px, py], i) => ctx[i ? "lineTo" : "moveTo"](dx + (px * scale[0] - sx) * fit, dy + (py * scale[1] - sy) * fit));
+    ctx.closePath();
+    ctx.stroke();
+  } else ctx.strokeRect(dx + (x - sx) * fit - 3, dy + (y - sy) * fit - 3, w * fit + 6, h * fit + 6);
+  const label = document.getElementById("cmp-zoom-view");
+  if (label) label.textContent = img === c.image && c.view !== "aligned" ? `Close-up: aligned page (${c.view === "original" ? "no outline on the original for this field" : "loading colour…"})` : `Close-up: ${VIEW_NAMES[c.view].toLowerCase()}`;
 }
 
 function focusBox() {
-  const node = document.querySelector(`.cmp-box[data-i="${c.idx}"]`);
-  if (node) node.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  const node = c.peek ? document.querySelector(`.cmp-box.match[data-name="${CSS.escape(c.peek.name)}"]`) : document.querySelector(`.cmp-box[data-i="${c.idx}"]`);
+  if (node && !node.hidden) scrollWithin(document.querySelector(".cmp-page"), node);
+}
+
+// Scroll a box (only it, never the whole window) so the node sits in view
+function scrollWithin(box, node) {
+  if (!box || !node) return;
+  const outer = box.getBoundingClientRect();
+  const inner = node.getBoundingClientRect();
+  const top = box.scrollTop + inner.top - outer.top;
+  const left = box.scrollLeft + inner.left - outer.left;
+  if (inner.top < outer.top + 24 || inner.bottom > outer.bottom - 24) box.scrollTo({ top: Math.max(0, top - (box.clientHeight - inner.height) / 2), behavior: "smooth" });
+  if (inner.left < outer.left || inner.right > outer.right) box.scrollTo({ left: Math.max(0, left - (box.clientWidth - inner.width) / 2), behavior: "smooth" });
 }
 
 function go(i) {

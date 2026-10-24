@@ -1,7 +1,10 @@
 // Review queue: keyboard-driven, optimistic, prefetching.
-import { api, chip, confidenceColor, displayName, el, emit, modal, on, toast, url } from "./api.js";
+import { api, chip, confidenceColor, displayName, el, emit, modal, on, safeStorage, toast, url } from "./api.js";
 
 const POLL_MS = 5000;
+// The page the crops are cut from, as on the Results tab
+const VIEWS = ["aligned", "color", "original"];
+const VIEW_NAMES = { aligned: "Aligned", color: "Full colour", original: "Original scan" };
 
 const q = {
   buffer: [],
@@ -28,6 +31,12 @@ export function initReview() {
   document.getElementById("rv-load").addEventListener("click", () => load());
   document.getElementById("rv-template").addEventListener("change", refreshNames);
   document.getElementById("rv-wide").addEventListener("change", () => show());
+  const view = document.getElementById("rv-view");
+  if (VIEWS.includes(safeStorage("get", "omr_rv_view"))) view.value = safeStorage("get", "omr_rv_view");
+  view.addEventListener("change", () => {
+    safeStorage("set", "omr_rv_view", view.value);
+    show();
+  });
   document.getElementById("rv-grid").addEventListener("change", () => show());
   document.getElementById("rv-grid-by").addEventListener("change", () => show());
   document.getElementById("rv-job").addEventListener("change", () => refreshNames().then(() => load()));
@@ -288,8 +297,32 @@ function current() {
   return q.buffer[q.pos];
 }
 
+function cropView() {
+  return document.getElementById("rv-view").value;
+}
+
+// A whole-sheet item keeps the aligned overview (it marks the index points)
 function cropUrl(item, pad) {
+  if (!item.crop_url) return null;
+  const view = cropView();
+  if (view === "aligned" || item.kind === "sheet") return cropUrlAligned(item, pad);
+  return url(`/scans/${item.scan_id}/views/${view}/crop?name=${encodeURIComponent(item.name)}&pad=${pad}&outline=true`);
+}
+
+function cropUrlAligned(item, pad) {
   return item.crop_url ? url(`${item.crop_url}&pad=${pad}&outline=true`) : null;
+}
+
+function cycleView() {
+  const select = document.getElementById("rv-view");
+  select.value = VIEWS[(VIEWS.indexOf(select.value) + 1) % VIEWS.length];
+  select.dispatchEvent(new Event("change"));
+}
+
+// Results opens the sheet with this item selected; back here the queue
+// reloads if the sheet changed meanwhile
+function openInResults(item) {
+  emit("results-scan", { id: item.scan_id, field: item.kind === "sheet" ? null : item.name });
 }
 
 function pad() {
@@ -368,12 +401,19 @@ function show() {
     el(
       "div",
       { class: "rv-card" },
-      el("div", { class: "rv-crop" }, src ? cropImage(src, item.name) : el("span", { class: "muted" }, "No image stored for this sheet")),
+      el("div", { class: "rv-crop" }, src ? cropImage(src, item.name, cropUrlAligned(item, pad())) : el("span", { class: "muted" }, "No image stored for this sheet")),
       el(
         "div",
         { class: "rv-side" },
         el("div", { class: "row gap" }, el("h3", {}, item.name), el("span", { class: "chip" }, item.type)),
-        el("div", { class: "rv-meta" }, item.file_id, " · ", el("a", { href: url(`/scans/${item.scan_id}`), target: "_blank" }, item.scan_id.slice(0, 8))),
+        el("div", { class: "rv-file" }, item.file_id || item.scan_id.slice(0, 8)),
+        el(
+          "div",
+          { class: "row gap wrap" },
+          el("a", { class: "small", href: url(`/scans/${item.scan_id}`), target: "_blank", title: "The raw result" }, item.scan_id.slice(0, 8)),
+          el("button", { class: "small", onclick: () => openInResults(item), title: "Open this sheet on the Results tab with this item selected (Alt+V)" }, el("kbd", {}, "Alt+V"), " Open in Results"),
+          el("button", { class: "small", onclick: cycleView, title: "Crop from the aligned page, the page in full colour or the original scan (Alt+O)" }, el("kbd", {}, "Alt+O"), ` ${VIEW_NAMES[cropView()]}`)
+        ),
         el(
           "div",
           { class: "row gap wrap" },
@@ -441,6 +481,12 @@ function onKey(e, input, item, renderOptions) {
     input.value = item.decided !== undefined ? item.decided : item.value;
     input.select();
     renderOptions();
+  } else if (e.altKey && !e.shiftKey && e.code === "KeyV") {
+    e.preventDefault();
+    openInResults(item);
+  } else if (e.altKey && !e.shiftKey && e.code === "KeyO") {
+    e.preventDefault();
+    cycleView();
   } else if (e.altKey && /^[1-9]$/.test(e.key) && item.options) {
     e.preventDefault();
     pick(input, item, Number(e.key) - 1, e.shiftKey);
@@ -547,7 +593,7 @@ function showGrid(main, item) {
     return el(
       "div",
       { class: "rv-tile" },
-      src ? el("img", { src, alt: it.name, onclick: () => (tick.checked = !tick.checked) }) : el("div", { class: "muted small" }, "no image"),
+      src ? el("img", { src, alt: it.name, onclick: () => (tick.checked = !tick.checked), onerror: (e) => { if (e.target.dataset.fallback) return; e.target.dataset.fallback = "1"; e.target.src = cropUrlAligned(it, 24); } }) : el("div", { class: "muted small" }, "no image"),
       el(
         "div",
         { class: "row gap" },
@@ -704,9 +750,18 @@ async function acceptBulk() {
   );
 }
 
-// Small crops (a single bubble row) are upscaled so they are easy to read
-function cropImage(src, alt) {
+// Small crops (a single bubble row) are upscaled so they are easy to read.
+// A colour or original crop that cannot be made (the original file moved)
+// falls back to the aligned one, with a note.
+function cropImage(src, alt, fallback) {
   const img = el("img", { src, alt });
+  img.addEventListener("error", () => {
+    if (!fallback || img.dataset.fallback) return;
+    img.dataset.fallback = "1";
+    img.src = fallback;
+    const box = img.parentElement;
+    if (box) box.append(el("div", { class: "rv-crop-note muted small" }, `${VIEW_NAMES[cropView()]} not available for this sheet (original file not found?): showing the aligned page`));
+  });
   img.addEventListener("load", () => {
     const box = img.parentElement;
     if (!box) return;

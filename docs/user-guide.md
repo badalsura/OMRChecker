@@ -658,6 +658,7 @@ The queue loads by itself when you open the tab. New items from a running job ar
 | **Scan** | *any* | Only one sheet, by its scan id. This is filled in for you when you click **Review N item(s)** on the Scan tab. |
 | **Order** | *Highest risk first* | *Highest risk first* shows whole-sheet problems first, then failed cross-field checks, then joined values (roll numbers and the like), then zones, then single bubble fields. *Oldest first* goes in reading order. |
 | **Wide context** | off | Shows a larger area around the field in the crop, so you can see neighbouring rows. Turn on when you need to judge whether the page was aligned correctly. |
+| **View** | *Aligned* | The page the crop is cut from: *Aligned* (the page the engine read), *Full colour* (the same page in its original colours, to tell pencil from pen or see a colour mark) or *Original scan* (the scan as it came off the scanner, with the item's outline mapped back). Remembered in your browser. Whole-sheet items always show the aligned overview. When the original file cannot be found, the aligned crop is shown with a note. |
 | **Grid** | off | Shows many crops at once as a grid; see below. |
 | **by** | *field* | For the grid: *field* shows the same field from many sheets; *flag* shows every item with the same flag (the one chosen in the **Flag** filter, or the current item's first flag). |
 | **Reload queue** | — | Loads the queue again with the current filters. Skipped items come back. Use it after changing **Template**, **Field / zone**, **Kind** or **Scan**, which do not reload on their own. |
@@ -671,7 +672,9 @@ For the current item the card shows:
 
 - the **crop** of the sheet (small crops are enlarged so they are easy to read), or "No image stored for this sheet";
 - the field or zone **name** and its **type**;
-- the sheet's file name and a short scan id (click it to open the raw result);
+- the sheet's **file name** in large type, and a short scan id (click it to open the raw result);
+- **Open in Results** (Alt+V): opens this sheet on the Results tab with the item selected, to look at the whole page, correct other fields or regrade. Back on the Review queue, items of a sheet changed there are loaded again;
+- the **view** button (Alt+O): cycles the crop through Aligned, Full colour and Original scan (the same as the **View** filter);
 - **conf**: the confidence from 0 to 1, shaded red (low) to green (high);
 - the **flags** the item was read with;
 - **Read as:** the value the scanner read (*(blank)* when nothing), and if you have already saved it, **you saved:**;
@@ -707,6 +710,8 @@ What **Save** does:
 | **Esc** | Reset the box to the value as read (or to what you saved). |
 | **Alt+1** … **Alt+9** | Choose option 1 to 9. Pressing the chosen option again clears it. |
 | **Alt+Shift+1** … **Alt+Shift+9** | Add or remove that option as one of several marks. |
+| **Alt+V** | Open the sheet on the Results tab with this item selected. |
+| **Alt+O** | Crop from the aligned page, the page in full colour or the original scan. |
 | **Up/Down arrows** | (On the Scan tab) move through the sheet list. |
 
 #### Grid: accept many at once
@@ -879,7 +884,7 @@ By default the choices go into a **separate reconciled layer**: the read results
 | Save choices to | a new reconciled layer (default: our results stay as read); or our results, in place (each choice is a correction of our result; undoing the choice puts the read value back). A bare `*` from their file cannot go into a bubble field: type the letters with `E` instead |
 | Only the questions of the level in field … (under *Compare only some questions per sheet*) | off by default. Give the field that holds the sheet's level (e.g. `level`), where to take it from (theirs, else ours where theirs is blank or `*` — the default; theirs only; ours; or either), and the bands: `1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200`. Each sheet's questions are then compared only inside its band. A scanner can report stray marks in other bands (show-through, erasures); on the TERI OpScan file these were 85% of all answer differences. A sheet whose level is blank or not listed is compared in full |
 
-**Reviewing.** The sheet is on the left with every mismatch boxed (orange: the current one, green: decided). On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
+**Reviewing.** The sheet is on the left with every mismatch boxed (red: open, green: decided, orange: the current one; the rest of the page is dimmed around it so it is easy to find). The page scrolls to the current box by itself. On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
 
 | Key | Button | What it does |
 |---|---|---|
@@ -891,8 +896,8 @@ By default the choices go into a **separate reconciled layer**: the read results
 | `Tab` | Skip sheet | leave this sheet without saving; it stays open for later |
 | `Shift`+`Tab` | Previous sheet | go back a sheet (also one already reconciled, to change it) |
 | `Enter` | Save and next | save the choices and go to the next open sheet |
-| `A` | All fields | every compared field of the sheet side by side (theirs, ours, and whether they differ, agree, or the rules skip it), not just the mismatches; agreeing fields get a quiet green box on the page. Type `q1..q50, roll` in the box above the list to show only those. `A` again goes back to the mismatches |
-| `O` | Aligned / Original scan / Colour | switch the page between the aligned page (with the boxes), the scan as it came off the scanner, and the aligned page in colour. The close-up always shows the field |
+| `A` | All fields | every compared field of the sheet side by side (theirs, ours, and whether they differ, agree, or the rules skip it), not just the mismatches; differing names are red, agreeing fields get a quiet dashed green box on the page. The current field is highlighted and the list scrolls to it. Type `q1..q50, roll` in the box above the list to show only those. `A` again goes back to the mismatches |
+| `O` | Aligned / Original scan / Colour | switch the page between the aligned page, the scan as it came off the scanner, and the aligned page in colour. The boxes and the close-up follow: on the original scan each box is mapped back through the page transform (a joined value such as a roll number has no box there, and its close-up stays on the aligned page). The line under the close-up says which page it is cut from |
 | `V` | Open in Results | open this sheet on the Results tab with the field selected, to correct it, regrade it or look closer. Come back to the Compare tab and the sheet is compared again with our current values, keeping the choices that still apply |
 
 A sheet saved with a mismatch still open stays in the queue and comes round again at the end. The top line shows the sheet number, how many sheets are open, how many mismatches are decided, how many sheets agree completely, how many of their rows and our sheets matched nothing, and how many older scans were left out because the file was read again.

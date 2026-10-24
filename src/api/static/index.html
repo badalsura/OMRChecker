@@ -73,6 +73,9 @@
           <select id="rv-order"><option value="risk">Highest risk first</option><option value="oldest">Oldest first</option></select>
         </label>
         <label class="field inline"><input type="checkbox" id="rv-wide"> Wide context</label>
+        <label class="field inline" title="Aligned: the corrected page the engine read. Full colour: the same page in its original colours, to tell pencil from pen. Original: the scan as it came off the scanner. Shortcut: Alt+O">View
+          <select id="rv-view"><option value="aligned">Aligned</option><option value="color">Full colour</option><option value="original">Original scan</option></select>
+        </label>
         <label class="field inline" title="Show many crops as a grid and accept the right ones together"><input type="checkbox" id="rv-grid"> Grid</label>
         <label class="field inline" title="Grid of one field from many sheets, or of every item that has the same flag">by <select id="rv-grid-by"><option value="field">field</option><option value="flag">flag</option></select></label>
         <button id="rv-load" class="primary">Reload queue</button>
@@ -89,7 +92,9 @@
         <kbd>Tab</kbd> skip ·
         <kbd>Shift</kbd>+<kbd>Tab</kbd> previous ·
         <kbd>Esc</kbd> reset ·
-        <kbd>Alt</kbd>+<kbd>1-9</kbd> toggle option
+        <kbd>Alt</kbd>+<kbd>1-9</kbd> toggle option ·
+        <kbd>Alt</kbd>+<kbd>V</kbd> open in Results ·
+        <kbd>Alt</kbd>+<kbd>O</kbd> aligned / full colour / original crop
       </div>
     </section>
 
