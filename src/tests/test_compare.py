@@ -464,13 +464,13 @@ def test_opscan_dat_layout_with_a_dos_end_of_file_mark():
         "0011"
         + "00001"
         + "001101926001"
-        + " " * 19
+        + " " * 17
         + "N "
         + "993100270006"
         + "1"
         + "2"
         + "AB*D"
-        + " " * 196
+        + " " * 176
     )
     content = (
         record + "\r\n" + record.replace("00001", "00002", 1) + "\r\n\x1a"
