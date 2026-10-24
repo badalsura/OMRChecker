@@ -5,6 +5,7 @@
 //   S next mismatch
 //   Tab skip sheet · Shift+Tab previous sheet · Enter save and next
 //   O aligned / original / colour page · V open the sheet in Results
+//   A every compared field side by side, or the mismatches only
 // Choices go to the reconciled layer on the server; with the rule "save to our
 // results" they also become corrections of our results. A comparison runs in
 // the background: review starts on the first sheets while a counter shows the rest.
@@ -25,6 +26,10 @@ const c = {
   view: "aligned",
   poll: null, // timer while a comparison runs in the background
   away: null, // scan_id opened in Results: compared again on return
+  all: false, // A: every compared field in the list, not just the mismatches
+  fields: null, // {scan_id, list} for the all-fields list
+  peek: null, // a matching field picked in that list (zoom and page box)
+  filter: "",
 };
 
 export function initCompare() {
@@ -226,6 +231,8 @@ function showSheet(sheet) {
   c.session.progress = sheet.progress;
   c.choices = Object.fromEntries(sheet.items.map((item) => [item.name, item.source === "manual" ? { source: "manual", value: item.chosen || "" } : item.source || null]));
   c.history = [];
+  c.fields = null;
+  c.peek = null;
   const firstOpen = sheet.items.findIndex((item) => !item.source);
   c.idx = firstOpen >= 0 ? firstOpen : 0;
   const main = document.getElementById("cmp-main");
@@ -253,12 +260,14 @@ function showSheet(sheet) {
           { class: "row gap wrap" },
           el("button", { class: "small", id: "cmp-view", onclick: () => cycleView(), title: "Show the aligned page, the original scan or the page in colour (O)" }, el("kbd", {}, "O"), ` ${VIEW_NAMES[c.view]}`),
           el("button", { class: "small", onclick: openInResults, title: "Open this sheet in Results to correct or regrade it; back here it is compared again (V)" }, el("kbd", {}, "V"), " Open in Results"),
+          el("button", { class: "small", id: "cmp-all", onclick: toggleAll, title: "Every compared field side by side, or the mismatches only (A)" }, el("kbd", {}, "A"), c.all ? " Mismatches only" : " All fields"),
           sheet.save_to === "results" ? el("span", { class: "chip", title: "This comparison writes each choice to our results as a correction" }, "saves to our results") : null
         ),
         sheet.state === "done" ? el("div", { class: "rv-meta" }, `Reconciled by ${sheet.done_by || "someone"}: saving changes it.`) : null,
         el("canvas", { class: "cmp-zoom", width: 420, height: 150 }),
         el("div", { id: "cmp-current" }),
-        el("div", { class: "cmp-list", id: "cmp-list" }),
+        el("input", { id: "cmp-filter", class: "small", placeholder: "Show only: q1..q50, roll", value: c.filter, hidden: !c.all, spellcheck: "false", oninput: (e) => { c.filter = e.target.value; render(); } }),
+        el("div", { class: `cmp-list${c.all ? " all" : ""}`, id: "cmp-list" }),
         el(
           "div",
           { class: "cmp-actions" },
@@ -279,8 +288,96 @@ function showSheet(sheet) {
     focusBox();
   });
   if (c.view !== "aligned") showView();
+  if (c.all) loadFields();
   render();
   main.focus({ preventScroll: true });
+}
+
+function toggleAll() {
+  c.all = !c.all;
+  c.peek = null;
+  const button = document.getElementById("cmp-all");
+  if (button) button.lastChild.textContent = c.all ? " Mismatches only" : " All fields";
+  if (c.all && !c.fields) return loadFields();
+  matchBoxes();
+  render();
+}
+
+async function loadFields() {
+  if (!c.sheet) return;
+  const scanId = c.sheet.scan_id;
+  try {
+    const data = await api(`/compare/sessions/${c.session.id}/sheets/${scanId}/fields`);
+    if (!c.sheet || c.sheet.scan_id !== scanId) return;
+    c.fields = { scan_id: scanId, list: data.fields };
+  } catch (error) {
+    return toast(error.message, "error", 5000);
+  }
+  matchBoxes();
+  render();
+}
+
+// In the all-fields list the agreeing fields get a quiet box on the page too
+function matchBoxes() {
+  for (const node of document.querySelectorAll(".cmp-box.match")) node.remove();
+  const inner = document.querySelector(".cmp-page-inner");
+  if (!inner || !c.all || !c.fields) return;
+  for (const field of c.fields.list) {
+    if (field.state === "mismatch") continue;
+    const box = boxStyle(field.box);
+    if (box) inner.append(el("div", { class: "cmp-box match", "data-name": field.name, style: box, title: `${field.name}: ${field.external || "(blank)"} = ${field.ours || "(blank)"}`, onclick: () => peek(field), hidden: c.view === "original" }));
+  }
+}
+
+function peek(field) {
+  const i = c.sheet.items.findIndex((item) => item.name === field.name);
+  if (i >= 0) return go(i);
+  c.peek = field;
+  render();
+  const node = document.querySelector(`.cmp-box.match[data-name="${CSS.escape(field.name)}"]`);
+  if (node) node.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+}
+
+// Names to show: "q1..q50, roll" (ranges and names), or any text in the name
+function filterMatch(name) {
+  const text = c.filter.trim();
+  if (!text) return true;
+  for (const part of text.split(",").map((p) => p.trim()).filter(Boolean)) {
+    try {
+      if (part.includes("..") && expandRange(part).includes(name)) return true;
+    } catch (error) {
+      /* not a range */
+    }
+    if (name.toLowerCase().includes(part.toLowerCase())) return true;
+  }
+  return false;
+}
+
+const FIELD_STATES = { mismatch: "differs", match: "same", skipped: "rules skip it", outside: "outside the level" };
+
+function renderAllList(list) {
+  if (!c.fields || c.fields.scan_id !== c.sheet.scan_id) {
+    list.append(el("div", { class: "muted small", style: { padding: "6px 8px" } }, "Loading every field…"));
+    return;
+  }
+  const rows = c.fields.list.filter((f) => filterMatch(f.name));
+  const counts = c.fields.list.reduce((acc, f) => ((acc[f.state] = (acc[f.state] || 0) + 1), acc), {});
+  const current = c.sheet.items[c.idx];
+  for (const field of rows) {
+    const choice = choiceSource(c.choices[field.name]);
+    const isCurrent = c.peek ? c.peek.name === field.name : current && current.name === field.name;
+    list.append(
+      el(
+        "div",
+        { class: `cmp-row ${field.state}${isCurrent ? " current" : ""}`, onclick: () => peek(field), title: FIELD_STATES[field.state] },
+        el("code", {}, field.name),
+        el("span", { class: choice === "external" ? "picked" : "" }, shown(field.external)),
+        el("span", { class: choice === "ours" ? "picked" : "" }, shown(field.ours)),
+        el("span", { class: choice === "manual" ? "picked" : "muted small" }, choice === "manual" ? shown(c.choices[field.name].value) : field.state === "mismatch" ? choice || "open" : FIELD_STATES[field.state])
+      )
+    );
+  }
+  list.prepend(el("div", { class: "cmp-row head muted small" }, el("span", {}, `${rows.length} of ${c.fields.list.length}`), el("span", {}, "theirs"), el("span", {}, "ours"), el("span", {}, `${counts.mismatch || 0} differ · ${counts.match || 0} same`)));
 }
 
 function cycleView() {
@@ -365,14 +462,21 @@ function render() {
   if (!c.sheet) return;
   const items = c.sheet.items;
   const item = items[c.idx];
-  for (const node of document.querySelectorAll(".cmp-box")) {
+  for (const node of document.querySelectorAll(".cmp-box[data-i]")) {
     const i = Number(node.dataset.i);
-    node.classList.toggle("current", i === c.idx);
+    node.classList.toggle("current", !c.peek && i === c.idx);
     node.classList.toggle("decided", Boolean(c.choices[items[i].name]));
   }
+  for (const node of document.querySelectorAll(".cmp-box.match")) node.classList.toggle("current", Boolean(c.peek && c.peek.name === node.dataset.name));
   const current = document.getElementById("cmp-current");
   current.innerHTML = "";
-  if (item) {
+  if (c.peek) {
+    current.append(
+      el("div", { class: "row gap wrap" }, el("h3", {}, c.peek.name), el("span", { class: "muted small" }, FIELD_STATES[c.peek.state])),
+      el("div", { class: "cmp-values" }, el("div", { class: "cmp-value" }, el("span", { class: "k" }, "External"), el("span", { class: "v" }, shown(c.peek.external))), el("div", { class: "cmp-value" }, el("span", { class: "k" }, "Ours"), el("span", { class: "v" }, shown(c.peek.ours)))),
+      el("div", { class: "rv-meta" }, "The two readers agree here. S goes back to the mismatches; to change our value, open the sheet in Results (V).")
+    );
+  } else if (item) {
     const choice = choiceSource(c.choices[item.name]);
     current.append(
       el("div", { class: "row gap wrap" }, el("h3", {}, item.name), el("span", { class: "muted small" }, `mismatch ${c.idx + 1} of ${items.length}`)),
@@ -394,7 +498,11 @@ function render() {
   }
   const list = document.getElementById("cmp-list");
   list.innerHTML = "";
-  for (const [i, it] of items.entries()) {
+  list.classList.toggle("all", c.all);
+  const filter = document.getElementById("cmp-filter");
+  if (filter) filter.hidden = !c.all;
+  if (c.all) renderAllList(list);
+  else for (const [i, it] of items.entries()) {
     const choice = choiceSource(c.choices[it.name]);
     list.append(
       el(
@@ -414,7 +522,7 @@ function render() {
 function drawZoom() {
   const canvas = document.querySelector(".cmp-zoom");
   const img = c.image;
-  const item = c.sheet && c.sheet.items[c.idx];
+  const item = c.peek || (c.sheet && c.sheet.items[c.idx]);
   if (!canvas || !img || !img.naturalWidth || !item || !item.box || !c.sheet.page_size) return;
   const scale = img.naturalWidth / c.sheet.page_size[0];
   const [x, y, w, h] = item.box.map((v) => v * scale);
@@ -443,6 +551,7 @@ function focusBox() {
 function go(i) {
   if (!c.sheet || !c.sheet.items.length) return;
   const n = c.sheet.items.length;
+  c.peek = null;
   c.idx = ((i % n) + n) % n;
   render();
   focusBox();
@@ -556,6 +665,9 @@ function onKey(e) {
   } else if (key === "v" || key === "V") {
     e.preventDefault();
     openInResults();
+  } else if (key === "a" || key === "A") {
+    e.preventDefault();
+    toggleAll();
   }
 }
 

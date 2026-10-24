@@ -1275,6 +1275,44 @@ def sheet_keys(plan, scans, load_result, key_values=None):
     return out
 
 
+def sheet_fields(plan, ext_row, result, empty_values):
+    """Every compared field of a sheet, side by side: {name, external, ours,
+    state} with state mismatch, match, skipped (the rules leave it out, e.g.
+    a blank against a mark with blank "ignore") or outside (not in the
+    sheet's level band)."""
+    rules, index, questions = plan["rules"], plan["index"], plan["questions"]
+    band = None
+    if plan["bands"]:
+        from src.api.review import current_value
+
+        column = plan["band_column"]
+        theirs = ext_row[index[column]] if column is not None else None
+        band = sheet_band(
+            rules, plan["bands"], theirs, current_value(result, plan["band_field"])
+        )
+    out = []
+    for column, name in plan["pairs"]:
+        raw = ext_row[index[column]]
+        mine, multi_flag, empty = our_side(result, name, empty_values)
+        ext_norm = external_value(raw, rules, name in questions)
+        our_norm = our_value(mine, empty, name in questions, multi_flag, rules)
+        if band is not None and name in questions and name not in band:
+            state = "outside"  # a question outside this sheet's level
+        else:
+            verdict = differs(ext_norm, our_norm, rules)
+            state = {True: "mismatch", False: "match", None: "skipped"}[verdict]
+        out.append(
+            {
+                "name": name,
+                "column": column,
+                "external": shown(raw, ext_norm[0]),
+                "ours": shown(mine, our_norm[0]),
+                "state": state,
+            }
+        )
+    return out
+
+
 def compare_sheet(plan, ord_, row, value, load_result, empty_values):
     """One of our sheets against its row: (sheet, mismatch items)."""
     sheet = {
@@ -1296,35 +1334,19 @@ def compare_sheet(plan, ord_, row, value, load_result, empty_values):
     if value not in plan["chosen"]:
         sheet["state"] = "duplicate"
         return sheet, []
-    rules, index, questions = plan["rules"], plan["index"], plan["questions"]
     row_no, ext_row = plan["external"][value]
     sheet["row_no"] = row_no + 1
     result = load_result(row["id"]) or {}
-    band = None
-    if plan["bands"]:
-        from src.api.review import current_value
-
-        column = plan["band_column"]
-        theirs = ext_row[index[column]] if column is not None else None
-        band = sheet_band(
-            rules, plan["bands"], theirs, current_value(result, plan["band_field"])
-        )
     items = []
-    for column, name in plan["pairs"]:
-        if band is not None and name in questions and name not in band:
-            continue  # a question outside this sheet's level
-        raw = ext_row[index[column]]
-        mine, multi_flag, empty = our_side(result, name, empty_values)
-        ext_norm = external_value(raw, rules, name in questions)
-        our_norm = our_value(mine, empty, name in questions, multi_flag, rules)
-        if differs(ext_norm, our_norm, rules):
+    for field in sheet_fields(plan, ext_row, result, empty_values):
+        if field["state"] == "mismatch":
             items.append(
                 {
                     "scan_id": row["id"],
-                    "name": name,
+                    "name": field["name"],
                     "pos": len(items),
-                    "external": shown(raw, ext_norm[0]),
-                    "ours": shown(mine, our_norm[0]),
+                    "external": field["external"],
+                    "ours": field["ours"],
                 }
             )
     sheet["mismatches"] = len(items)

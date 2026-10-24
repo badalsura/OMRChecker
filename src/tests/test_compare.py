@@ -621,3 +621,17 @@ def test_a_long_comparison_answers_at_once_and_counts_as_it_goes(compared, monke
         session = client.get(f"/compare/sessions/{session['id']}").json()
     assert not session.get("building")
     assert session["summary"]["sheets"] == 3 and session["summary"]["mismatches"] == 3
+
+
+def test_every_compared_field_side_by_side(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview)
+    base = f"/compare/sessions/{session['id']}"
+    sheet = client.post(f"{base}/claim", json={}).json()["sheet"]
+    fields = client.get(f"{base}/sheets/{sheet['scan_id']}/fields").json()["fields"]
+    assert len(fields) == 20 and all(f["box"] for f in fields)
+    states = {f["name"]: f["state"] for f in fields}
+    assert [n for n, s in states.items() if s == "mismatch"] == ["q1", "q2"]
+    assert states["q3"] == "match"
+    q3 = next(f for f in fields if f["name"] == "q3")
+    assert q3["ours"] == results[0]["responses"]["q3"] or q3["ours"] == ""

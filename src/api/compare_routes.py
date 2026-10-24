@@ -9,6 +9,7 @@ OMR scanner such as Scantron OpScan 6, or any CSV / fixed-width file).
     PATCH  /compare/sessions/{id}                   change mapping / key / rules (compared again)
     POST   /compare/sessions/{id}/rebuild           compare again (our values changed after review)
     POST   /compare/sessions/{id}/sheets/{scan}/recompare compare one sheet again (after a regrade)
+    GET    /compare/sessions/{id}/sheets/{scan}/fields   every compared field side by side
     DELETE /compare/sessions/{id}                   delete it and its decisions
     POST   /compare/sessions/{id}/claim             lock the next / previous / a given sheet
     POST   /compare/sessions/{id}/sheets/{scan}     save the choices for one sheet
@@ -637,6 +638,33 @@ def register(app, ctx, secured):
             except ResultsError as error:
                 refused[name] = str(error)
         return {"written": written, "not_written": refused}
+
+    @app.get(
+        "/compare/sessions/{session_id}/sheets/{scan_id}/fields",
+        tags=["compare"],
+        dependencies=secured,
+    )
+    def compare_fields(session_id: str, scan_id: str):
+        """Every compared field of the sheet side by side (their value, ours,
+        mismatch / match / skipped / outside), with its box on the page."""
+        session = session_or_404(session_id)
+        try:
+            sheet = store.sheet(session_id, scan_id)
+        except compare.CompareError as error:
+            fail(error)
+        plan = plan_of(session)
+        found = plan["external"].get(sheet["key"])
+        if found is None:
+            return {"fields": []}
+        result = load_result(scan_id) or {}
+        info = ctx.results.template_info(result) if result else {}
+        labels = info.get("custom_labels") or {}
+        fields = compare.sheet_fields(
+            plan, found[1], result, info.get("empty_values") or {}
+        )
+        for field in fields:
+            field["box"] = item_box(result, field["name"], labels)[1]
+        return {"fields": fields}
 
     @app.post(
         "/compare/sessions/{session_id}/sheets/{scan_id}/recompare",
