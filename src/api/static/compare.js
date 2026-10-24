@@ -4,8 +4,14 @@
 //   1 external value · 2 our value · E type a value · R undo / previous field
 //   S next mismatch
 //   Tab skip sheet · Shift+Tab previous sheet · Enter save and next
-// Choices go to the reconciled layer on the server; read results never change.
-import { api, chip, confidenceColor, displayName, el, modal, on, safeStorage, saveAs, state, toast, url } from "./api.js";
+//   O aligned / original / colour page · V open the sheet in Results
+// Choices go to the reconciled layer on the server; with the rule "save to our
+// results" they also become corrections of our results. A comparison runs in
+// the background: review starts on the first sheets while a counter shows the rest.
+import { api, chip, confidenceColor, displayName, el, emit, modal, on, safeStorage, saveAs, state, toast, url } from "./api.js";
+
+const VIEWS = ["aligned", "original", "color"];
+const VIEW_NAMES = { aligned: "Aligned", original: "Original scan", color: "Colour" };
 
 const c = {
   sessions: [],
@@ -16,6 +22,9 @@ const c = {
   choices: {},
   history: [],
   busy: false,
+  view: "aligned",
+  poll: null, // timer while a comparison runs in the background
+  away: null, // scan_id opened in Results: compared again on return
 };
 
 export function initCompare() {
@@ -33,6 +42,12 @@ export function initCompare() {
 }
 
 export function onShowCompare() {
+  // Back from Results with a sheet: compare it again (it may be regraded)
+  if (c.away && c.session && c.sheet && c.sheet.scan_id === c.away) {
+    c.away = null;
+    return recompare();
+  }
+  c.away = null;
   loadSessions(true);
 }
 
@@ -78,7 +93,36 @@ async function openSession(id) {
     return toast(error.message, "error");
   }
   c.sheet = null;
+  watchBuild();
   await claim({});
+}
+
+// While a comparison runs: a live counter, and the first sheets as they come
+function watchBuild() {
+  clearTimeout(c.poll);
+  c.poll = null;
+  if (!c.session || !c.session.building) return;
+  const id = c.session.id;
+  c.poll = setTimeout(async () => {
+    if (!c.session || c.session.id !== id) return;
+    try {
+      const fresh = await api(`/compare/sessions/${id}`);
+      if (!c.session || c.session.id !== id) return;
+      const finished = !fresh.building;
+      c.session = fresh;
+      if (finished) {
+        const s = fresh.summary || {};
+        if (s.error) toast(`Comparing stopped: ${s.error}`, "error", 8000);
+        else toast(`Compared ${s.sheets} sheets in ${s.seconds} s: ${s.mismatches} mismatches on ${(s.states || {}).pending || 0} sheets`, "ok", 5000);
+        loadSessions();
+      }
+      if (!c.sheet && !c.busy) await claim({});
+      else progressLine();
+    } catch (error) {
+      /* try again on the next tick */
+    }
+    watchBuild();
+  }, 1200);
 }
 
 function showEmpty(text, extra) {
@@ -102,8 +146,9 @@ async function claim(body) {
       if (data.progress) c.session.progress = data.progress;
       const summary = c.session.summary || {};
       const left = data.progress ? data.progress.open : 0;
+      if (c.session.building) return showEmpty(left ? `The ${left} open sheet${left === 1 ? " is" : "s are"} being worked on by someone else; more come as the comparison goes on.` : "Comparing… the first sheets with a mismatch show here as soon as they are found.");
       return showEmpty(
-        left ? `The ${left} open sheet${left === 1 ? " is" : "s are"} being worked on by someone else.` : summary.mismatches ? "Every mismatch is reconciled. Export the reconciled data." : "No mismatches: the two readers agree on every compared field.",
+        summary.error ? `Comparing stopped: ${summary.error}. Use Compare again.` : left ? `The ${left} open sheet${left === 1 ? " is" : "s are"} being worked on by someone else.` : summary.mismatches ? "Every mismatch is reconciled. Export the reconciled data." : "No mismatches: the two readers agree on every compared field.",
         el("div", { class: "row gap", style: { justifyContent: "center" } }, exportButtons())
       );
     }
@@ -160,7 +205,10 @@ async function saveAndNext() {
       json: { decisions: changedDecisions() },
     });
     c.session.progress = data.progress;
-    if (data.state !== "done") toast(`Saved; ${c.sheet.items.filter((i) => !c.choices[i.name]).length} mismatch(es) on this sheet left open`, "", 2500);
+    if (data.not_written && Object.keys(data.not_written).length) {
+      const names = Object.keys(data.not_written);
+      toast(`Not written to our results: ${names.join(", ")} (${Object.values(data.not_written)[0]}). Type the value with E.`, "error", 8000);
+    } else if (data.state !== "done") toast(`Saved; ${c.sheet.items.filter((i) => !c.choices[i.name]).length} mismatch(es) on this sheet left open`, "", 2500);
   } catch (error) {
     toast(error.message, "error", 5000);
     return;
@@ -182,9 +230,11 @@ function showSheet(sheet) {
   c.idx = firstOpen >= 0 ? firstOpen : 0;
   const main = document.getElementById("cmp-main");
   main.innerHTML = "";
+  // The aligned page feeds the zoom; the page shown follows the O toggle
   const img = el("img", { class: "cmp-img", alt: sheet.file_name || "sheet", src: url(sheet.page) });
   c.image = img;
-  const inner = el("div", { class: "cmp-page-inner" }, img);
+  const shownImg = el("img", { class: "cmp-img cmp-alt", alt: "", hidden: true });
+  const inner = el("div", { class: "cmp-page-inner" }, img, shownImg);
   for (const [i, item] of sheet.items.entries()) {
     const box = boxStyle(item.box);
     if (box) inner.append(el("div", { class: "cmp-box", "data-i": i, style: box, title: item.name, onclick: () => go(i) }));
@@ -198,6 +248,13 @@ function showSheet(sheet) {
         "div",
         { class: "cmp-side" },
         el("div", { class: "cmp-file" }, el("strong", {}, sheet.file_name || sheet.scan_id.slice(0, 8)), sheet.key ? el("span", { class: "muted" }, ` · key ${sheet.key}`) : null, sheet.row_no ? el("span", { class: "muted" }, ` · their row ${sheet.row_no}`) : null),
+        el(
+          "div",
+          { class: "row gap wrap" },
+          el("button", { class: "small", id: "cmp-view", onclick: () => cycleView(), title: "Show the aligned page, the original scan or the page in colour (O)" }, el("kbd", {}, "O"), ` ${VIEW_NAMES[c.view]}`),
+          el("button", { class: "small", onclick: openInResults, title: "Open this sheet in Results to correct or regrade it; back here it is compared again (V)" }, el("kbd", {}, "V"), " Open in Results"),
+          sheet.save_to === "results" ? el("span", { class: "chip", title: "This comparison writes each choice to our results as a correction" }, "saves to our results") : null
+        ),
         sheet.state === "done" ? el("div", { class: "rv-meta" }, `Reconciled by ${sheet.done_by || "someone"}: saving changes it.`) : null,
         el("canvas", { class: "cmp-zoom", width: 420, height: 150 }),
         el("div", { id: "cmp-current" }),
@@ -221,8 +278,70 @@ function showSheet(sheet) {
     drawZoom();
     focusBox();
   });
+  if (c.view !== "aligned") showView();
   render();
   main.focus({ preventScroll: true });
+}
+
+function cycleView() {
+  c.view = VIEWS[(VIEWS.indexOf(c.view) + 1) % VIEWS.length];
+  showView();
+}
+
+// The original scan has its own coordinates: no boxes on it (the zoom keeps
+// showing the field on the aligned page)
+async function showView() {
+  const button = document.getElementById("cmp-view");
+  if (button) button.lastChild.textContent = ` ${VIEW_NAMES[c.view]}`;
+  const alt = document.querySelector(".cmp-alt");
+  if (!alt || !c.sheet) return;
+  const aligned = c.view === "aligned";
+  c.image.hidden = !aligned;
+  alt.hidden = aligned;
+  for (const node of document.querySelectorAll(".cmp-box")) node.hidden = c.view === "original";
+  if (aligned) return;
+  const scanId = c.sheet.scan_id;
+  try {
+    const data = await api(`/scans/${scanId}/views/${c.view}`);
+    if (c.sheet && c.sheet.scan_id === scanId) alt.src = url(data.image_url);
+  } catch (error) {
+    toast(error.message, "error", 5000);
+  }
+}
+
+function openInResults() {
+  if (!c.sheet) return;
+  const item = c.sheet.items[c.idx];
+  c.away = c.sheet.scan_id;
+  emit("results-scan", { id: c.sheet.scan_id, field: item ? item.name : null });
+}
+
+// This sheet compared again with our current values (choices that still apply stay)
+async function recompare() {
+  if (!c.sheet || c.busy) return;
+  const scanId = c.sheet.scan_id;
+  const ord = c.sheet.ord;
+  const unsaved = changedDecisions();
+  c.busy = true;
+  let data;
+  try {
+    data = await api(`/compare/sessions/${c.session.id}/sheets/${scanId}/recompare`, { method: "POST" });
+  } catch (error) {
+    c.busy = false;
+    return toast(error.message, "error", 5000);
+  }
+  c.busy = false;
+  if (!data.sheet) {
+    toast("Compared again: this sheet now agrees with their file", "ok", 3000);
+    c.session.progress = data.progress;
+    return claim({ after: ord, direction: "next" });
+  }
+  const before = c.sheet.items.length;
+  showSheet(data.sheet);
+  // Choices not saved yet stay on the fields that still differ
+  for (const [name, choice] of Object.entries(unsaved)) if (c.sheet.items.some((i) => i.name === name)) c.choices[name] = choice;
+  render();
+  toast(`Compared again: ${data.sheet.items.length} mismatch${data.sheet.items.length === 1 ? "" : "es"} (was ${before})`, "", 3000);
 }
 
 function boxStyle(box) {
@@ -388,12 +507,19 @@ function progressLine() {
   const p = c.session && c.session.progress;
   if (!p) return (node.textContent = "");
   const parts = [];
-  if (c.sheet) parts.push(`Sheet ${c.sheet.position} of ${p.to_review}`);
+  const b = c.session.building;
+  if (b) parts.push(b.total ? `Comparing ${b.done.toLocaleString()} of ${b.total.toLocaleString()} sheets…` : "Comparing…");
+  if (c.sheet) parts.push(`Sheet ${c.sheet.position} of ${p.to_review}${b ? " so far" : ""}`);
   parts.push(`${p.open} open`, `decided ${p.decided} of ${p.mismatches} mismatches`);
   if (p.chose_external) parts.push(`${p.chose_external} external kept`);
   const summary = c.session.summary || {};
-  const missing = (summary.states || {}).no_record || 0;
+  const states = p.sheets || {};
+  if (states.clean) parts.push(`${states.clean} agree`);
+  const missing = states.no_record || 0;
   if (p.unmatched_external || missing) parts.push(`unmatched: ${p.unmatched_external} of theirs, ${missing} of ours`);
+  if (states.replaced) parts.push(`${states.replaced} older scans of a file read again`);
+  if (states.duplicate) parts.push(`${states.duplicate} not compared (same file in several scans)`);
+  if (states.not_read) parts.push(`${states.not_read} not read`);
   node.textContent = parts.join(" · ");
 }
 
@@ -424,6 +550,12 @@ function onKey(e) {
   } else if (key === "s" || key === "S") {
     e.preventDefault();
     go(c.idx + 1);
+  } else if (key === "o" || key === "O") {
+    e.preventDefault();
+    cycleView();
+  } else if (key === "v" || key === "V") {
+    e.preventDefault();
+    openInResults();
   }
 }
 
@@ -434,7 +566,8 @@ async function rebuild() {
   if (!c.session) return;
   try {
     c.session = await api(`/compare/sessions/${c.session.id}/rebuild`, { method: "POST" });
-    toast(`Compared again: ${c.session.summary.mismatches} mismatches`, "ok");
+    if (!c.session.building) toast(`Compared again: ${c.session.summary.mismatches} mismatches`, "ok");
+    watchBuild();
     await claim({});
   } catch (error) {
     toast(error.message, "error", 6000);
@@ -499,7 +632,11 @@ function rulesForm(rules) {
     band_field: el("input", { size: 10, value: rules.band_field || "", placeholder: "e.g. level", spellcheck: "false" }),
     band_source: el("select", {}, el("option", { value: "theirs_then_ours" }, "theirs, else ours"), el("option", { value: "theirs" }, "their value"), el("option", { value: "ours" }, "our value"), el("option", { value: "either" }, "either (both bands)")),
     band_map: el("input", { size: 46, value: rules.band_map || "", placeholder: "1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200", spellcheck: "false" }),
+    save_to: el("select", {}, el("option", { value: "layer" }, "a new reconciled layer (our results stay as read)"), el("option", { value: "results" }, "our results, in place (as corrections, undoable)")),
+    duplicates: el("select", {}, el("option", { value: "newest" }, "compare its newest scan"), el("option", { value: "skip" }, "compare none of them")),
   };
+  f.save_to.value = rules.save_to || "layer";
+  f.duplicates.value = rules.duplicates || "newest";
   f.fields.value = rules.fields || "all";
   f.blank.value = rules.blank || "mismatch";
   f.multi.value = rules.multi || "same";
@@ -514,15 +651,22 @@ function rulesForm(rules) {
     el("label", { class: "field inline", title: "What their file writes when more than one option is marked" }, "Their multi-mark is written as ", f.multi_codes),
     el("label", { class: "field inline" }, f.case, " Upper and lower case differ"),
     el("label", { class: "field inline", title: "A roll number with a blank digit: '12 45' equals '1245'" }, f.spaces, " Ignore spaces inside values"),
+    el("label", { class: "field inline", title: "When the same file was read in several jobs" }, "A file we read more than once: ", f.duplicates),
+    el("label", { class: "field inline", title: "In place: each choice also corrects our result (audited; undo it in Results), so Results and every export show it" }, "Save choices to ", f.save_to),
     el(
-      "div",
-      { class: "row gap wrap", title: "Each sheet answers only the questions of its level: questions outside that band are not compared (a scanner can report stray marks there). A sheet whose level is blank or not listed is compared in full." },
-      el("span", { class: "small" }, "Only the questions of the level in field"),
-      f.band_field,
-      el("span", { class: "small" }, "taken from"),
-      f.band_source,
-      el("span", { class: "small" }, "bands"),
-      f.band_map
+      "details",
+      { open: Boolean(rules.band_field) },
+      el("summary", { class: "small" }, "Compare only some questions per sheet (level bands)"),
+      el(
+        "div",
+        { class: "row gap wrap", title: "Each sheet answers only the questions of its level: questions outside that band are not compared (a scanner can report stray marks there). A sheet whose level is blank or not listed is compared in full." },
+        el("span", { class: "small" }, "Only the questions of the level in field"),
+        f.band_field,
+        el("span", { class: "small" }, "taken from"),
+        f.band_source,
+        el("span", { class: "small" }, "bands"),
+        f.band_map
+      )
     )
   );
   const read = () => ({
@@ -537,6 +681,8 @@ function rulesForm(rules) {
     band_field: f.band_field.value.trim(),
     band_source: f.band_source.value,
     band_map: f.band_map.value.trim(),
+    save_to: f.save_to.value,
+    duplicates: f.duplicates.value,
   });
   return { node, read };
 }
@@ -567,15 +713,19 @@ async function newComparison() {
   template.append(...state.templates.map((t) => el("option", { value: t.id }, displayName(t.name, t.id))));
   const current = document.getElementById("res-template");
   if (current && current.value) template.value = current.value;
-  const job = el("select", {}, el("option", { value: "" }, "All sheets of the template"));
+  const everyJob = "Every job of the template (a file read again: its newest scan)";
+  const job = el("select", {}, el("option", { value: "" }, everyJob));
+  // The newest job of the template is picked: one run of the sheets
   const fillJobs = async () => {
     job.innerHTML = "";
-    job.append(el("option", { value: "" }, "All sheets of the template"));
+    job.append(el("option", { value: "" }, everyJob));
     try {
-      for (const j of (await api("/jobs?limit=200")).jobs) {
-        if (j.template_id && j.template_id !== template.value) continue;
-        job.append(el("option", { value: j.id }, `${j.name || j.id.slice(0, 8)} · ${j.created_at ? new Date(j.created_at * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : ""}`));
+      const jobs = (await api("/jobs?limit=200")).jobs.filter((j) => !j.template_id || j.template_id === template.value);
+      jobs.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      for (const j of jobs) {
+        job.append(el("option", { value: j.id }, `${j.name || j.id.slice(0, 8)} · ${j.total_files || j.processed_files || 0} sheets · ${j.created_at ? new Date(j.created_at * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : ""}`));
       }
+      if (jobs.length) job.value = jobs[0].id;
     } catch (error) {
       /* jobs are optional */
     }
@@ -689,7 +839,7 @@ async function newComparison() {
       const session = await api("/compare/sessions", { method: "POST", json: body });
       dialog.close();
       c.session = session;
-      toast(`${session.summary.matched} sheets matched · ${session.summary.mismatches} mismatches`, "ok", 5000);
+      if (!session.building) toast(`${session.summary.matched} sheets matched · ${session.summary.mismatches} mismatches`, "ok", 5000);
       await loadSessions(true);
     } catch (error) {
       toast(error.message, "error", 8000);
@@ -813,7 +963,8 @@ function editRules() {
     try {
       c.session = await api(`/compare/sessions/${c.session.id}`, { method: "PATCH", json: { rules: rules.read(), key: key.read() } });
       dialog.close();
-      toast(`Compared again: ${c.session.summary.mismatches} mismatches; choices whose two values did not change are kept`, "ok", 5000);
+      if (!c.session.building) toast(`Compared again: ${c.session.summary.mismatches} mismatches; choices whose two values did not change are kept`, "ok", 5000);
+      watchBuild();
       await claim({});
     } catch (error) {
       toast(error.message, "error", 8000);

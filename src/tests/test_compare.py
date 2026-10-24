@@ -5,10 +5,12 @@ layer with its locks and audit trail, and the exports."""
 import csv
 import io
 import json
+import time
 
 import pytest
 
 from src.api import compare
+from src.api.storage import read_json
 from src.synth.render import default_spec
 from src.tests.test_api import make_client, scan_one, upload_template
 from src.tests.test_manage_api import flagged_sheet
@@ -530,3 +532,92 @@ def test_a_multi_mark_code_on_both_sides_agrees():
     ours = compare.our_value("*", "", False, False, rules)
     assert ours == (compare.MULTI, "")
     assert compare.differs(compare.external_value("*", rules), ours, rules) is False
+
+
+def test_a_file_read_again_compares_its_newest_scan(compared, spec):
+    client, template_id, results, preview = compared
+    newer = scan_one(
+        client, template_id, flagged_sheet(spec, seed=1), name="100001.png"
+    )
+    session = create(client, template_id, preview)
+    base = f"/compare/sessions/{session['id']}"
+    states = session["progress"]["sheets"]
+    assert states.get("replaced") == 1 and states["pending"] == 2, states
+    sheet = client.post(f"{base}/claim", json={}).json()["sheet"]
+    assert sheet["scan_id"] == newer["scan_id"]
+    # Or none of them
+    patched = client.patch(base, json={"rules": {"duplicates": "skip"}}).json()
+    assert patched["progress"]["sheets"].get("duplicate") == 2
+
+
+def test_choices_saved_to_our_results_and_a_sheet_compared_again(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview, rules={"save_to": "results"})
+    base = f"/compare/sessions/{session['id']}"
+    sheet = client.post(f"{base}/claim", json={}).json()["sheet"]
+    scan_id = sheet["scan_id"]
+    assert sheet["save_to"] == "results"
+    theirs = next(i["external"] for i in sheet["items"] if i["name"] == "q1")
+    saved = client.post(
+        f"{base}/sheets/{scan_id}", json={"decisions": {"q1": "external"}}
+    )
+    assert saved.json()["written"] == ["q1"]
+    assert client.get(f"/scans/{scan_id}").json()["responses"]["q1"] == theirs
+    # Undone: our result goes back to the value as read
+    undone = client.post(f"{base}/sheets/{scan_id}", json={"decisions": {"q1": None}})
+    assert undone.json()["written"] == ["q1"]
+    assert (
+        client.get(f"/scans/{scan_id}").json()["responses"]["q1"]
+        == results[0]["responses"]["q1"]
+    )
+    # Corrected in Results, then compared again: only q2 still differs
+    client.post(f"/scans/{scan_id}/corrections", json={"changes": {"q1": theirs}})
+    again = client.post(f"{base}/sheets/{scan_id}/recompare").json()
+    assert [i["name"] for i in again["sheet"]["items"]] == ["q2"]
+
+
+def test_a_comparison_is_written_a_part_at_a_time(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview)
+    ctx = client.app.state.ctx
+    full = ctx.compare.session(session["id"])
+    plan = compare.prepare(
+        full,
+        compare.load_source(ctx.data.root / "compare" / full["id"]),
+        ctx.templates.template_json(template_id),
+    )
+    scans = list(ctx.index.iter_results(template_id=template_id))
+    load = lambda scan_id: read_json(
+        ctx.data.scan_dir(scan_id) / "result.json"
+    )  # noqa: E731
+    seen = []
+    summary = compare.run(
+        ctx.compare,
+        full,
+        plan,
+        scans,
+        load,
+        {},
+        progress=lambda done, total, _: seen.append((done, total)),
+        chunk=1,
+    )
+    assert seen[:3] == [(1, 3), (2, 3), (3, 3)] and summary["mismatches"] == 3
+    # A newer comparison of the session took over: this one stops
+    assert (
+        compare.run(ctx.compare, full, plan, scans, load, {}, current=lambda: False)
+        is None
+    )
+
+
+def test_a_long_comparison_answers_at_once_and_counts_as_it_goes(compared, monkeypatch):
+    from src.api import compare_routes
+
+    client, template_id, results, preview = compared
+    monkeypatch.setattr(compare_routes, "BUILD_WAIT_SECONDS", 0)
+    session = create(client, template_id, preview)
+    deadline = time.time() + 20
+    while session.get("building") and time.time() < deadline:
+        time.sleep(0.05)
+        session = client.get(f"/compare/sessions/{session['id']}").json()
+    assert not session.get("building")
+    assert session["summary"]["sheets"] == 3 and session["summary"]["mismatches"] == 3

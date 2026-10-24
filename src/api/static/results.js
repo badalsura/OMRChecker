@@ -98,9 +98,12 @@ export function initResults() {
       load(0);
     });
   });
-  on("results-scan", (scanId) => {
+  // A sheet id, or {id, field} to open with that field selected (from Compare)
+  on("results-scan", async (target) => {
+    const { id, field } = typeof target === "string" ? { id: target } : target;
     document.querySelector('.tabs button[data-tab="results"]').click();
-    open(scanId);
+    await open(id);
+    if (field && r.data && r.data.scan_id === id && findItem(field)) select(field);
   });
 }
 

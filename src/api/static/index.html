@@ -99,7 +99,7 @@
         <label class="field inline">Comparison <select id="cmp-session"></select></label>
         <button id="cmp-new" class="primary" title="Read another reader's file (OpScan / ScanTools Plus export, any CSV or fixed-width file) and compare it with our results">New comparison…</button>
         <button id="cmp-rules" class="ghost" title="Which fields are compared, how blanks and multi-marks count, and how their rows find our sheets">Rules…</button>
-        <button id="cmp-rebuild" class="ghost" title="Compare again with our current values (after corrections in the review queue). Choices whose two values did not change are kept.">Compare again</button>
+        <button id="cmp-rebuild" class="ghost" title="Compare again with our current values (after corrections in the review queue). Runs in the background; choices whose two values did not change are kept.">Compare again</button>
         <button id="cmp-export" class="ghost">Export…</button>
         <button id="cmp-delete" class="ghost danger" title="Delete this comparison and its choices; read results are not touched">Delete</button>
         <span class="spacer"></span>
@@ -117,7 +117,9 @@
         <kbd>Tab</kbd> skip sheet ·
         <kbd>Shift</kbd>+<kbd>Tab</kbd> previous sheet ·
         <kbd>Enter</kbd> save and next sheet ·
-        choices are kept apart from the read results; a sheet you have open is locked for others
+        <kbd>O</kbd> aligned / original / colour page ·
+        <kbd>V</kbd> open in Results (compared again when you come back) ·
+        choices go to a reconciled layer, or to our results when the rules say so; a sheet you have open is locked for others
       </div>
     </section>
 

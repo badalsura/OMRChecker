@@ -33,8 +33,8 @@ your labelled data.
 | `weak_mark` | a bubble read as marked has little ink inside its circle (partial fill, tick, misregistration) | yes |
 | `possible_missed_mark` | an unmarked bubble has a lot of ink inside its circle | yes |
 | `model_disagrees` | the learned classifier and the threshold reader disagree | yes |
-| `kept_darker_mark` | several bubbles were marked and only the clearly darkest was kept (`keep_darker_gap`) | no |
-| `faint_second_mark` | a second, lightly filled bubble made the field a double mark (`strict_double_mark`) | no (the field is also `multi_marked`) |
+| `kept_darker_mark` | several bubbles were marked and only the clearly darkest was kept (`keep_darker_gap`) | yes |
+| `faint_second_mark` | a second, lightly filled bubble made the field a double mark (`strict_double_mark`) | yes |
 
 Zones add `not_found`, `multiple_symbols`, `pattern_mismatch`,
 `engine_unavailable`, `no_icr_model` and `read_error`, which go to review, and

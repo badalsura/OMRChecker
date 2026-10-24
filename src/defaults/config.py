@@ -90,6 +90,10 @@ CONFIG_DEFAULTS = DotMap(
                 "low_confidence",
                 "weak_mark",
                 "possible_missed_mark",
+                # Only with keep_darker_gap / strict_double_mark on: a dropped
+                # lighter mark is a real double mark more often than not
+                "kept_darker_mark",
+                "faint_second_mark",
                 "model_disagrees",
                 # A printed border would have moved the block by 0.4+ pitch
                 "border_slide",

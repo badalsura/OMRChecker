@@ -61,6 +61,13 @@ DEFAULT_RULES = {
     "band_field": "",
     "band_source": "theirs_then_ours",
     "band_map": "",
+    # Several of our scans with one key (the same file read in several jobs):
+    # "newest" compares the newest readable scan, "skip" compares none
+    "duplicates": "newest",
+    # Where a choice goes: "layer" (the reconciled layer only; our results
+    # stay as read) or "results" (also a correction of our result, audited
+    # and undoable like one made in Results)
+    "save_to": "layer",
 }
 
 SESSION_STATES = ("pending", "partial", "done")
@@ -560,7 +567,8 @@ CREATE TABLE IF NOT EXISTS sheets (
     file_name TEXT,
     row_no INTEGER,
     mismatches INTEGER DEFAULT 0,
-    -- clean, pending, partial, done; no_record, duplicate (not compared)
+    -- clean, pending, partial, done; not compared: no_record, not_read,
+    -- replaced (an older scan of a file read again), duplicate
     state TEXT,
     locked_by TEXT,
     locked_at REAL,
@@ -624,6 +632,11 @@ CREATE TABLE IF NOT EXISTS profiles (
     saved_at REAL
 );
 """
+
+
+def chunked(values, size=500):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
 class CompareStore:
@@ -756,89 +769,137 @@ class CompareStore:
         return self.execute("DELETE FROM profiles WHERE name=?", (name,))
 
     # ---- building ---------------------------------------------------------
-    def replace_rows(self, session_id, sheets, items, unmatched, keep):
-        """Write a rebuilt comparison. keep: {(scan_id, name): decided item row}
-        whose decision stays when both values are unchanged."""
-        old_sheets = {
-            row["scan_id"]: row
-            for row in self.query(
-                "SELECT scan_id, done_by, done_at FROM sheets WHERE session_id=?",
-                (session_id,),
-            )
-        }
-        decided = {}
-        item_rows = []
-        for item in items:
-            previous = keep.get((item["scan_id"], item["name"]))
-            if previous and (previous["external"], previous["ours"]) == (
-                item["external"],
-                item["ours"],
-            ):
-                item.update(
-                    {
-                        k: previous[k]
-                        for k in ("chosen", "source", "decided_by", "decided_at")
-                    }
-                )
-                decided[item["scan_id"]] = decided.get(item["scan_id"], 0) + 1
-            item_rows.append(
-                (
-                    session_id,
-                    item["scan_id"],
-                    item["name"],
-                    item["pos"],
+    def write_sheets(self, session_id, sheets, items):
+        """
+        Write (re)compared sheets and their mismatches, a part of the
+        comparison at a time. A decision stays when both its values are
+        unchanged (read when written, so a choice saved meanwhile counts), and
+        so does who holds a sheet.
+        """
+        if not sheets:
+            return
+        ids = [sheet["scan_id"] for sheet in sheets]
+        with self.lock:
+            old_sheets, keep = {}, {}
+            for part in chunked(ids):
+                marks = ",".join("?" * len(part))
+                for row in self.conn.execute(
+                    "SELECT scan_id, locked_by, locked_at, done_by, done_at FROM sheets "
+                    f"WHERE session_id=? AND scan_id IN ({marks})",
+                    (session_id, *part),
+                ):
+                    old_sheets[row["scan_id"]] = dict(row)
+                for row in self.conn.execute(
+                    "SELECT * FROM items WHERE session_id=? AND source IS NOT NULL "
+                    f"AND scan_id IN ({marks})",
+                    (session_id, *part),
+                ):
+                    keep[(row["scan_id"], row["name"])] = dict(row)
+            decided = {}
+            item_rows = []
+            for item in items:
+                previous = keep.get((item["scan_id"], item["name"]))
+                if previous and (previous["external"], previous["ours"]) == (
                     item["external"],
                     item["ours"],
-                    item.get("chosen"),
-                    item.get("source"),
-                    item.get("decided_by"),
-                    item.get("decided_at"),
+                ):
+                    item.update(
+                        {
+                            k: previous[k]
+                            for k in ("chosen", "source", "decided_by", "decided_at")
+                        }
+                    )
+                    decided[item["scan_id"]] = decided.get(item["scan_id"], 0) + 1
+                item_rows.append(
+                    (
+                        session_id,
+                        item["scan_id"],
+                        item["name"],
+                        item["pos"],
+                        item["external"],
+                        item["ours"],
+                        item.get("chosen"),
+                        item.get("source"),
+                        item.get("decided_by"),
+                        item.get("decided_at"),
+                    )
                 )
-            )
-        sheet_rows = []
-        for sheet in sheets:
-            state = sheet["state"]
-            done_by = done_at = None
-            if state == "pending":
-                count = decided.get(sheet["scan_id"], 0)
-                if count and count >= sheet["mismatches"]:
-                    state = "done"
-                    old = old_sheets.get(sheet["scan_id"]) or {}
-                    done_by, done_at = old.get("done_by"), old.get("done_at")
-                elif count:
-                    state = "partial"
-            sheet_rows.append(
-                (
-                    session_id,
-                    sheet["scan_id"],
-                    sheet["ord"],
-                    sheet["key"],
-                    sheet["file_name"],
-                    sheet.get("row_no"),
-                    sheet["mismatches"],
-                    state,
-                    done_by,
-                    done_at,
+            sheet_rows = []
+            for sheet in sheets:
+                state = sheet["state"]
+                old = old_sheets.get(sheet["scan_id"]) or {}
+                done_by = done_at = None
+                if state == "pending":
+                    count = decided.get(sheet["scan_id"], 0)
+                    if count and count >= sheet["mismatches"]:
+                        state = "done"
+                        done_by, done_at = old.get("done_by"), old.get("done_at")
+                    elif count:
+                        state = "partial"
+                held = state in SESSION_STATES
+                sheet_rows.append(
+                    (
+                        session_id,
+                        sheet["scan_id"],
+                        sheet["ord"],
+                        sheet["key"],
+                        sheet["file_name"],
+                        sheet.get("row_no"),
+                        sheet["mismatches"],
+                        state,
+                        old.get("locked_by") if held else None,
+                        old.get("locked_at") if held else None,
+                        done_by,
+                        done_at,
+                    )
                 )
-            )
-        with self.lock:
-            for table in ("sheets", "unmatched", "items"):
-                self.conn.execute(
-                    f"DELETE FROM {table} WHERE session_id=?", (session_id,)
-                )
+            for part in chunked(ids):
+                marks = ",".join("?" * len(part))
+                for table in ("sheets", "items"):
+                    self.conn.execute(
+                        f"DELETE FROM {table} WHERE session_id=? AND scan_id IN ({marks})",
+                        (session_id, *part),
+                    )
             self.conn.executemany(
                 "INSERT INTO sheets (session_id, scan_id, ord, key, file_name, row_no, "
-                "mismatches, state, done_by, done_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "mismatches, state, locked_by, locked_at, done_by, done_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 sheet_rows,
             )
             self.conn.executemany(
                 "INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?)", item_rows
             )
+            self.conn.commit()
+
+    def finish_build(self, session_id, scan_ids, unmatched):
+        """The last step of a comparison: sheets no longer in scope go, and
+        their rows that matched no sheet are written."""
+        wanted = set(scan_ids)
+        with self.lock:
+            gone = [
+                row["scan_id"]
+                for row in self.conn.execute(
+                    "SELECT scan_id FROM sheets WHERE session_id=?", (session_id,)
+                )
+                if row["scan_id"] not in wanted
+            ]
+            for part in chunked(gone):
+                marks = ",".join("?" * len(part))
+                for table in ("sheets", "items"):
+                    self.conn.execute(
+                        f"DELETE FROM {table} WHERE session_id=? AND scan_id IN ({marks})",
+                        (session_id, *part),
+                    )
+            self.conn.execute("DELETE FROM unmatched WHERE session_id=?", (session_id,))
             self.conn.executemany(
                 "INSERT INTO unmatched VALUES (?,?,?,?)",
                 [(session_id, row, key, reason) for row, key, reason in unmatched],
             )
             self.conn.commit()
+
+    def replace_rows(self, session_id, sheets, items, unmatched):
+        self.write_sheets(session_id, sheets, items)
+        self.finish_build(session_id, [sheet["scan_id"] for sheet in sheets], unmatched)
 
     def decided_items(self, session_id):
         return {
@@ -1102,23 +1163,11 @@ def our_key(row, result, ours, normalize):
     return key_of(current_value(result or {}, ours), normalize)
 
 
-def build(
-    store,
-    session,
-    content,
-    scans,
-    load_result,
-    template_json,
-    empty_values,
-    key_values=None,
-):
+def prepare(session, content, template_json):
     """
-    (Re)compute a comparison: join the external rows to our sheets, compare the
-    mapped fields and write the reconciled layer, keeping every decision whose
-    two values are unchanged. scans: our sheets in order (rows with id,
-    file_name); load_result(scan_id) -> result dict; key_values: {scan_id:
-    our raw key value} when the key is one of our fields (read beforehand,
-    cached). Returns the summary.
+    Read their file with the session's settings and check the mapping and key:
+    everything a comparison needs before it looks at our sheets. Raises
+    CompareError for a setting that cannot work (quickly, before any sheet).
     """
     settings = session["settings"]
     rules = {**DEFAULT_RULES, **(settings.get("rules") or {})}
@@ -1129,10 +1178,11 @@ def build(
     pairs = compared_names(mapping, rules, questions)
     # A custom label whose fields are compared one by one is not compared again
     mapped = {name for _, name in pairs}
+    members = custom_members(template_json)
     pairs = [
         (column, name)
         for column, name in pairs
-        if not mapped.intersection(custom_members(template_json).get(name) or [])
+        if not mapped.intersection(members.get(name) or [])
     ]
     missing = [column for column, _ in pairs if column not in columns]
     if missing:
@@ -1145,7 +1195,6 @@ def build(
     by_order = ours_source == "order"
     if not by_order and key.get("column") not in index:
         raise CompareError("Pick the external column that identifies each sheet", 422)
-    question_set = set(questions)
     band_field = (rules.get("band_field") or "").strip()
     bands = parse_bands(rules.get("band_map")) if band_field else {}
     band_column = next(
@@ -1172,96 +1221,212 @@ def build(
                 unmatched.append((i + 1, value, "no key"))
             elif counts[value] > 1:
                 unmatched.append((i + 1, value, "duplicate key"))
+    return {
+        "rules": rules,
+        "rows": len(rows),
+        "pairs": pairs,
+        "index": index,
+        "ours": ours_source,
+        "normalize": normalize,
+        "by_order": by_order,
+        "questions": set(questions),
+        "band_field": band_field,
+        "bands": bands,
+        "band_column": band_column,
+        "external": external,
+        "unmatched": unmatched,
+    }
 
-    # Our keys first (a duplicate on our side matches nothing)
-    ours = []
-    our_counts = {}
+
+def sheet_keys(plan, scans, load_result, key_values=None):
+    """[(ord, scan row, our key)] in order. Several of our scans with one key
+    (the same file read in several jobs): the newest readable one is compared
+    and the others are 'replaced' (rules duplicates "newest"), or none of them
+    is ('duplicate', rules duplicates "skip")."""
+    out = []
     for ord_, row in enumerate(scans):
-        result = None
-        if by_order:
+        if plan["by_order"]:
             value = str(ord_)
-        elif ours_source == "file":
-            value = our_key(row, None, "file", normalize)
+        elif plan["ours"] == "file":
+            value = our_key(row, None, "file", plan["normalize"])
         elif key_values is not None and row["id"] in key_values:
-            value = key_of(key_values[row["id"]], normalize)
+            value = key_of(key_values[row["id"]], plan["normalize"])
         else:
-            result = load_result(row["id"])
-            value = our_key(row, result, ours_source, normalize)
-        ours.append((ord_, row, value, result))
-        our_counts[value] = our_counts.get(value, 0) + 1
+            value = our_key(
+                row, load_result(row["id"]), plan["ours"], plan["normalize"]
+            )
+        out.append((ord_, row, value))
+    groups = {}
+    for ord_, row, value in out:
+        if value:
+            groups.setdefault(value, []).append(row)
+    chosen = {}
+    newest = (plan["rules"].get("duplicates") or "newest") == "newest"
+    for value, rows in groups.items():
+        if len(rows) == 1:
+            chosen[value] = rows[0]["id"]
+        elif newest:
+            best = max(
+                rows,
+                key=lambda r: (r.get("status") != "error", r.get("created_at") or 0),
+            )
+            chosen[value] = best["id"]
+    plan["chosen"] = chosen
+    return out
 
-    sheets, items, used = [], [], set()
-    for ord_, row, value, result in ours:
-        sheet = {
-            "scan_id": row["id"],
-            "ord": ord_,
-            "key": value,
-            "file_name": row.get("file_name"),
-            "mismatches": 0,
+
+def compare_sheet(plan, ord_, row, value, load_result, empty_values):
+    """One of our sheets against its row: (sheet, mismatch items)."""
+    sheet = {
+        "scan_id": row["id"],
+        "ord": ord_,
+        "key": value,
+        "file_name": row.get("file_name"),
+        "mismatches": 0,
+    }
+    if value and value in plan["chosen"] and plan["chosen"][value] != row["id"]:
+        sheet["state"] = "replaced"
+        return sheet, []
+    if row.get("status") == "error":
+        sheet["state"] = "not_read"
+        return sheet, []
+    if not value or value not in plan["external"]:
+        sheet["state"] = "no_record"
+        return sheet, []
+    if value not in plan["chosen"]:
+        sheet["state"] = "duplicate"
+        return sheet, []
+    rules, index, questions = plan["rules"], plan["index"], plan["questions"]
+    row_no, ext_row = plan["external"][value]
+    sheet["row_no"] = row_no + 1
+    result = load_result(row["id"]) or {}
+    band = None
+    if plan["bands"]:
+        from src.api.review import current_value
+
+        column = plan["band_column"]
+        theirs = ext_row[index[column]] if column is not None else None
+        band = sheet_band(
+            rules, plan["bands"], theirs, current_value(result, plan["band_field"])
+        )
+    items = []
+    for column, name in plan["pairs"]:
+        if band is not None and name in questions and name not in band:
+            continue  # a question outside this sheet's level
+        raw = ext_row[index[column]]
+        mine, multi_flag, empty = our_side(result, name, empty_values)
+        ext_norm = external_value(raw, rules, name in questions)
+        our_norm = our_value(mine, empty, name in questions, multi_flag, rules)
+        if differs(ext_norm, our_norm, rules):
+            items.append(
+                {
+                    "scan_id": row["id"],
+                    "name": name,
+                    "pos": len(items),
+                    "external": shown(raw, ext_norm[0]),
+                    "ours": shown(mine, our_norm[0]),
+                }
+            )
+    sheet["mismatches"] = len(items)
+    sheet["state"] = "pending" if items else "clean"
+    return sheet, items
+
+
+def run(
+    store,
+    session,
+    plan,
+    scans,
+    load_result,
+    empty_values,
+    key_values=None,
+    progress=None,
+    current=None,
+    chunk=200,
+):
+    """
+    Compare every sheet and write the reconciled layer a part at a time, so
+    reviewers can start on the first sheets while the rest is compared.
+    progress(done, total, summary): after each part; current(): False once a
+    newer comparison of this session replaced this one (it stops). Returns the
+    summary, or None when stopped.
+    """
+    keyed = sheet_keys(plan, scans, load_result, key_values)
+    states, used, scan_ids = {}, set(), []
+    sheets, items, mismatches = [], [], 0
+    started = time.time()
+
+    def summary(done):
+        return {
+            "external_rows": plan["rows"],
+            "sheets": len(keyed),
+            "compared": done,
+            "matched": sum(states.get(s, 0) for s in ("clean", "pending")),
+            "states": dict(states),
+            "unmatched_external": None,
+            "compared_fields": len(plan["pairs"]),
+            "mismatches": mismatches,
         }
-        sheets.append(sheet)
-        if row.get("status") == "error":
-            sheet["state"] = "not_read"
-            continue
-        if not value or value not in external:
-            sheet["state"] = "no_record"
-            continue
-        if our_counts[value] > 1:
-            sheet["state"] = "duplicate"
-            continue
-        row_no, ext_row = external[value]
-        used.add(value)
-        sheet["row_no"] = row_no + 1
-        result = result or load_result(row["id"]) or {}
-        band = None
-        if bands:
-            from src.api.review import current_value
 
-            theirs = ext_row[index[band_column]] if band_column is not None else None
-            band = sheet_band(rules, bands, theirs, current_value(result, band_field))
-        pos = 0
-        for column, name in pairs:
-            if band is not None and name in question_set and name not in band:
-                continue  # a question outside this sheet's level
-            raw = ext_row[index[column]]
-            mine, multi_flag, empty = our_side(result, name, empty_values)
-            ext_norm = external_value(raw, rules, name in question_set)
-            our_norm = our_value(mine, empty, name in question_set, multi_flag, rules)
-            if differs(ext_norm, our_norm, rules):
-                items.append(
-                    {
-                        "scan_id": row["id"],
-                        "name": name,
-                        "pos": pos,
-                        "external": shown(raw, ext_norm[0]),
-                        "ours": shown(mine, our_norm[0]),
-                    }
-                )
-                pos += 1
-        sheet["mismatches"] = pos
-        sheet["state"] = "pending" if pos else "clean"
-    for value, (row_no, _) in external.items():
+    def flush(done):
+        if current is not None and not current():
+            return False
+        store.write_sheets(session["id"], sheets, items)
+        sheets.clear()
+        items.clear()
+        if progress is not None:
+            progress(done, len(keyed), summary(done))
+        return True
+
+    for done, (ord_, row, value) in enumerate(keyed, 1):
+        sheet, found = compare_sheet(plan, ord_, row, value, load_result, empty_values)
+        states[sheet["state"]] = states.get(sheet["state"], 0) + 1
+        if sheet.get("row_no"):
+            used.add(value)
+        scan_ids.append(sheet["scan_id"])
+        sheets.append(sheet)
+        items.extend(found)
+        mismatches += len(found)
+        if len(sheets) >= chunk and not flush(done):
+            return None
+    if not flush(len(keyed)):
+        return None
+    unmatched = list(plan["unmatched"])
+    for value, (row_no, _) in plan["external"].items():
         if value not in used:
             unmatched.append((row_no + 1, value, "no sheet"))
     unmatched.sort()
-    store.replace_rows(
-        session["id"], sheets, items, unmatched, store.decided_items(session["id"])
-    )
-    states = {}
-    for sheet in sheets:
-        states[sheet["state"]] = states.get(sheet["state"], 0) + 1
-    summary = {
-        "external_rows": len(rows),
-        "sheets": len(sheets),
-        "matched": sum(states.get(s, 0) for s in ("clean", "pending")),
-        "states": states,
+    store.finish_build(session["id"], scan_ids, unmatched)
+    result = {
+        **summary(len(keyed)),
         "unmatched_external": len(unmatched),
-        "compared_fields": len(pairs),
-        "mismatches": len(items),
         "built_at": time.time(),
+        "seconds": round(time.time() - started, 1),
     }
-    store.update_session(session["id"], summary=summary)
-    return summary
+    store.update_session(session["id"], summary=result)
+    return result
+
+
+def build(
+    store,
+    session,
+    content,
+    scans,
+    load_result,
+    template_json,
+    empty_values,
+    key_values=None,
+):
+    """
+    (Re)compute a comparison in one go: join the external rows to our sheets,
+    compare the mapped fields and write the reconciled layer, keeping every
+    decision whose two values are unchanged. scans: our sheets in order (rows
+    with id, file_name, status, created_at); load_result(scan_id) -> result
+    dict; key_values: {scan_id: our raw key value} when the key is one of our
+    fields (read beforehand, cached). Returns the summary.
+    """
+    plan = prepare(session, content, template_json)
+    return run(store, session, plan, scans, load_result, empty_values, key_values)
 
 
 def our_side(result, name, empty_values):

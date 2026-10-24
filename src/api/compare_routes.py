@@ -8,6 +8,7 @@ OMR scanner such as Scantron OpScan 6, or any CSV / fixed-width file).
     GET    /compare/sessions/{id}                   settings, summary, progress
     PATCH  /compare/sessions/{id}                   change mapping / key / rules (compared again)
     POST   /compare/sessions/{id}/rebuild           compare again (our values changed after review)
+    POST   /compare/sessions/{id}/sheets/{scan}/recompare compare one sheet again (after a regrade)
     DELETE /compare/sessions/{id}                   delete it and its decisions
     POST   /compare/sessions/{id}/claim             lock the next / previous / a given sheet
     POST   /compare/sessions/{id}/sheets/{scan}     save the choices for one sheet
@@ -15,15 +16,20 @@ OMR scanner such as Scantron OpScan 6, or any CSV / fixed-width file).
     GET    /compare/sessions/{id}/sheets/{scan}/page      the aligned page (JPEG)
     GET    /compare/sessions/{id}/export?kind=      reconciled | audit | unmatched (CSV)
 
-Decisions are kept in the reconciled layer (src/api/compare.py); read results
-are never changed.
+A comparison runs in the background, a part of the sheets at a time: the
+first sheets can be reviewed while the rest is compared, and the session
+carries a live "building" counter. Decisions are kept in the reconciled layer
+(src/api/compare.py); with rules save_to "results" a choice is also written to
+our result as a correction (audited and undoable, as one made in Results).
 """
 
 import csv
 import io
 import json
 import re
+import logging
 import shutil
+import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime
@@ -37,11 +43,16 @@ from pydantic import BaseModel, Field
 
 from src.api import compare
 from src.api.accounts import request_user
-from src.api.results import DEFAULT_USER
+from src.api.results import DEFAULT_USER, ResultsError
 from src.api.review import item_box, related_names
 from src.api.storage import new_id, read_json, safe_filename, write_json_atomic
 
 PAGE_WIDTH = 1600
+# A request that starts a comparison waits this long for it to finish (a small
+# one answers with its result); a longer one carries on in the background
+BUILD_WAIT_SECONDS = 3.0
+
+logger = logging.getLogger(__name__)
 
 
 def natural(text):
@@ -177,24 +188,98 @@ def register(app, ctx, secured):
                 return ctx.results.template_info(result)["empty_values"]
         return {}
 
-    def run_build(session):
+    # ---- comparing, in the background ------------------------------------
+    builds = {}  # session_id -> live state of its running comparison
+    builds_lock = threading.Lock()
+    plans = {}  # session_id -> (settings, plan) for comparing one sheet again
+
+    def plan_of(session):
+        cached = plans.get(session["id"])
+        if cached and cached[0] == session["settings"]:
+            return cached[1]
         template_json = template_or_404(session["template_id"])
-        scans = our_sheets(session["template_id"], session.get("job_id"))
-        ours = (session["settings"].get("key") or {}).get("ours") or "file"
-        keys = None if ours in ("file", "order") else key_values(scans, ours)
         try:
-            return compare.build(
-                store,
-                session,
-                compare.load_source(root / session["id"]),
-                scans,
-                load_result,
-                template_json,
-                empty_values(scans),
-                keys,
+            plan = compare.prepare(
+                session, compare.load_source(root / session["id"]), template_json
             )
         except compare.CompareError as error:
             fail(error)
+        plans[session["id"]] = (session["settings"], plan)
+        return plan
+
+    def start_build(session, wait=None):
+        """Check the settings (an error answers the request), then compare in
+        a background thread; wait up to BUILD_WAIT_SECONDS for it."""
+        plan = plan_of(session)
+        session_id = session["id"]
+        state = {"done": 0, "total": None, "summary": None, "started_at": time.time()}
+        with builds_lock:
+            builds[session_id] = state  # an older run of this session stops
+        previous = session.get("summary") or {}
+        store.update_session(session_id, summary={**previous, "building": True})
+        thread = threading.Thread(
+            target=build_worker,
+            args=(dict(session), plan, state),
+            name=f"compare-{session_id}",
+            daemon=True,
+        )
+        thread.start()
+        thread.join(BUILD_WAIT_SECONDS if wait is None else wait)
+
+    def build_worker(session, plan, state):
+        session_id = session["id"]
+
+        def current():
+            return builds.get(session_id) is state
+
+        def progress(done, total, summary):
+            state.update(done=done, total=total, summary=summary)
+
+        try:
+            scans = our_sheets(session["template_id"], session.get("job_id"))
+            state["total"] = len(scans)
+            ours = (session["settings"].get("key") or {}).get("ours") or "file"
+            keys = None if ours in ("file", "order") else key_values(scans, ours)
+            compare.run(
+                store,
+                session,
+                plan,
+                scans,
+                load_result,
+                empty_values(scans),
+                keys,
+                progress,
+                current,
+            )
+        except Exception as error:  # the session shows what went wrong
+            logger.exception(f"Comparison {session_id} failed")
+            if current():
+                store.update_session(
+                    session_id,
+                    summary={**(state["summary"] or {}), "error": str(error)},
+                )
+        finally:
+            with builds_lock:
+                if builds.get(session_id) is state:
+                    builds.pop(session_id)
+
+    def resume_builds():
+        """Comparisons cut short by a restart carry on."""
+        for session in store.sessions():
+            if (session.get("summary") or {}).get("building"):
+                try:
+                    start_build(session, wait=0)
+                except HTTPException as error:
+                    store.update_session(
+                        session["id"],
+                        summary={
+                            **session["summary"],
+                            "building": False,
+                            "error": error.detail,
+                        },
+                    )
+
+    threading.Thread(target=resume_builds, name="compare-resume", daemon=True).start()
 
     def session_or_404(session_id):
         try:
@@ -203,7 +288,19 @@ def register(app, ctx, secured):
             fail(error)
 
     def with_progress(session):
-        return {**session, "progress": store.progress(session["id"])}
+        out = {**session, "progress": store.progress(session["id"])}
+        state = builds.get(session["id"])
+        if state is not None:
+            out["building"] = {
+                "done": state["done"],
+                "total": state["total"],
+                "started_at": state["started_at"],
+            }
+            if state["summary"]:
+                out["summary"] = {**state["summary"], "building": True}
+        elif (session.get("summary") or {}).get("building"):
+            out["building"] = {"done": 0, "total": None, "started_at": None}
+        return out
 
     # ------------------------------------------------------------------
     @app.post("/compare/preview", tags=["compare"], dependencies=secured)
@@ -300,7 +397,7 @@ def register(app, ctx, secured):
 
     @app.get("/compare/sessions", tags=["compare"], dependencies=secured)
     def compare_sessions(template_id: Optional[str] = None):
-        return {"sessions": store.sessions(template_id)}
+        return {"sessions": [with_progress(s) for s in store.sessions(template_id)]}
 
     @app.post(
         "/compare/sessions", tags=["compare"], dependencies=secured, status_code=201
@@ -343,7 +440,7 @@ def register(app, ctx, secured):
         }
         store.add_session(session)
         try:
-            session["summary"] = run_build(session)
+            start_build(session)
         except HTTPException:
             store.delete_session(session_id)
             shutil.rmtree(folder, ignore_errors=True)
@@ -370,7 +467,7 @@ def register(app, ctx, secured):
             session_id, settings=settings, **({"name": body.name} if body.name else {})
         )
         try:
-            run_build(session)
+            start_build(session)
         except HTTPException:
             store.update_session(session_id, settings=previous)
             raise
@@ -380,7 +477,7 @@ def register(app, ctx, secured):
         "/compare/sessions/{session_id}/rebuild", tags=["compare"], dependencies=secured
     )
     def compare_rebuild(session_id: str):
-        run_build(session_or_404(session_id))
+        start_build(session_or_404(session_id))
         return with_progress(store.session(session_id))
 
     @app.delete(
@@ -398,6 +495,9 @@ def register(app, ctx, secured):
                 403,
                 "Only an administrator or the person who made it can delete a comparison",
             )
+        with builds_lock:
+            builds.pop(session_id, None)  # a running comparison stops
+        plans.pop(session_id, None)
         store.delete_session(session_id)
         shutil.rmtree(root / session_id, ignore_errors=True)
         return {"deleted": session_id}
@@ -457,6 +557,8 @@ def register(app, ctx, secured):
             "page": f"/compare/sessions/{session['id']}/sheets/{sheet['scan_id']}/page",
             "page_size": size,
             "items": items,
+            "save_to": (session["settings"].get("rules") or {}).get("save_to")
+            or "layer",
             "progress": store.progress(session["id"]),
         }
 
@@ -483,12 +585,98 @@ def register(app, ctx, secured):
     def compare_decide(
         session_id: str, scan_id: str, body: DecideBody, request: Request
     ):
-        session_or_404(session_id)
+        session = session_or_404(session_id)
+        user = user_of(request)
         try:
-            state = store.decide(session_id, scan_id, user_of(request), body.decisions)
+            state = store.decide(session_id, scan_id, user, body.decisions)
         except compare.CompareError as error:
             fail(error)
-        return {"state": state, "progress": store.progress(session_id)}
+        out = {"state": state, "progress": store.progress(session_id)}
+        rules = session["settings"].get("rules") or {}
+        if rules.get("save_to") == "results" and body.decisions:
+            out.update(
+                write_to_results(session_id, scan_id, list(body.decisions), user)
+            )
+        return out
+
+    def write_to_results(session_id, scan_id, names, user):
+        """save_to "results": our result takes each chosen value (back to the
+        value as read when a choice is undone or ours is kept), as a correction
+        in Results would. A value our field cannot take (their bare "*" for a
+        multi-mark) is left for the reviewer to type."""
+        from src.api.review import current_value
+
+        items = {item["name"]: item for item in store.items(session_id, scan_id)}
+        result = load_result(scan_id) or {}
+        changes = {}
+        for name in names:
+            item = items.get(name)
+            if item is None:
+                continue
+            if item["source"] in ("external", "manual"):
+                target = item["chosen"] or ""
+            else:
+                target = item["ours"] or ""
+            now = current_value(result, name)
+            if str("" if now is None else now) != target:
+                changes[name] = target
+        if not changes:
+            return {"written": []}
+        try:
+            ctx.results.correct(scan_id, changes, None, user, source="compare")
+            return {"written": sorted(changes)}
+        except ResultsError:
+            pass
+        written, refused = [], {}
+        for name, value in changes.items():
+            try:
+                ctx.results.correct(
+                    scan_id, {name: value}, None, user, source="compare"
+                )
+                written.append(name)
+            except ResultsError as error:
+                refused[name] = str(error)
+        return {"written": written, "not_written": refused}
+
+    @app.post(
+        "/compare/sessions/{session_id}/sheets/{scan_id}/recompare",
+        tags=["compare"],
+        dependencies=secured,
+    )
+    def compare_recompare(session_id: str, scan_id: str, request: Request):
+        """Compare one sheet again with our current values (after a regrade or
+        a correction in Results), keeping the choices whose values held. The
+        sheet stays with whoever holds it; null when nothing differs now."""
+        session = session_or_404(session_id)
+        try:
+            sheet = store.sheet(session_id, scan_id)
+        except compare.CompareError as error:
+            fail(error)
+        plan = plan_of(session)
+        result = load_result(scan_id) or {}
+        row = {
+            "id": scan_id,
+            "file_name": sheet["file_name"],
+            "status": result.get("status"),
+        }
+        one = {**plan, "chosen": {sheet["key"]: scan_id}}
+        fresh, items = compare.compare_sheet(
+            one,
+            sheet["ord"],
+            row,
+            sheet["key"],
+            load_result,
+            ctx.results.template_info(result)["empty_values"] if result else {},
+        )
+        store.write_sheets(session_id, [fresh], items)
+        sheet = store.sheet(session_id, scan_id)
+        if sheet["state"] not in compare.SESSION_STATES:
+            return {
+                "sheet": None,
+                "state": sheet["state"],
+                "progress": store.progress(session_id),
+            }
+        return {"sheet": sheet_payload(session, sheet)}
 
     @app.post(
         "/compare/sessions/{session_id}/sheets/{scan_id}/release",
