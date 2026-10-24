@@ -170,3 +170,11 @@ def test_second_opinion_from_the_icr_model(server):
     assert result.value == "12"
     assert result.details["second_reader"]["characters"] == ["1", "1"]
     assert "engine_disagree" in result.flags
+
+
+def test_digit_pattern_drops_stray_marks_without_a_whitelist(server):
+    page, zone = boxed("90 2", 4)
+    del zone.options["whitelist"]
+    zone.options["pattern"] = r"\d{3}"
+    server["reply"] = "9a0.2"
+    assert icr.read_icr_zone(zone, page, None, settings_for(server["url"])).value == "902"

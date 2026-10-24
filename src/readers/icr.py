@@ -15,6 +15,8 @@ Tesseract and flags every result for review, because Tesseract is not built
 for handwriting.
 """
 
+import re
+
 import cv2
 import numpy as np
 
@@ -324,6 +326,17 @@ def read_with_vlm(zone, crop, count, whitelist, engine, classifier=None):
     text = "".join(ch for ch in raw if not ch.isspace())
     if whitelist:
         text = "".join(ch for ch in text if ch in whitelist)
+    elif zone.options.get("pattern"):
+        # No whitelist: a stray mark the model read as "a" or "." would fail
+        # a digit pattern, so keep the digits when they alone fit it
+        digits = "".join(ch for ch in text if ch.isdigit())
+        try:
+            if not re.fullmatch(zone.options["pattern"], text) and re.fullmatch(
+                zone.options["pattern"], digits
+            ):
+                text = digits
+        except re.error:
+            pass
     flags, details = [], {"engine": "vlm", "model": engine.model, "raw": raw.strip()}
     confidence = 1.0
     if count:
