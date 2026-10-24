@@ -496,10 +496,14 @@ function rulesForm(rules) {
     spaces: el("input", { type: "checkbox", checked: rules.spaces !== false }),
     blank_codes: el("input", { size: 12, value: codesText(rules.blank_codes) }),
     multi_codes: el("input", { size: 8, value: codesText(rules.multi_codes) }),
+    band_field: el("input", { size: 10, value: rules.band_field || "", placeholder: "e.g. level", spellcheck: "false" }),
+    band_source: el("select", {}, el("option", { value: "theirs" }, "their value"), el("option", { value: "ours" }, "our value"), el("option", { value: "either" }, "either (both bands)")),
+    band_map: el("input", { size: 46, value: rules.band_map || "", placeholder: "1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200", spellcheck: "false" }),
   };
   f.fields.value = rules.fields || "all";
   f.blank.value = rules.blank || "mismatch";
   f.multi.value = rules.multi || "same";
+  f.band_source.value = rules.band_source || "theirs";
   const node = el(
     "div",
     { class: "cmp-form" },
@@ -509,7 +513,17 @@ function rulesForm(rules) {
     el("label", { class: "field inline", title: "What their file writes for an unmarked answer; 'space' is a single space" }, "Their blank is written as ", f.blank_codes),
     el("label", { class: "field inline", title: "What their file writes when more than one option is marked" }, "Their multi-mark is written as ", f.multi_codes),
     el("label", { class: "field inline" }, f.case, " Upper and lower case differ"),
-    el("label", { class: "field inline", title: "A roll number with a blank digit: '12 45' equals '1245'" }, f.spaces, " Ignore spaces inside values")
+    el("label", { class: "field inline", title: "A roll number with a blank digit: '12 45' equals '1245'" }, f.spaces, " Ignore spaces inside values"),
+    el(
+      "div",
+      { class: "row gap wrap", title: "Each sheet answers only the questions of its level: questions outside that band are not compared (a scanner can report stray marks there). A sheet whose level is blank or not listed is compared in full." },
+      el("span", { class: "small" }, "Only the questions of the level in field"),
+      f.band_field,
+      el("span", { class: "small" }, "taken from"),
+      f.band_source,
+      el("span", { class: "small" }, "bands"),
+      f.band_map
+    )
   );
   const read = () => ({
     fields: f.fields.value,
@@ -520,6 +534,9 @@ function rulesForm(rules) {
     spaces: f.spaces.checked,
     blank_codes: codes(f.blank_codes.value),
     multi_codes: codes(f.multi_codes.value),
+    band_field: f.band_field.value.trim(),
+    band_source: f.band_source.value,
+    band_map: f.band_map.value.trim(),
   });
   return { node, read };
 }

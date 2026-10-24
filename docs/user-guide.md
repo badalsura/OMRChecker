@@ -839,6 +839,18 @@ The choices go into a **separate reconciled layer**. The read results are never 
    ```
 3. Press **Read file**. The first rows are shown as read, after the split (␣ marks a single space), with the columns matched to our fields by name: `Q001`, `Q1`, `q-1` and a bare `1` all match `q1`, and `ROLL` matches `rollno` when it is the only name starting so. Type the field a column belongs to, or clear a box to leave it out. **Map from column … onwards to** fills a run of columns at once: from `Item 1` onwards to `q1..q200`. A question inside a custom label (`ans` = `q1..q200`) can be compared on its own, or the joined label as one value; when both are mapped, only the fields are compared. Change any setting and press **Read file / read again** to check it: the file is not uploaded again.
 
+   An OpScan / ScanTools Plus `.dat` is fixed width without a header. The TERI file (`E0811.dat`, 254 characters a line) reads with Header row `0` and:
+
+   ```
+   SEQ 4 6
+   rollno 41 12
+   lang 53 1
+   level 54 1
+   q1..q200 55 1
+   ```
+
+   with their `SEQ` matching our file name (digits only). A Ctrl-Z end-of-file mark after the last line is ignored.
+
    **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again.
 4. Say **how their rows find our sheets**: their column, what it matches on our side, and how to compare the two.
 
@@ -863,6 +875,7 @@ The choices go into a **separate reconciled layer**. The read results are never 
 | Their multi-mark is written as | default `*` |
 | Upper and lower case differ | off by default |
 | Ignore spaces inside values | on by default: a roll number `12 45` with a blank digit equals `1245` |
+| Only the questions of the level in field … | off by default. Give the field that holds the sheet's level (e.g. `level`), where to take it from (their value, ours, or either), and the bands: `1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200`. Each sheet's questions are then compared only inside its band. A scanner can report stray marks in other bands (show-through, erasures); on the TERI OpScan file these were 85% of all answer differences. A sheet whose level is blank or not listed is compared in full |
 
 **Reviewing.** The sheet is on the left with every mismatch boxed (orange: the current one, green: decided). On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
 

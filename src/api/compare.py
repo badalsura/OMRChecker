@@ -54,6 +54,13 @@ DEFAULT_RULES = {
     # What the external file writes for a blank and for a multi-mark
     "blank_codes": [" ", "-"],
     "multi_codes": ["*"],
+    # Compare each sheet's questions only within the band its level selects
+    # (TERI: level 1 answers q1..q50, level 2 q51..q100...). field: our name
+    # holding the level; source: "theirs", "ours" or "either" (both bands);
+    # map: "1: q1..q50; 2: q51..q100". Empty field: every question.
+    "band_field": "",
+    "band_source": "theirs",
+    "band_map": "",
 }
 
 SESSION_STATES = ("pending", "partial", "done")
@@ -448,14 +455,53 @@ def external_value(raw, rules, question=False):
 
 def our_value(value, empty, question, multi_flag, rules):
     """(kind, text) of our value: blank when empty or the field's empty value;
-    a question with more than one option marked is a multi-mark."""
+    a question with more than one option marked, or a value that is a
+    multi-mark code (a group's "*"), is a multi-mark."""
     text = "" if value is None else str(value)
     if not text.strip() or (empty not in (None, "") and text == empty):
         return BLANK, ""
+    if text.strip() in {
+        str(c).strip() for c in rules.get("multi_codes") or [] if str(c).strip()
+    }:
+        return MULTI, ""
     text = squeeze(text, rules)
     if multi_flag or (question and len(text) > 1):
         return MULTI, "".join(sorted(text))
     return VALUE, text
+
+
+def parse_bands(text):
+    """ "1: q1..q50; 2: q51..q100" -> {"1": {"q1", ..., "q50"}, "2": {...}}"""
+    bands = {}
+    for number, entry in enumerate(re.split(r"[;\n]+", text or ""), 1):
+        entry = entry.strip()
+        if not entry:
+            continue
+        value, sep, names = entry.partition(":")
+        if not sep:
+            value, sep, names = entry.partition("=")
+        if not sep or not value.strip():
+            raise CompareError(
+                f"Level bands, entry {number}: write LEVEL: FIELDS, e.g. '1: q1..q50'"
+            )
+        bands[value.strip().upper()] = set(expand_list(names))
+    return bands
+
+
+def sheet_band(rules, bands, theirs, ours):
+    """The questions this sheet answers, or None for all of them."""
+    if not bands:
+        return None
+    values = {
+        "theirs": [theirs],
+        "ours": [ours],
+        "either": [theirs, ours],
+    }.get(rules.get("band_source") or "theirs", [theirs])
+    keys = [str(v).strip().upper() for v in values if v is not None and str(v).strip()]
+    chosen = [bands[k] for k in keys if k in bands]
+    if not chosen:
+        return None  # level blank or unknown: compare every question
+    return set().union(*chosen)
 
 
 def differs(external, ours, rules):
@@ -1092,6 +1138,13 @@ def build(
     if not by_order and key.get("column") not in index:
         raise CompareError("Pick the external column that identifies each sheet", 422)
     question_set = set(questions)
+    band_field = (rules.get("band_field") or "").strip()
+    bands = parse_bands(rules.get("band_map")) if band_field else {}
+    band_column = next(
+        (column for column, name in mapping.items() if name == band_field), None
+    )
+    if band_field and band_column is not None and band_column not in index:
+        band_column = None
 
     external, unmatched = {}, []
     if by_order:
@@ -1152,8 +1205,16 @@ def build(
         used.add(value)
         sheet["row_no"] = row_no + 1
         result = result or load_result(row["id"]) or {}
+        band = None
+        if bands:
+            from src.api.review import current_value
+
+            theirs = ext_row[index[band_column]] if band_column is not None else None
+            band = sheet_band(rules, bands, theirs, current_value(result, band_field))
         pos = 0
         for column, name in pairs:
+            if band is not None and name in question_set and name not in band:
+                continue  # a question outside this sheet's level
             raw = ext_row[index[column]]
             mine, multi_flag, empty = our_side(result, name, empty_values)
             ext_norm = external_value(raw, rules, name in question_set)

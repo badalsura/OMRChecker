@@ -484,3 +484,45 @@ def test_opscan_dat_layout_with_a_dos_end_of_file_mark():
     )
     assert len(rows) == 2 and rows[1][0] == "100002"
     assert rows[0][1:8] == ["993100270006", "1", "2", "A", "B", "*", "D"]
+
+
+def test_level_bands_limit_the_questions_compared(compared):
+    assert compare.parse_bands("1: q1..q3; 2=q4..q5") == {
+        "1": {"q1", "q2", "q3"},
+        "2": {"q4", "q5"},
+    }
+    bands = compare.parse_bands("1: q1..q2\n2: q3..q4")
+    assert compare.sheet_band({"band_source": "theirs"}, bands, "2", "1") == {
+        "q3",
+        "q4",
+    }
+    assert compare.sheet_band({"band_source": "either"}, bands, "2", "1") == {
+        "q1",
+        "q2",
+        "q3",
+        "q4",
+    }
+    assert compare.sheet_band({"band_source": "theirs"}, bands, " ", "1") is None
+    with pytest.raises(compare.CompareError):
+        compare.parse_bands("q1..q5")
+
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview)
+    assert session["summary"]["mismatches"] == 3
+    # Their q20 says which band each sheet answers: only q1 is compared
+    band = {
+        "band_field": "q20",
+        "band_source": "theirs",
+        "band_map": "A: q1; B: q1; C: q1; D: q1",
+    }
+    patched = client.patch(
+        f"/compare/sessions/{session['id']}", json={"rules": band}
+    ).json()
+    assert patched["summary"]["mismatches"] == 1
+
+
+def test_a_multi_mark_code_on_both_sides_agrees():
+    rules = compare.DEFAULT_RULES
+    ours = compare.our_value("*", "", False, False, rules)
+    assert ours == (compare.MULTI, "")
+    assert compare.differs(compare.external_value("*", rules), ours, rules) is False
