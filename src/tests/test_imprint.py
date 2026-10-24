@@ -135,8 +135,10 @@ def test_file_name_check_flags_a_different_number():
     assert same.details["file_name"] == {"expected": "100001", "read": "100001"}
     other = read("S100007", "100001.jpg")
     assert "file_name_mismatch" in other.flags and other.needs_review
-    # A malformed read is already reviewed for its pattern; not compared
-    assert "file_name_mismatch" not in read("3100001", "100001.jpg").flags
+    # An empty or malformed read cannot confirm the file name: flagged too
+    assert "file_name_mismatch" in read("3100001", "100001.jpg").flags
+    empty = read("", "100001.jpg")
+    assert "file_name_mismatch" in empty.flags and empty.details["file_name"]["read"] == ""
     # PDF pages: the page suffix is not part of the name
     assert "file_name_mismatch" not in read("S100001", "100001_p1.png").flags
     zone.options["matchFileName"] = False
