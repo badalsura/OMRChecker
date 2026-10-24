@@ -202,15 +202,17 @@ def template_names(template_json):
     for specs in custom.values():
         for spec in specs:
             in_custom.update(parse_field_string(spec))
-    zones = [
-        zone.get("name")
-        for zone in template_json.get("zones") or []
-        if zone.get("name")
-    ]
+    # Zones are an object keyed by name (a list of named zones is accepted too)
+    zone_map = template_json.get("zones") or {}
+    if isinstance(zone_map, list):
+        zone_map = {
+            z.get("name"): z for z in zone_map if isinstance(z, dict) and z.get("name")
+        }
+    zones = list(zone_map)
     imprint = [
-        zone.get("name")
-        for zone in template_json.get("zones") or []
-        if zone.get("type") == "imprint" and zone.get("name")
+        name
+        for name, zone in zone_map.items()
+        if isinstance(zone, dict) and zone.get("type") == "imprint"
     ]
     checks = [
         check.get("output") or check.get("name")

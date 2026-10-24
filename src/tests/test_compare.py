@@ -291,3 +291,27 @@ def test_bad_mapping_and_missing_key_are_refused(compared):
     response = client.post("/compare/sessions", json=body)
     assert response.status_code in (404, 422)
     assert json.loads(response.text)["detail"]
+
+
+def test_template_names_reads_zones_keyed_by_name():
+    template = {
+        "fieldBlocks": {
+            "MCQ": {"fieldType": "QTYPE_MCQ4", "fieldLabels": ["q1..3"]},
+            "Roll": {"fieldType": "QTYPE_INT", "fieldLabels": ["roll1..2"]},
+        },
+        "customLabels": {"Roll": ["roll1..2"]},
+        "zones": {
+            "imprint_scanner": {
+                "type": "imprint",
+                "origin": [0, 0],
+                "dimensions": [10, 10],
+            },
+            "barcode": {"type": "barcode", "origin": [0, 0], "dimensions": [10, 10]},
+        },
+    }
+    names, questions, zones, imprint = compare.template_names(template)
+    assert zones == ["imprint_scanner", "barcode"] and imprint == ["imprint_scanner"]
+    assert names == ["Roll", "q1", "q2", "q3", "imprint_scanner", "barcode"]
+    assert questions == ["q1", "q2", "q3"]
+    key = compare.suggest_key(["SEQ", "Q1"], names, imprint)
+    assert key["ours"] == "imprint_scanner"
