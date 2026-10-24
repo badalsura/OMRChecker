@@ -157,6 +157,7 @@ def render_dot_line(text, rng, height=None):
 
 
 def random_label(rng, charset, lengths=(5, 9)):
+    """Random digits, usually led by the charset's letter (e.g. "S")."""
     digits = [c for c in charset if c.isdigit()]
     letters = [c for c in charset if not c.isdigit()]
     length = rng.randint(*lengths)
@@ -168,20 +169,57 @@ def random_label(rng, charset, lengths=(5, 9)):
 
 def augment(image, rng):
     image = image.astype(np.float32)
+    paper = float(np.percentile(image, 95))
+    # Missing dots: a share of the ink pixels goes back to paper
+    if rng.random() < 0.5:
+        dark = image < paper - 40
+        drop = np.random.default_rng(rng.randint(0, 1 << 30)).random(image.shape) < rng.uniform(0.05, 0.3)
+        image[dark & drop] = paper
     # Contrast, brightness and a faint print
     image = 255 - (255 - image) * rng.uniform(0.35, 1.1)
     image += rng.uniform(-25, 25)
     h, w = image.shape
-    # A little rotation / scale / shift, as the line box is cut on each sheet
-    angle = rng.uniform(-2.0, 2.0)
-    scale = rng.uniform(0.92, 1.08)
-    matrix = cv2.getRotationMatrix2D((w / 2, h / 2), angle, scale)
-    matrix[:, 2] += (rng.uniform(-0.05, 0.05) * w, rng.uniform(-0.08, 0.08) * h)
+    # Stray bits of a timing bar or border at the top or bottom edge
+    if rng.random() < 0.2:
+        y = rng.choice([0, h - 3])
+        x0 = rng.randint(0, max(w - 10, 1))
+        image[y : y + 3, x0 : x0 + rng.randint(5, max(w // 3, 6))] = rng.uniform(20, 120)
+    # Character width, rotation and shift vary from sheet to sheet
+    stretch = rng.uniform(0.85, 1.15)
+    image = cv2.resize(image, (max(int(w * stretch), 8), h), interpolation=cv2.INTER_LINEAR)
+    h, w = image.shape
+    matrix = cv2.getRotationMatrix2D((w / 2, h / 2), rng.uniform(-2.0, 2.0), rng.uniform(0.95, 1.05))
+    matrix[:, 2] += (rng.uniform(-0.03, 0.03) * w, rng.uniform(-0.08, 0.08) * h)
     image = cv2.warpAffine(image, matrix, (w, h), borderMode=cv2.BORDER_REPLICATE)
     if rng.random() < 0.3:
         image = cv2.GaussianBlur(image, (0, 0), rng.uniform(0.5, 1.2))
     image += np.random.default_rng(rng.randint(0, 1 << 30)).normal(0, rng.uniform(0, 10), image.shape)
+    pad = [rng.randint(0, 8) for _ in range(4)]
+    image = cv2.copyMakeBorder(image, *pad, cv2.BORDER_REPLICATE)
     return np.clip(image, 0, 255).astype(np.uint8)
+
+
+def character_cells(image, text):
+    """The crop's ink span cut into one cell per character (10% overlap)."""
+    ink = (image < np.percentile(image, 95) - 40).any(axis=0)
+    cols = np.nonzero(ink)[0]
+    if cols.size == 0:
+        return None
+    x0, x1 = cols[0], cols[-1] + 1
+    width = (x1 - x0) / float(len(text))
+    over = 0.1 * width
+    return [
+        (ch, image[:, max(int(x0 + i * width - over), 0) : int(x0 + (i + 1) * width + over)])
+        for i, ch in enumerate(text)
+    ]
+
+
+def recombined_line(cells, text, rng):
+    """A line of text made of real character cells (from training crops only)."""
+    parts = [rng.choice(cells[ch]) for ch in text]
+    height = max(p.shape[0] for p in parts)
+    parts = [cv2.resize(p, (p.shape[1], height)) if p.shape[0] != height else p for p in parts]
+    return np.hstack(parts)
 
 
 # ------------------------------------------------------------------ model
@@ -224,68 +262,45 @@ def batch_tensor(images, height):
 
 
 def train(data, out, charset="S0123456789", direction="horizontal", holdout=None,
-          epochs=40, synthetic=0.5, seed=0, height=32, trained_on=""):
-    import torch
-    import torch.nn.functional as F
-
-    rng = random.Random(seed)
-    torch.manual_seed(seed)
+          epochs=40, synthetic=0.5, seed=0, height=32, trained_on="", tries=3):
+    """
+    Train (or with holdout="all", train once per group with it left out).
+    Half of the synthetic share recombines real character cells from the
+    training crops, half is rendered dot-matrix print. A run whose mean loss
+    is still above 1.0 after 6 epochs is stuck on the CTC plateau (it reads
+    one fixed string for everything): it restarts with the next seed and a
+    lower learning rate, up to `tries` times.
+    """
     samples = load_manifest(data)
     groups = sorted({g for _, _, g in samples})
     if holdout == "all":
         scores = {}
         for group in groups:
             scores[group] = train(data, f"{out}_holdout_{group}", charset, direction, group,
-                                  epochs, synthetic, seed, height, trained_on)["holdout_exact"]
+                                  epochs, synthetic, seed, height, trained_on, tries)["holdout_exact"]
         print(json.dumps({"leave_one_group_out": scores}, indent=2))
         return {"leave_one_group_out": scores}
     test = [s for s in samples if holdout and s[2] == holdout]
     fit = [s for s in samples if not holdout or s[2] != holdout]
     images = {p: cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) for p, _, _ in samples}
-    index = {ch: i + 1 for i, ch in enumerate(charset)}
-    model = build_model(len(charset) + 1)
-    optimiser = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
-    steps_per_epoch = max(len(fit) // 32, 50)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimiser, max_lr=2e-3, total_steps=epochs * steps_per_epoch
-    )
-    started = time.time()
-    for epoch in range(epochs):
-        model.train()
-        total = 0.0
-        for _ in range(steps_per_epoch):
-            crops, labels = [], []
-            for _ in range(32):
-                if not fit or rng.random() < synthetic:
-                    text = random_label(rng, charset)
-                    crops.append(augment(render_dot_line(text, rng), rng))
-                else:
-                    path, text, _ = rng.choice(fit)
-                    crops.append(augment(images[path], rng))
-                labels.append(text)
-            x = torch.from_numpy(batch_tensor(crops, height))
-            logits = model(x)  # N, T, C
-            log_probs = F.log_softmax(logits, dim=2).permute(1, 0, 2)  # T, N, C
-            targets = torch.tensor([index[c] for t in labels for c in t], dtype=torch.long)
-            target_lengths = torch.tensor([len(t) for t in labels], dtype=torch.long)
-            input_lengths = torch.full((len(labels),), log_probs.shape[0], dtype=torch.long)
-            loss = F.ctc_loss(log_probs, targets, input_lengths, target_lengths,
-                              blank=0, zero_infinity=True)
-            optimiser.zero_grad()
-            loss.backward()
-            optimiser.step()
-            scheduler.step()
-            total += float(loss)
-        print(f"epoch {epoch + 1}/{epochs} loss {total / steps_per_epoch:.4f} ({time.time() - started:.0f}s)", flush=True)
-    model.eval()
+    cells = {}
+    for path, text, _ in fit:
+        for ch, cell in character_cells(images[path], text) or []:
+            cells.setdefault(ch, []).append(cell)
+    if any(ch not in cells for ch in charset):
+        cells = {}  # some character never seen: rendered print only
+    model = None
+    for attempt in range(tries):
+        lr = 2e-3 if attempt == 0 else 1e-3
+        model = fit_model(fit, images, cells, charset, epochs, synthetic, seed + attempt, height, lr)
+        if model is not None:
+            break
+        print(f"stuck on the CTC plateau: restarting with seed {seed + attempt + 1}", flush=True)
+    if model is None:
+        raise SystemExit("CTC training did not converge")
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    dummy = torch.ones(1, 1, height, 160)
-    torch.onnx.export(
-        model, dummy, str(out.with_suffix(".onnx")), input_names=["x"], output_names=["logits"],
-        dynamic_axes={"x": {0: "n", 3: "w"}, "logits": {0: "n", 1: "t"}}, opset_version=17,
-        dynamo=False,
-    )
+    export(model, out, height)
     meta = {
         "charset": charset, "blank": 0, "input_height": height, "input_channels": 1,
         "invert": False, "max_width": 1024, "direction": direction,
@@ -301,6 +316,67 @@ def train(data, out, charset="S0123456789", direction="horizontal", holdout=None
         out.with_suffix(".json").write_text(json.dumps(meta, indent=2))
         print(json.dumps({"holdout": holdout, **score}, indent=2))
     return meta
+
+
+def fit_model(fit, images, cells, charset, epochs, synthetic, seed, height, lr, batch=64):
+    """One training run; None when it is stuck on the CTC plateau."""
+    import torch
+    import torch.nn.functional as F
+
+    rng = random.Random(seed)
+    torch.manual_seed(seed)
+    index = {ch: i + 1 for i, ch in enumerate(charset)}
+    model = build_model(len(charset) + 1)
+    optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    steps = max(len(fit) // batch, 150)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimiser, max_lr=lr, total_steps=epochs * steps)
+    started = time.time()
+    for epoch in range(epochs):
+        model.train()
+        losses = []
+        for _ in range(steps):
+            crops, labels = [], []
+            for _ in range(batch):
+                if not fit or rng.random() < synthetic:
+                    text = random_label(rng, charset, (7, 7) if cells else (5, 9))
+                    if cells and rng.random() < 0.5:
+                        line = recombined_line(cells, text, rng)
+                    else:
+                        line = render_dot_line(text, rng)
+                else:
+                    path, text, _ = rng.choice(fit)
+                    line = images[path]
+                crops.append(augment(line, rng))
+                labels.append(text)
+            x = torch.from_numpy(batch_tensor(crops, height))
+            log_probs = F.log_softmax(model(x), dim=2).permute(1, 0, 2)  # T, N, C
+            targets = torch.tensor([index[c] for t in labels for c in t], dtype=torch.long)
+            target_lengths = torch.tensor([len(t) for t in labels], dtype=torch.long)
+            input_lengths = torch.full((len(labels),), log_probs.shape[0], dtype=torch.long)
+            loss = F.ctc_loss(log_probs, targets, input_lengths, target_lengths,
+                              blank=0, zero_infinity=True)
+            optimiser.zero_grad()
+            loss.backward()
+            optimiser.step()
+            scheduler.step()
+            losses.append(float(loss))
+        mean = float(np.mean(losses))
+        print(f"epoch {epoch + 1}/{epochs} loss {mean:.4f} ({time.time() - started:.0f}s)", flush=True)
+        if epoch == 5 and mean > 1.0:
+            return None
+    model.eval()
+    return model
+
+
+def export(model, out, height):
+    import torch
+
+    torch.onnx.export(
+        model, torch.ones(1, 1, height, 160), str(out.with_suffix(".onnx")),
+        input_names=["x"], output_names=["logits"],
+        dynamic_axes={"x": {0: "n", 3: "w"}, "logits": {0: "n", 1: "t"}},
+        opset_version=17, dynamo=False,
+    )
 
 
 def evaluate(samples, model_path):
@@ -337,6 +413,7 @@ def main(argv=None):
     fit.add_argument("--synthetic", type=float, default=0.5)
     fit.add_argument("--seed", type=int, default=0)
     fit.add_argument("--trained-on", default="")
+    fit.add_argument("--tries", type=int, default=3)
     score = sub.add_parser("eval")
     score.add_argument("--data", required=True)
     score.add_argument("--model", required=True)
@@ -347,7 +424,7 @@ def main(argv=None):
         export_crops(args.template, args.input, args.out, args.label, args.truth, args.zone)
     elif args.command == "train":
         train(args.data, args.out, args.charset, args.direction, args.holdout,
-              args.epochs, args.synthetic, args.seed, trained_on=args.trained_on)
+              args.epochs, args.synthetic, args.seed, trained_on=args.trained_on, tries=args.tries)
     else:
         print(json.dumps(evaluate(load_manifest(args.data), args.model), indent=2))
 

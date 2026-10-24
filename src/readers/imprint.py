@@ -94,6 +94,7 @@ def line_candidates(grey, char_height=None, limit=CANDIDATES):
                 continue
             weight = int(np.count_nonzero(dots[y : y + bh, x : x + w]))
             found.append((weight, (x, y, w, bh)))
+    found += merged_pieces(found, heights)
     found.sort(key=lambda item: -item[0])
     boxes = []
     for _, box in found:  # the same line found at several heights: keep one
@@ -102,6 +103,34 @@ def line_candidates(grey, char_height=None, limit=CANDIDATES):
         if len(boxes) == limit:
             break
     return boxes
+
+
+def merged_pieces(found, heights):
+    """
+    A faint or missing character can split one line into level pieces with a
+    gap wider than the closing bridges (up to ~2 character heights on TERI).
+    Each run of such pieces is added as one more candidate, so the pattern
+    check can choose the whole number over a piece of it.
+    """
+    h = min(heights)
+    pieces = sorted((box for _, box in found), key=lambda b: b[0])
+    extra = []
+    for i, first in enumerate(pieces):
+        x, y, w, bh = first
+        weight, joined = 0, False
+        for other in pieces[i + 1 :]:
+            ox, oy, ow, oh = other
+            level = min(y + bh, oy + oh) - max(y, oy) >= 0.5 * min(bh, oh)
+            gap = ox - (x + w)
+            if not level or gap < 0 or gap > 2.2 * max(bh, h):
+                continue
+            x0, y0 = x, min(y, oy)
+            x, y, w, bh = x0, y0, max(x + w, ox + ow) - x0, max(y + bh, oy + oh) - y0
+            joined = True
+        if joined:
+            weight = sum(wt for wt, box in found if overlap(box, (x, y, w, bh)) > 0.8)
+            extra.append((weight, (x, y, w, bh)))
+    return extra
 
 
 def overlap(a, b):
@@ -126,13 +155,18 @@ def cut_line(grey, box):
 
 
 def model_input(line, height=INPUT_HEIGHT, max_width=None):
-    """Grey line crop -> (1, 1, height, W) float32, paper ~1 and ink ~0."""
+    """Grey line crop -> (1, 1, height, W) float32: contrast stretched so the
+    2nd percentile is 0 (ink) and the 98th 1 (paper), as faint prints vary."""
     h, w = line.shape[:2]
     width = max(int(round(w * height / float(h))), 1)
     if max_width:
         width = min(width, max_width)
     resized = cv2.resize(line, (width, height), interpolation=cv2.INTER_AREA)
-    return (resized.astype(np.float32) / 255.0)[None, None]
+    resized = resized.astype(np.float32)
+    lo, hi = np.percentile(resized, (2, 98))
+    if hi - lo < 1:
+        return np.ones((1, 1, height, width), np.float32)
+    return np.clip((resized - lo) / (hi - lo), 0, 1).astype(np.float32)[None, None]
 
 
 # ------------------------------------------------------------------ model

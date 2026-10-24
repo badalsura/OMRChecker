@@ -1928,7 +1928,7 @@ If PaddleOCR is not available on the server, a note says so and zones set to it 
 
 Many production scanners have an imprinter that prints a running number on each sheet as it feeds, in small dot-matrix characters (for example `S` and six digits on the TERI sheets). The print lands wherever the paper was when it fired, often outside the timing marks, and can be faint or broken. An **imprint** zone reads it:
 
-1. Draw the zone over the whole strip where the number can appear, with some room on every side. On TERI that is the left margin between the page edge and the timing marks. The reader finds the line of dots inside the zone on each sheet, so the number may move from sheet to sheet.
+1. Draw the zone over the whole strip where the number can appear, with some room on every side. On TERI that is the left margin between the page edge and the timing marks: origin `[0, 800]`, size `[60, 1000]`, character height 22. The reader finds the line of dots inside the zone on each sheet, so the number may move from sheet to sheet.
 2. Set **Text direction** to how the number reads on the page (TERI: vertical, top to bottom), or leave it at the model's own.
 3. Set **Pattern the value must match**, e.g. `S\d{6}`, so a misread length goes to review.
 

@@ -110,3 +110,12 @@ def test_installed_models_lists_models_with_a_sidecar(model, monkeypatch):
     monkeypatch.setattr(imprint, "model_dirs", lambda: [model.parent])
     assert imprint.installed_models() == ["teri_imprint"]
     assert imprint.find_model("teri_imprint") == model
+
+
+def test_a_line_split_by_a_faint_character_is_also_tried_whole():
+    strip, (x, y, w, h) = strip_with("S100042", mark=False)
+    # Blank out the middle character: two level pieces with a wide gap
+    third = x + 3 * w // 7
+    strip[:, third : third + w // 7 + 12] = 235
+    boxes = imprint.line_candidates(strip, char_height=h * 0.6)
+    assert any(bx <= x + 0.1 * w and bx + bw >= x + 0.9 * w for bx, by, bw, bh in boxes)
