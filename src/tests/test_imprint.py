@@ -119,3 +119,25 @@ def test_a_line_split_by_a_faint_character_is_also_tried_whole():
     strip[:, third : third + w // 7 + 12] = 235
     boxes = imprint.line_candidates(strip, char_height=h * 0.6)
     assert any(bx <= x + 0.1 * w and bx + bw >= x + 0.9 * w for bx, by, bw, bh in boxes)
+
+
+def test_file_name_check_flags_a_different_number():
+    from src.readers.base import ZoneReadResult, check_file_names, finalize
+
+    zone = Zone("imprint_no", "imprint", [0, 0], [10, 10], {"matchFileName": True, "pattern": r"S\d{6}"})
+
+    def read(value, file_id):
+        result = finalize(ZoneReadResult(zone.name, zone.type, value, 0.99, []), zone)
+        return check_file_names({zone.name: result}, [zone], file_id)[zone.name]
+
+    same = read("S100001", "batch/100001.jpg")
+    assert "file_name_mismatch" not in same.flags and not same.needs_review
+    assert same.details["file_name"] == {"expected": "100001", "read": "100001"}
+    other = read("S100007", "100001.jpg")
+    assert "file_name_mismatch" in other.flags and other.needs_review
+    # A malformed read is already reviewed for its pattern; not compared
+    assert "file_name_mismatch" not in read("3100001", "100001.jpg").flags
+    # PDF pages: the page suffix is not part of the name
+    assert "file_name_mismatch" not in read("S100001", "100001_p1.png").flags
+    zone.options["matchFileName"] = False
+    assert "file_name_mismatch" not in read("S100007", "100001.jpg").flags

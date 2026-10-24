@@ -46,6 +46,7 @@ from src.quality import measure as measure_quality
 from src.quality import review as quality_review
 from src.ml.classifiers import load_crop_classifier
 from src.readers import read_zone, read_zones
+from src.readers.base import check_file_names
 from src.readers.image_zone import attach_zone_images
 from src.rules import review_items
 from src.template import Template
@@ -346,6 +347,7 @@ class OMREngine:
             zone_results = read_zones(
                 self.template.zones, aligned_image, self.zone_engines
             )
+        check_file_names(zone_results, self.template.zones, file_id)
         zone_images = attach_zone_images(zone_results, self.template.zones, file_id)
         timings["zones"] = _elapsed_ms(step)
 

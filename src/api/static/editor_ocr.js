@@ -197,6 +197,11 @@ export function ocrZoneControls(editor, raw, opts, setOpt, zoneName) {
         withHelp("Model", textBox(opts.model, "imprint", (v) => setOpt("model", v || null)), "Name of the imprint model in packaging/models/imprint (without .onnx), or a path to one.")
       ),
       withHelp("Character height (px)", numberBox(opts.charHeight, "found", "1", (v) => setOpt("charHeight", v || null)), "Height of one printed character in template pixels. Left empty, it is measured on each sheet."),
+      withHelp(
+        "Check against the file name",
+        el("span", {}, checkbox(opts.matchFileName, (v) => setOpt("matchFileName", v || null)), " flag sheets whose number differs from their file name"),
+        "Compares the digits of the value with the digits of the sheet's file name (S100001 matches 100001.jpg) and sends a sheet that differs to review with the flag file_name_mismatch. A sheet with no readable number is flagged not_found instead."
+      ),
       status
     );
   }

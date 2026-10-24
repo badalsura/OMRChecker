@@ -1,5 +1,6 @@
 import re
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from src.logger import logger
@@ -40,6 +41,8 @@ ZONE_REVIEW_FLAGS = {
     "icr_alignment",
     # Imprint: no trained model, so Tesseract read the dot-matrix print
     "no_imprint_model",
+    # matchFileName: the value does not match the sheet's file name
+    "file_name_mismatch",
 }
 
 
@@ -99,6 +102,42 @@ def read_zone(zone, image, engines=None):
         else ()
     )
     return finalize(result, zone, extra_review_flags=extra)
+
+
+def file_name_key(file_id):
+    """The sheet's file name without folder, extension or PDF page suffix."""
+    stem = Path(str(file_id)).stem
+    return re.sub(r"_p\d+$", "", stem) if str(file_id).lower().endswith(".png") else stem
+
+
+def check_file_names(results, zones, file_id):
+    """
+    Zones with options.matchFileName: compare the read value with the sheet's
+    file name after options.fileNameNormalize (default "digits", so S100001
+    matches 100001.jpg) and flag file_name_mismatch (always reviewed) when
+    they differ. Only a value that passed the zone's pattern is compared: an
+    empty or malformed read already goes to review (not_found,
+    pattern_mismatch).
+    """
+    from src.rules.checks import make_normalizer
+
+    for zone in zones:
+        result = results.get(zone.name)
+        if result is None or not zone.options.get("matchFileName"):
+            continue
+        if (
+            not result.value
+            or result.value == zone.empty_val
+            or {"not_read", "pattern_mismatch"} & set(result.flags)
+        ):
+            continue
+        normalize = make_normalizer(zone.options.get("fileNameNormalize", "digits"), zone.name)
+        read, expected = normalize(result.value), normalize(file_name_key(file_id))
+        result.details["file_name"] = {"expected": expected, "read": read}
+        if read != expected:
+            result.flags = sorted(set(result.flags) | {"file_name_mismatch"})
+            result.needs_review = True
+    return results
 
 
 def skipped_zone(zone):

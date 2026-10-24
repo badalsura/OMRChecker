@@ -774,6 +774,7 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `engine_unavailable` | always | The reading engine needed for this zone is not installed or could not start. | Type the value by hand. Tell whoever set up the app, because every sheet will show this. |
 | `no_icr_model` | always | A handwriting zone has no handwriting model set up. | Type the value by hand; ask whoever set up the template. |
 | `no_imprint_model` | always | A scanner imprint zone has no trained model, so the number was read by a general text reader. | The printed number against the value, digit by digit. |
+| `file_name_mismatch` | always | The number read from the sheet (for example the scanner imprint) differs from the sheet's file name. The details show both. | Is the print misread, or was the file renamed, scanned twice or put in the wrong batch? Type the printed number. |
 | `read_error` | always | Reading the zone failed with an error. | Type the value by hand. If it happens on many sheets, report it. |
 | `engine_disagree` | always (when the template asks for it) | Two text-reading engines read different text. | Which reading is right. |
 | `low_char_confidence` | always | At least one character was read with low confidence. | Each character, especially look-alikes (0/O, 1/7, 5/S). |
@@ -1938,6 +1939,8 @@ Many production scanners have an imprinter that prints a running number on each 
 | **Text direction** | `direction` | the model's own | Horizontal, vertical (either way) or upside down. |
 | **Character height (px)** | `charHeight` | measured | Height of one printed character in template pixels. |
 | **Allowed characters** | `whitelist` | the model's characters | Limits what the reader may return. |
+| **Check against the file name** | `matchFileName` | off | Sends a sheet to review (`file_name_mismatch`) when the number it carries differs from its file name. Both are reduced to their digits first, so `S100001` matches `100001.jpg`. Only a read that fits the pattern is compared; a missing or malformed number is already flagged `not_found` or `pattern_mismatch`. The zone details show both values. Works on any zone type. |
+| (no editor control) | `fileNameNormalize` | `digits` | How both values are reduced before comparing: `digits`, `alnum`, `upper`, `strip`, `none`, or `{"regex": "...", "group": 1}` to take one part. |
 
 The reader is an optional module. It loads only when a template has an imprint zone, and its model is a separate file of about 1 MB (`<name>.onnx` plus `<name>.json`) in `packaging/models/imprint`. Builds include the models found there; set `OMR_BUNDLE_IMPRINT=0` to leave them out. Without a model the zone is read by Tesseract and always goes to review (`no_imprint_model`).
 
@@ -2220,6 +2223,7 @@ These always send their field, zone or sheet to review when they happen. Many on
 | `engine_unavailable` | OCR / ICR zone | always | The reading engine (Tesseract or PaddleOCR) is not installed or did not start. |
 | `no_icr_model` | ICR zone | always | No handwriting model is available for the zone. |
 | `no_imprint_model` | Imprint zone | always | No imprint model is installed, so Tesseract read the dot-matrix print. |
+| `file_name_mismatch` | Zone with `matchFileName` | always | The value read differs from the sheet's file name (compared as digits by default). |
 | `read_error` | any zone | always | Reading the zone failed with an error; the rest of the sheet is kept. |
 | `validation_failed` | field or zone | a validation rule set | A validation rule (length, range, allowed values, pattern) failed. |
 | `cross_check_failed` | check | a check set | The check's sources disagree, and the check is set to review conflicts (or to error). |
