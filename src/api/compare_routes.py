@@ -26,7 +26,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import cv2
 from fastapi import File, Form, HTTPException, Query, Request, UploadFile
@@ -76,7 +76,24 @@ class ClaimBody(BaseModel):
 
 
 class DecideBody(BaseModel):
-    decisions: Dict[str, Optional[str]] = Field(default_factory=dict)
+    decisions: Dict[str, Optional[Union[str, Dict]]] = Field(
+        default_factory=dict,
+        description='{field: "external" | "ours" | null | {"source": "manual", "value": "..."}}',
+    )
+
+
+class ReparseBody(BaseModel):
+    template_id: str
+    parse: Dict = Field(default_factory=dict)
+
+
+class ProfileBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    template_id: Optional[str] = None
+    parse: Dict = Field(default_factory=dict)
+    mapping: Dict[str, Optional[str]] = Field(default_factory=dict)
+    key: KeySpec = Field(default_factory=KeySpec)
+    rules: Dict = Field(default_factory=dict)
 
 
 def register(app, ctx, secured):
@@ -161,11 +178,8 @@ def register(app, ctx, secured):
             raise HTTPException(
                 413, f"The file exceeds the {ctx.settings.max_upload_mb} MB limit"
             )
-        try:
-            columns, rows = compare.read_table(content, options)
-        except compare.CompareError as error:
-            fail(error)
         token = new_id()
+        described = describe(token, content, options, template_json, file.filename)
         folder = uploads / token
         folder.mkdir(parents=True, exist_ok=True)
         suffix = Path(file.filename or "").suffix.lower()[:8] or ".txt"
@@ -173,10 +187,36 @@ def register(app, ctx, secured):
         write_json_atomic(
             folder / "meta.json", {"name": file.filename, "at": time.time()}
         )
+        return described
+
+    @app.post("/compare/preview/{token}", tags=["compare"], dependencies=secured)
+    def compare_reparse(token: str, body: ReparseBody):
+        """Read the uploaded file again with other settings (header, names, split...)."""
+        template_json = template_or_404(body.template_id)
+        folder = uploads / token
+        if not token.isalnum() or not folder.is_dir():
+            raise HTTPException(404, "Read the file again (the preview expired)")
+        meta = read_json(folder / "meta.json", {})
+        try:
+            return describe(
+                token,
+                compare.load_source(folder),
+                body.parse,
+                template_json,
+                meta.get("name"),
+            )
+        except compare.CompareError as error:
+            fail(error)
+
+    def describe(token, content, options, template_json, file_name):
+        try:
+            columns, rows = compare.read_table(content, options)
+        except compare.CompareError as error:
+            fail(error)
         names, questions, zones, imprint = compare.template_names(template_json)
         return {
             "upload": token,
-            "file_name": file.filename,
+            "file_name": file_name,
             "columns": columns,
             "rows": rows[: compare.SAMPLE_ROWS],
             "count": len(rows),
@@ -188,6 +228,31 @@ def register(app, ctx, secured):
             "key": compare.suggest_key(columns, names, imprint),
             "rules": compare.DEFAULT_RULES,
         }
+
+    @app.get("/compare/profiles", tags=["compare"], dependencies=secured)
+    def compare_profiles():
+        return {"profiles": store.profiles()}
+
+    @app.post(
+        "/compare/profiles", tags=["compare"], dependencies=secured, status_code=201
+    )
+    def compare_save_profile(body: ProfileBody, request: Request):
+        settings = {
+            "parse": body.parse,
+            "mapping": {k: v for k, v in body.mapping.items() if v},
+            "key": body.key.model_dump(),
+            "rules": {**compare.DEFAULT_RULES, **body.rules},
+        }
+        store.save_profile(
+            body.name.strip(), body.template_id, settings, user_of(request)
+        )
+        return {"name": body.name.strip(), "settings": settings}
+
+    @app.delete("/compare/profiles/{name}", tags=["compare"], dependencies=secured)
+    def compare_delete_profile(name: str):
+        if not store.delete_profile(name):
+            raise HTTPException(404, "Profile not found")
+        return {"deleted": name}
 
     @app.get("/compare/sessions", tags=["compare"], dependencies=secured)
     def compare_sessions(template_id: Optional[str] = None):
@@ -324,6 +389,7 @@ def register(app, ctx, secured):
                     "external": item["external"],
                     "ours": item["ours"],
                     "source": item["source"],
+                    "chosen": item["chosen"],
                     "decided_by": item["decided_by"],
                     "box": box,
                     "flags": flags,
@@ -487,7 +553,7 @@ def register(app, ctx, secured):
             rows = iter(external + ours)
         else:
             items = store.all_items(session_id)
-            names = compare.template_names(template_or_404(session["template_id"]))[0]
+            names = compare.output_names(template_or_404(session["template_id"]))
 
             def reconciled():
                 for sheet in sheets:

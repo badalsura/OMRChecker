@@ -137,54 +137,165 @@ def unique_names(names):
     return out
 
 
+def header_row(parse):
+    """The line holding the column names (1 = the first; 0 = no header)."""
+    if "header_row" in parse and parse["header_row"] is not None:
+        try:
+            return max(0, int(parse["header_row"]))
+        except (TypeError, ValueError):
+            raise CompareError("Header row must be a number (0 = no header)") from None
+    return 1 if parse.get("header", True) else 0
+
+
+def name_list(text):
+    """Column names given by hand: "SEQ, ROLL, q1..q200" (ranges allowed)."""
+    names = []
+    for part in re.split(r"[,\n\t]+", text or ""):
+        part = part.strip()
+        if part:
+            names.extend(expand_range(part) if ".." in part else [part])
+    return names
+
+
+def parse_split_spec(text):
+    """
+    Columns that hold several answers, one per line:
+        ANSWERS q1..q200            one character per field
+        A1 q1..q10 width=2          two characters per field
+        RESP q1..q50 sep=,          separated by a comma (sep=space, sep=tab)
+    """
+    splits = []
+    for number, line in enumerate((text or "").splitlines(), 1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        options = {}
+        while len(parts) > 2 and "=" in parts[-1]:
+            key, _, value = parts.pop().partition("=")
+            options[key.lower()] = value
+        if len(parts) < 2:
+            raise CompareError(
+                f"Split line {number}: write COLUMN FIELDS, e.g. 'ANSWERS q1..q200'"
+            )
+        column, target = " ".join(parts[:-1]), parts[-1]
+        try:
+            names = expand_range(target)
+        except CompareError as error:
+            raise CompareError(f"Split line {number}: {error}") from None
+        sep = options.get("sep")
+        sep = {"space": " ", "tab": "\t", "comma": ",", "semicolon": ";"}.get(sep, sep)
+        try:
+            width = int(options.get("width", 1))
+        except ValueError:
+            raise CompareError(f"Split line {number}: width must be a number") from None
+        if width < 1:
+            raise CompareError(f"Split line {number}: width starts at 1")
+        splits.append({"column": column, "names": names, "sep": sep, "width": width})
+    return splits
+
+
+def apply_splits(columns, rows, splits):
+    """Replace each packed column by one column per field."""
+    for split in splits:
+        if split["column"] not in columns:
+            raise CompareError(f"Split: the file has no column '{split['column']}'")
+        at = columns.index(split["column"])
+        names, sep, width = split["names"], split["sep"], split["width"]
+
+        def cells(value):
+            if sep:
+                parts = value.split(sep)
+            else:
+                value = value.ljust(len(names) * width)
+                parts = [value[i * width : (i + 1) * width] for i in range(len(names))]
+            return (parts + [""] * len(names))[: len(names)]
+
+        columns = columns[:at] + names + columns[at + 1 :]
+        rows = [row[:at] + cells(row[at]) + row[at + 1 :] for row in rows]
+    return unique_names(columns), rows
+
+
 def read_table(content, parse=None):
     """(columns, rows) of an external file; cells are kept as written (a single
-    space can be the scanner's blank)."""
+    space can be the scanner's blank). parse: format (auto, csv, fixed),
+    delimiter, header_row (0 = none), names (column names given by hand),
+    fixed (fixed-width layout) and split (packed answer columns)."""
     parse = parse or {}
     text = decode_text(content) if isinstance(content, bytes) else content
     lines = [line.rstrip("\r\n") for line in text.splitlines()]
     fmt = parse.get("format") or "auto"
     if fmt == "auto":
         fmt = "fixed" if (parse.get("fixed") or "").strip() else "csv"
-    header = parse.get("header", True)
+    header = header_row(parse)
     if fmt == "fixed":
         spec = parse_fixed_spec(parse.get("fixed"))
-        body = [line for line in lines if line.strip()]
-        if header and body:
-            body = body[1:]
+        body = [line for line in lines[header:] if line.strip()]
         rows = [
             [line[start : start + length].ljust(length) for _, start, length in spec]
             for line in body
         ]
-        return unique_names([name for name, _, _ in spec]), rows
-    if fmt != "csv":
-        raise CompareError("format must be auto, csv or fixed")
-    delimiter = parse.get("delimiter") or None
-    if delimiter == "tab":
-        delimiter = "\t"
-    if not delimiter:
-        sample = "\n".join(lines[:20])
-        counts = {d: sample.count(d) for d in (",", ";", "\t", "|")}
-        delimiter = max(counts, key=counts.get) if any(counts.values()) else ","
-    reader = csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter)
-    rows = [row for row in reader if any(cell.strip() for cell in row)]
-    if not rows:
-        raise CompareError("The file has no rows")
-    width = max(len(row) for row in rows)
-    if header:
-        columns, rows = unique_names(rows[0] + [""] * (width - len(rows[0]))), rows[1:]
+        columns = [name for name, _, _ in spec]
+    elif fmt == "csv":
+        delimiter = parse.get("delimiter") or None
+        if delimiter == "tab":
+            delimiter = "\t"
+        if not delimiter:
+            # The header line decides (packed answers may hold other separators)
+            sample = lines[header - 1] if header and len(lines) >= header else ""
+            sample = sample or "\n".join(lines[header : header + 20])
+            counts = {d: sample.count(d) for d in (",", ";", "\t", "|")}
+            delimiter = max(counts, key=counts.get) if any(counts.values()) else ","
+        reader = csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter)
+        all_rows = list(reader)
+        if header > len(all_rows):
+            raise CompareError(f"The file has fewer than {header} lines")
+        head = all_rows[header - 1] if header else []
+        rows = [row for row in all_rows[header:] if any(cell.strip() for cell in row)]
+        if not rows:
+            raise CompareError("The file has no rows")
+        width = max([len(row) for row in rows] + [len(head)])
+        columns = head + [f"C{i + 1}" for i in range(len(head), width)]
+        if not header:
+            columns = [f"C{i + 1}" for i in range(width)]
+        rows = [row + [""] * (width - len(row)) for row in rows]
     else:
-        columns = [f"C{i + 1}" for i in range(width)]
-    rows = [row + [""] * (width - len(row)) for row in rows]
-    return columns, rows
+        raise CompareError("format must be auto, csv or fixed")
+    given = name_list(parse.get("names"))
+    if given:
+        if len(given) > len(columns):
+            raise CompareError(
+                f"{len(given)} column names given; the file has {len(columns)} columns"
+            )
+        columns = given + columns[len(given) :]
+    columns = unique_names(columns)
+    return apply_splits(columns, rows, parse_split_spec(parse.get("split")))
 
 
 # ---------------------------------------------------------------------------
 # our side: names, questions, keys
 # ---------------------------------------------------------------------------
+def custom_members(template_json):
+    """{custom label: [its fields]} of a template."""
+    return {
+        label: [name for spec in specs for name in parse_field_string(spec)]
+        for label, specs in (template_json.get("customLabels") or {}).items()
+    }
+
+
+def output_names(template_json):
+    """The output columns in order: custom labels stand for their fields."""
+    names, _, _, _ = template_names(template_json)
+    members = {
+        name for fields in custom_members(template_json).values() for name in fields
+    }
+    return [name for name in names if name not in members]
+
+
 def template_names(template_json):
-    """(output names in order, question names, zone names, imprint zone names)
-    of a template."""
+    """(names that can be compared, question names, zone names, imprint zone
+    names) of a template. A field inside a custom label stays comparable on
+    its own (a scanner writes one column per question)."""
     blocks = template_json.get("fieldBlocks") or {}
     fields, questions = [], []
     for block in blocks.values():
@@ -198,10 +309,6 @@ def template_names(template_json):
                 if letters:
                     questions.append(label)
     custom = template_json.get("customLabels") or {}
-    in_custom = set()
-    for specs in custom.values():
-        for spec in specs:
-            in_custom.update(parse_field_string(spec))
     # Zones are an object keyed by name (a list of named zones is accepted too)
     zone_map = template_json.get("zones") or {}
     if isinstance(zone_map, list):
@@ -219,10 +326,10 @@ def template_names(template_json):
         for check in template_json.get("checks") or []
         if isinstance(check, dict) and (check.get("output") or check.get("name"))
     ]
-    names = list(custom) + [f for f in fields if f not in in_custom] + zones + checks
+    names = list(custom) + fields + zones + checks
     seen = set()
     names = [n for n in names if not (n in seen or seen.add(n))]
-    return names, [q for q in questions if q not in in_custom], zones, imprint
+    return names, questions, zones, imprint
 
 
 def name_key(name):
@@ -445,6 +552,14 @@ CREATE TABLE IF NOT EXISTS audit (
     at REAL
 );
 CREATE INDEX IF NOT EXISTS ix_cmp_audit ON audit(session_id, id);
+-- Saved layouts (how a scanner's file is read and mapped), reused for the next file
+CREATE TABLE IF NOT EXISTS profiles (
+    name TEXT PRIMARY KEY,
+    template_id TEXT,
+    settings TEXT,
+    saved_by TEXT,
+    saved_at REAL
+);
 """
 
 
@@ -560,6 +675,22 @@ class CompareStore:
             "chose_external": items["external"] or 0,
             "unmatched_external": unmatched,
         }
+
+    # ---- profiles ---------------------------------------------------------
+    def profiles(self):
+        rows = self.query("SELECT * FROM profiles ORDER BY name COLLATE NOCASE")
+        for row in rows:
+            row["settings"] = json.loads(row["settings"] or "{}")
+        return rows
+
+    def save_profile(self, name, template_id, settings, user):
+        self.execute(
+            "INSERT OR REPLACE INTO profiles VALUES (?,?,?,?,?)",
+            (name, template_id, json.dumps(settings), user, time.time()),
+        )
+
+    def delete_profile(self, name):
+        return self.execute("DELETE FROM profiles WHERE name=?", (name,))
 
     # ---- building ---------------------------------------------------------
     def replace_rows(self, session_id, sheets, items, unmatched, keep):
@@ -744,7 +875,7 @@ class CompareStore:
     def decide(self, session_id, scan_id, user, decisions, now=None):
         """
         Save a reviewer's choices for one sheet: decisions {name: "external" |
-        "ours" | None (undo)}. Refused while another reviewer holds the sheet.
+        "ours" | None (undo) | {"source": "manual", "value": "..."}}. Refused while another reviewer holds the sheet.
         Returns the sheet's new state.
         """
         now = now or time.time()
@@ -776,13 +907,20 @@ class CompareStore:
                     f"Not a mismatch on this sheet: {', '.join(unknown)}", 422
                 )
             audit = []
-            for name, source in decisions.items():
-                if source not in ("external", "ours", None):
-                    raise CompareError("Pick 'external' or 'ours'", 422)
+            for name, decision in decisions.items():
                 item = items[name]
-                if item["source"] == source:
-                    continue
-                chosen = None if source is None else item[source]
+                # "external", "ours", None (undo) or {"source": "manual", "value": ...}
+                if isinstance(decision, dict) and decision.get("source") == "manual":
+                    source, chosen = "manual", str(decision.get("value") or "")
+                    if item["source"] == source and item["chosen"] == chosen:
+                        continue
+                elif decision in ("external", "ours", None):
+                    source = decision
+                    if item["source"] == source:
+                        continue
+                    chosen = None if source is None else item[source]
+                else:
+                    raise CompareError("Pick 'external', 'ours' or a typed value", 422)
                 self.conn.execute(
                     "UPDATE items SET chosen=?, source=?, decided_by=?, decided_at=? "
                     "WHERE session_id=? AND scan_id=? AND name=?",
@@ -898,6 +1036,13 @@ def build(store, session, content, scans, load_result, template_json, empty_valu
     columns, rows = read_table(content, settings.get("parse"))
     names, questions, _, _ = template_names(template_json)
     pairs = compared_names(mapping, rules, questions)
+    # A custom label whose fields are compared one by one is not compared again
+    mapped = {name for _, name in pairs}
+    pairs = [
+        (column, name)
+        for column, name in pairs
+        if not mapped.intersection(custom_members(template_json).get(name) or [])
+    ]
     missing = [column for column, _ in pairs if column not in columns]
     if missing:
         raise CompareError(f"The file has no column {', '.join(missing[:5])}", 422)

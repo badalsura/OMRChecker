@@ -826,8 +826,20 @@ The choices go into a **separate reconciled layer**. The read results are never 
    q1..q200 41 1
    ```
 
-   Untick **First row is a header** when the file has no header; the columns are then called C1, C2…
-3. Press **Read file**. The first rows are shown (␣ marks a single space), with the columns matched to our fields by name: `Q001`, `Q1`, `q-1` and a bare `1` all match `q1`. Clear a box to leave a column out, or type the field it belongs to.
+   **Header row** is the line that holds the column names: 1 for the first line, 3 when two title lines come first, 0 when the file has no header (the columns are then called C1, C2…). **Column names** names the columns yourself, in order, replacing the header or naming a file without one: `SEQ, ROLL, q1..q200`.
+
+   **Packed answer columns**: a column that holds many answers is split into one column per field, one line per column:
+
+   ```
+   ANSWERS q1..q200          one 200-character column, one answer per character
+   A1 q1..q10                ten answers per column...
+   A2 q11..q20               ...and so on
+   RESP q1..q50 sep=,        answers separated by a comma (sep=space, sep=tab, any character)
+   CODES q1..q20 width=2     two characters per answer
+   ```
+3. Press **Read file**. The first rows are shown as read, after the split (␣ marks a single space), with the columns matched to our fields by name: `Q001`, `Q1`, `q-1` and a bare `1` all match `q1`, and `ROLL` matches `rollno` when it is the only name starting so. Type the field a column belongs to, or clear a box to leave it out. **Map from column … onwards to** fills a run of columns at once: from `Item 1` onwards to `q1..q200`. A question inside a custom label (`ans` = `q1..q200`) can be compared on its own, or the joined label as one value; when both are mapped, only the fields are compared. Change any setting and press **Read file / read again** to check it: the file is not uploaded again.
+
+   **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again.
 4. Say **how their rows find our sheets**: their column, what it matches on our side, and how to compare the two.
 
    | Our side | Use it when |
@@ -858,6 +870,7 @@ The choices go into a **separate reconciled layer**. The read results are never 
 |---|---|---|
 | `1` | External | keep their value, go to the next open mismatch |
 | `2` | Ours | keep our value, go to the next open mismatch |
+| `E` | Type value | type the right value yourself (it starts with their value); `Enter` keeps it, `Esc` cancels. The audit marks it `manual` |
 | `R` | Undo | undo the last choice on this sheet and go back to that field; with nothing to undo, go to the previous field |
 | `S` | Next mismatch | go to the next mismatch on this sheet without choosing |
 | `Tab` | Skip sheet | leave this sheet without saving; it stays open for later |
@@ -873,7 +886,7 @@ A sheet saved with a mismatch still open stays in the queue and comes round agai
 | File | What is in it |
 |---|---|
 | Reconciled CSV | every sheet in scope with all our columns, the kept value wherever someone decided, the status (`clean`, `pending`, `partial`, `done`, `no_record`, `duplicate`, `not_read`), how many external values were kept, the fields still open, and who reconciled it |
-| Audit CSV | every choice and undo: when, who, the sheet, the field, both values, the kept value and its source |
+| Audit CSV | every choice and undo: when, who, the sheet, the field, both values, the kept value and its source (`external`, `ours` or `manual`) |
 | Unmatched CSV | their rows that found no sheet (no key, duplicate key, no sheet) and our sheets that found no row |
 
 Deleting a comparison (administrators, or the person who made it) removes its choices only. Comparisons are stored in `compare.sqlite3` and the `compare` folder of the data folder.

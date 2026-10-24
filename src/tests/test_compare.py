@@ -311,7 +311,114 @@ def test_template_names_reads_zones_keyed_by_name():
     }
     names, questions, zones, imprint = compare.template_names(template)
     assert zones == ["imprint_scanner", "barcode"] and imprint == ["imprint_scanner"]
-    assert names == ["Roll", "q1", "q2", "q3", "imprint_scanner", "barcode"]
+    # Fields inside a custom label stay comparable one by one
+    assert names == [
+        "Roll",
+        "q1",
+        "q2",
+        "q3",
+        "roll1",
+        "roll2",
+        "imprint_scanner",
+        "barcode",
+    ]
+    assert compare.output_names(template) == [
+        "Roll",
+        "q1",
+        "q2",
+        "q3",
+        "imprint_scanner",
+        "barcode",
+    ]
     assert questions == ["q1", "q2", "q3"]
     key = compare.suggest_key(["SEQ", "Q1"], names, imprint)
     assert key["ours"] == "imprint_scanner"
+
+
+def test_packed_answer_columns_and_names_given_by_hand():
+    # One column of all answers, and two columns of five answers each
+    content = b"ID,ANSWERS\n7,AB *D\n"
+    columns, rows = compare.read_table(content, {"split": "ANSWERS q1..q5"})
+    assert columns == ["ID", "q1", "q2", "q3", "q4", "q5"]
+    assert rows == [["7", "A", "B", " ", "*", "D"]]
+    content = b"7;ABCDA;BC DA\n"
+    parse = {"header_row": 0, "names": "SEQ, A1, A2", "split": "A1 q1..q5\nA2 q6..q10"}
+    columns, rows = compare.read_table(content, parse)
+    assert columns == ["SEQ"] + [f"q{i}" for i in range(1, 11)]
+    assert rows[0][6:] == ["B", "C", " ", "D", "A"]
+    # Separated values and a header further down the file
+    content = b"Exported by ScanTools\n\nSEQ,RESP\n9,A|B||C\n"
+    columns, rows = compare.read_table(
+        content, {"header_row": 3, "split": "RESP q1..q4 sep=|"}
+    )
+    assert columns == ["SEQ", "q1", "q2", "q3", "q4"] and rows == [
+        ["9", "A", "B", "", "C"]
+    ]
+    with pytest.raises(compare.CompareError):
+        compare.read_table(b"A,B\n1,2\n", {"split": "NOPE q1..q2"})
+    with pytest.raises(compare.CompareError):
+        compare.read_table(b"A,B\n1,2\n", {"names": "a, b, c"})
+
+
+def test_fields_inside_a_custom_label_are_mapped_one_by_one(tmp_path, spec):
+    template = spec.to_template(pre_processors=[])
+    template["customLabels"] = {"ans": ["q1..20"]}
+    names, questions, _, _ = compare.template_names(template)
+    assert "q1" in names and "ans" in names and "q20" in questions
+    mapping = compare.suggest_mapping(["SEQ", "Q1", "ANS"], names, questions)
+    assert mapping == {"Q1": "q1", "ANS": "ans"}
+    # Both the label and its fields mapped: the label is left out
+    pairs = compare.compared_names({"Q1": "q1", "ANS": "ans"}, RULES, questions)
+    assert len(pairs) == 2
+
+
+def test_manual_value_and_profiles(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview)
+    base = f"/compare/sessions/{session['id']}"
+    sheet = client.post(f"{base}/claim", json={}).json()["sheet"]
+    saved = client.post(
+        f"{base}/sheets/{sheet['scan_id']}",
+        json={"decisions": {"q1": {"source": "manual", "value": "D"}, "q2": "ours"}},
+    ).json()
+    assert saved["state"] == "done"
+    rows = list(csv.DictReader(io.StringIO(client.get(f"{base}/export").text)))
+    assert next(r for r in rows if r["scan_id"] == sheet["scan_id"])["q1"] == "D"
+    audit = client.get(f"{base}/export?kind=audit").text
+    assert ",D,manual,decide" in audit
+    bad = client.post(
+        f"{base}/sheets/{sheet['scan_id']}", json={"decisions": {"q1": "theirs"}}
+    )
+    assert bad.status_code == 422
+
+    # Read again with other settings, without uploading
+    again = client.post(
+        f"/compare/preview/{session['id']}x",
+        json={"template_id": template_id, "parse": {}},
+    )
+    assert again.status_code == 404
+    profile = {
+        "name": "OpScan layout",
+        "template_id": template_id,
+        "parse": {"header_row": 1},
+        "mapping": preview["mapping"],
+        "key": {"column": "SEQ", "ours": "file", "normalize": "digits"},
+    }
+    assert client.post("/compare/profiles", json=profile).status_code == 201
+    listed = client.get("/compare/profiles").json()["profiles"]
+    assert (
+        listed[0]["name"] == "OpScan layout"
+        and listed[0]["settings"]["key"]["column"] == "SEQ"
+    )
+    assert client.delete("/compare/profiles/OpScan layout").json() == {
+        "deleted": "OpScan layout"
+    }
+
+
+def test_reparse_a_previewed_file(compared):
+    client, template_id, results, preview = compared
+    again = client.post(
+        f"/compare/preview/{preview['upload']}",
+        json={"template_id": template_id, "parse": {"header_row": 0}},
+    ).json()
+    assert again["columns"][0] == "C1" and again["count"] == preview["count"] + 1

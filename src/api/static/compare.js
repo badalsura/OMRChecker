@@ -1,7 +1,8 @@
 // Compare tab: reconcile our results with another reader's export (a physical
 // OMR scanner such as Scantron OpScan 6, or any CSV / fixed-width file).
 // Mismatches only, one sheet at a time, keyboard first:
-//   1 external value · 2 our value · R undo / previous field · S next mismatch
+//   1 external value · 2 our value · E type a value · R undo / previous field
+//   S next mismatch
 //   Tab skip sheet · Shift+Tab previous sheet · Enter save and next
 // Choices go to the reconciled layer on the server; read results never change.
 import { api, chip, confidenceColor, displayName, el, modal, on, safeStorage, saveAs, state, toast, url } from "./api.js";
@@ -125,11 +126,27 @@ async function skipSheet(back = false) {
   await claim({ after: c.sheet.ord, direction: back ? "prev" : "next" });
 }
 
+// A choice: "external", "ours", null or {source: "manual", value}
+function choiceKey(choice) {
+  return choice && typeof choice === "object" ? `manual:${choice.value}` : choice || "";
+}
+
+function choiceSource(choice) {
+  return choice && typeof choice === "object" ? choice.source : choice;
+}
+
+function choiceValue(item, choice) {
+  const source = choiceSource(choice);
+  if (source === "manual") return choice.value;
+  return source ? item[source] : null;
+}
+
 function changedDecisions() {
   const out = {};
   for (const item of c.sheet ? c.sheet.items : []) {
     const choice = c.choices[item.name] || null;
-    if (choice !== (item.source || null)) out[item.name] = choice;
+    const saved = item.source === "manual" ? { source: "manual", value: item.chosen || "" } : item.source || null;
+    if (choiceKey(choice) !== choiceKey(saved)) out[item.name] = choice;
   }
   return out;
 }
@@ -159,7 +176,7 @@ async function saveAndNext() {
 function showSheet(sheet) {
   c.sheet = sheet;
   c.session.progress = sheet.progress;
-  c.choices = Object.fromEntries(sheet.items.map((item) => [item.name, item.source || null]));
+  c.choices = Object.fromEntries(sheet.items.map((item) => [item.name, item.source === "manual" ? { source: "manual", value: item.chosen || "" } : item.source || null]));
   c.history = [];
   const firstOpen = sheet.items.findIndex((item) => !item.source);
   c.idx = firstOpen >= 0 ? firstOpen : 0;
@@ -190,6 +207,7 @@ function showSheet(sheet) {
           { class: "cmp-actions" },
           el("button", { onclick: () => choose("external"), title: "Keep the other reader's value (1)" }, el("kbd", {}, "1"), " External"),
           el("button", { onclick: () => choose("ours"), title: "Keep our value (2)" }, el("kbd", {}, "2"), " Ours"),
+          el("button", { onclick: editValue, title: "Type the right value yourself (E)" }, el("kbd", {}, "E"), " Type value"),
           el("button", { onclick: undo, title: "Undo the last choice, or go back a field (R)" }, el("kbd", {}, "R"), " Undo"),
           el("button", { onclick: () => go(c.idx + 1), title: "Next mismatch on this sheet (S)" }, el("kbd", {}, "S"), " Next mismatch"),
           el("button", { onclick: () => skipSheet(false), title: "Skip this sheet without saving (Tab)" }, el("kbd", {}, "Tab"), " Skip sheet"),
@@ -236,7 +254,7 @@ function render() {
   const current = document.getElementById("cmp-current");
   current.innerHTML = "";
   if (item) {
-    const choice = c.choices[item.name];
+    const choice = choiceSource(c.choices[item.name]);
     current.append(
       el("div", { class: "row gap wrap" }, el("h3", {}, item.name), el("span", { class: "muted small" }, `mismatch ${c.idx + 1} of ${items.length}`)),
       el(
@@ -250,13 +268,15 @@ function render() {
         { class: "cmp-values" },
         el("button", { class: `cmp-value${choice === "external" ? " on" : ""}`, onclick: () => choose("external") }, el("span", { class: "k" }, "1 · External"), el("span", { class: "v" }, shown(item.external))),
         el("button", { class: `cmp-value${choice === "ours" ? " on" : ""}`, onclick: () => choose("ours") }, el("span", { class: "k" }, "2 · Ours"), el("span", { class: "v" }, shown(item.ours)))
-      )
+      ),
+      choice === "manual" ? el("div", { class: "cmp-manual" }, "Typed: ", el("code", {}, shown(c.choices[item.name].value))) : null,
+      el("div", { id: "cmp-edit" })
     );
   }
   const list = document.getElementById("cmp-list");
   list.innerHTML = "";
   for (const [i, it] of items.entries()) {
-    const choice = c.choices[it.name];
+    const choice = choiceSource(c.choices[it.name]);
     list.append(
       el(
         "div",
@@ -264,7 +284,7 @@ function render() {
         el("code", {}, it.name),
         el("span", { class: choice === "external" ? "picked" : "" }, shown(it.external)),
         el("span", { class: choice === "ours" ? "picked" : "" }, shown(it.ours)),
-        el("span", { class: "muted small" }, choice ? (choice === "external" ? "external" : "ours") : "open")
+        el("span", { class: choice === "manual" ? "picked" : "muted small" }, choice === "manual" ? shown(c.choices[it.name].value) : choice || "open")
       )
     );
   }
@@ -323,6 +343,32 @@ function choose(source) {
   render();
 }
 
+// E: type the value; Enter keeps it, Esc goes back to the keys
+function editValue() {
+  const item = c.sheet && c.sheet.items[c.idx];
+  const box = document.getElementById("cmp-edit");
+  if (!item || !box) return;
+  const current = c.choices[item.name];
+  const input = el("input", { class: "rv-value", spellcheck: "false", autocomplete: "off", value: choiceSource(current) ? choiceValue(item, current) || "" : item.external || "" });
+  box.innerHTML = "";
+  box.append(input, el("div", { class: "rv-meta" }, "Enter keeps this value · Esc cancels · empty = blank"));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      choose({ source: "manual", value: input.value.trim() });
+      document.getElementById("cmp-main").focus({ preventScroll: true });
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      box.innerHTML = "";
+      document.getElementById("cmp-main").focus({ preventScroll: true });
+    }
+  });
+  input.focus();
+  input.select();
+}
+
 function undo() {
   if (!c.sheet) return;
   const last = c.history.pop();
@@ -369,6 +415,9 @@ function onKey(e) {
   } else if (key === "2" || e.code === "Digit2" || e.code === "Numpad2") {
     e.preventDefault();
     choose("ours");
+  } else if (key === "e" || key === "E") {
+    e.preventDefault();
+    editValue();
   } else if (key === "r" || key === "R") {
     e.preventDefault();
     undo();
@@ -515,11 +564,31 @@ async function newComparison() {
   };
   template.addEventListener("change", fillJobs);
   fillJobs();
+
+  // A saved layout fills in every setting below and the mapping
+  let profiles = [];
+  const profile = el("select", {}, el("option", { value: "" }, "none"));
+  const loadProfiles = async () => {
+    try {
+      profiles = (await api("/compare/profiles")).profiles;
+    } catch (error) {
+      profiles = [];
+    }
+    const keep = profile.value;
+    profile.innerHTML = "";
+    profile.append(el("option", { value: "" }, profiles.length ? "none" : "none saved yet"));
+    for (const p of profiles) profile.append(el("option", { value: p.name }, p.name));
+    profile.value = keep;
+  };
+  loadProfiles();
+
   const file = el("input", { type: "file", accept: ".csv,.txt,.dat,.tsv,.prn" });
   const format = el("select", {}, el("option", { value: "auto" }, "Auto"), el("option", { value: "csv" }, "CSV / delimited"), el("option", { value: "fixed" }, "Fixed width"));
   const delimiter = el("select", {}, el("option", { value: "" }, "auto"), el("option", { value: "," }, ", comma"), el("option", { value: ";" }, "; semicolon"), el("option", { value: "tab" }, "tab"), el("option", { value: "|" }, "| pipe"));
-  const header = el("input", { type: "checkbox", checked: true });
-  const fixed = el("textarea", { rows: 4, cols: 40, placeholder: "One column per line: NAME START LENGTH\nSEQ 1 10\nq1..q200 41 1", spellcheck: "false" });
+  const header = el("input", { type: "number", min: 0, value: 1, style: { width: "4.5em" }, title: "The line with the column names: 1 = the first line, 0 = the file has no header" });
+  const names = el("input", { size: 40, placeholder: "e.g. SEQ, ROLL, q1..q200 (leave empty to use the header)", spellcheck: "false" });
+  const fixed = el("textarea", { rows: 4, cols: 40, placeholder: "One column per line: NAME START LENGTH\nROLL 1 12\nq1..q200 13 1", spellcheck: "false" });
+  const split = el("textarea", { rows: 3, cols: 40, placeholder: "One packed column per line: COLUMN FIELDS [width=N] [sep=X]\nANSWERS q1..q200\nA1 q1..q10\nA2 q11..q20", spellcheck: "false" });
   const fixedRow = el("label", { class: "field" }, "Fixed-width columns (START counts from 1)", fixed);
   const syncFormat = () => (fixedRow.style.display = format.value === "fixed" ? "" : "none");
   format.addEventListener("change", syncFormat);
@@ -528,22 +597,62 @@ async function newComparison() {
   const name = el("input", { placeholder: "e.g. OpScan batch 3", size: 30 });
   let preview = null;
   let parts = null;
+  let readName = null;
 
-  const parse = () => ({ format: format.value, delimiter: delimiter.value || null, header: header.checked, fixed: format.value === "fixed" ? fixed.value : "" });
+  const parse = () => ({
+    format: format.value,
+    delimiter: delimiter.value || null,
+    header_row: Number(header.value || 0),
+    names: names.value,
+    fixed: format.value === "fixed" ? fixed.value : "",
+    split: split.value,
+  });
+  const applyParse = (saved) => {
+    format.value = saved.format || "auto";
+    delimiter.value = saved.delimiter || "";
+    header.value = saved.header_row !== undefined && saved.header_row !== null ? saved.header_row : saved.header === false ? 0 : 1;
+    names.value = saved.names || "";
+    fixed.value = saved.fixed || "";
+    split.value = saved.split || "";
+    syncFormat();
+  };
+  profile.addEventListener("change", () => {
+    const chosen = profiles.find((p) => p.name === profile.value);
+    if (!chosen) return;
+    applyParse(chosen.settings.parse || {});
+    if (chosen.template_id && state.templates.some((t) => t.id === chosen.template_id)) {
+      template.value = chosen.template_id;
+      fillJobs();
+    }
+    if (preview) readFile();
+  });
+
   const readFile = async () => {
     if (!file.files.length) return toast("Pick their file first");
     if (!template.value) return toast("Pick a template");
-    const form = new FormData();
-    form.append("file", file.files[0]);
-    form.append("template_id", template.value);
-    form.append("parse", JSON.stringify(parse()));
+    const edited = parts ? parts.mapping() : null;
     try {
-      preview = await api("/compare/preview", { method: "POST", form });
+      if (preview && readName === file.files[0].name) {
+        // Same file: read it again with the new settings (no upload)
+        preview = await api(`/compare/preview/${preview.upload}`, { method: "POST", json: { template_id: template.value, parse: parse() } });
+      } else {
+        const form = new FormData();
+        form.append("file", file.files[0]);
+        form.append("template_id", template.value);
+        form.append("parse", JSON.stringify(parse()));
+        preview = await api("/compare/preview", { method: "POST", form });
+        readName = file.files[0].name;
+      }
     } catch (error) {
       return toast(error.message, "error", 6000);
     }
     if (!name.value) name.value = file.files[0].name.replace(/\.[^.]+$/, "");
-    parts = showPreview(step2, preview);
+    const chosen = profiles.find((p) => p.name === profile.value);
+    const settings = chosen ? chosen.settings : {};
+    // Keep what was typed in the mapping for columns that are still there
+    const mapping = chosen ? { ...(settings.mapping || {}) } : { ...preview.mapping };
+    if (edited) for (const [column, value] of Object.entries(edited)) if (preview.columns.includes(column)) mapping[column] = value;
+    parts = showPreview(step2, { ...preview, mapping }, settings);
   };
 
   const create = async () => {
@@ -569,19 +678,44 @@ async function newComparison() {
     }
   };
 
+  const saveProfile = async () => {
+    if (!preview) return toast("Read the file first, then save its layout");
+    const title = prompt("Save this layout as (e.g. OpScan TERI layout):", profile.value || "");
+    if (!title) return;
+    try {
+      await api("/compare/profiles", {
+        method: "POST",
+        json: { name: title.trim(), template_id: template.value, parse: parse(), mapping: parts.mapping(), key: parts.key.read(), rules: parts.rules.read() },
+      });
+      await loadProfiles();
+      profile.value = title.trim();
+      toast(`Saved "${title.trim()}"`, "ok");
+    } catch (error) {
+      toast(error.message, "error", 6000);
+    }
+  };
+
   const body = el(
     "div",
     { class: "cmp-form" },
-    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Template ", template), el("label", { class: "field inline" }, "Our sheets ", job)),
-    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Their file ", file), el("label", { class: "field inline" }, "Format ", format), el("label", { class: "field inline" }, "Delimiter ", delimiter), el("label", { class: "field inline" }, header, " First row is a header"), el("button", { onclick: readFile }, "Read file")),
+    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Template ", template), el("label", { class: "field inline" }, "Our sheets ", job), el("label", { class: "field inline", title: "A layout saved earlier: how a file is read, mapped and compared" }, "Saved layout ", profile)),
+    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Their file ", file), el("label", { class: "field inline" }, "Format ", format), el("label", { class: "field inline" }, "Delimiter ", delimiter), el("label", { class: "field inline" }, "Header row ", header)),
+    el("label", { class: "field inline", title: "Name the columns yourself: replaces the header, or names a file without one (ranges like q1..q200 allowed)" }, "Column names ", names),
     fixedRow,
+    el("label", { class: "field", title: "A column that holds many answers: split it into one column per field" }, "Packed answer columns (optional)", split),
+    el("div", { class: "row gap" }, el("button", { onclick: readFile }, "Read file / read again"), el("span", { class: "muted small" }, "Change any setting above and read again to check the split.")),
     step2,
     el("label", { class: "field inline" }, "Name ", name)
   );
-  const dialog = modal("New comparison", body, [el("button", { onclick: () => dialog.close() }, "Cancel"), el("button", { class: "primary", onclick: create }, "Compare")], { wide: true });
+  const dialog = modal(
+    "New comparison",
+    body,
+    [el("button", { onclick: saveProfile, title: "Keep these settings and this mapping for the next file of the same kind" }, "Save layout…"), el("button", { onclick: () => dialog.close() }, "Cancel"), el("button", { class: "primary", onclick: create }, "Compare")],
+    { wide: true }
+  );
 }
 
-function showPreview(container, preview) {
+function showPreview(container, preview, saved = {}) {
   container.innerHTML = "";
   const table = el(
     "table",
@@ -589,22 +723,41 @@ function showPreview(container, preview) {
     el("thead", {}, el("tr", {}, preview.columns.map((name) => el("th", {}, name)))),
     el("tbody", {}, preview.rows.map((row) => el("tr", {}, row.map((cell) => el("td", {}, cell === " " ? "␣" : cell)))))
   );
-  const list = el("datalist", { id: "cmp-names" }, preview.names.concat(preview.questions.filter((q) => !preview.names.includes(q))).map((n) => el("option", { value: n })));
+  const list = el("datalist", { id: "cmp-names" }, preview.names.map((n) => el("option", { value: n })));
   const inputs = {};
   const mapping = el("div", { class: "cmp-mapping" });
   for (const column of preview.columns) {
     inputs[column] = el("input", { list: "cmp-names", value: preview.mapping[column] || "", placeholder: "not compared", size: 12 });
     mapping.append(el("label", {}, el("code", {}, column), inputs[column]));
   }
-  const key = keyForm(preview, preview.key);
-  const rules = rulesForm(preview.rules);
-  const mapped = Object.keys(preview.mapping).length;
+  // Quick fill: their columns in order onto a range of our fields
+  const from = el("select", {}, preview.columns.map((name) => el("option", { value: name }, name)));
+  const range = el("input", { size: 12, placeholder: "q1..q200" });
+  const fill = () => {
+    let targets;
+    try {
+      targets = expandRange(range.value.trim());
+    } catch (error) {
+      return toast(error.message, "error");
+    }
+    const at = preview.columns.indexOf(from.value);
+    targets.forEach((target, i) => {
+      const column = preview.columns[at + i];
+      if (column) inputs[column].value = target;
+    });
+    toast(`Mapped ${Math.min(targets.length, preview.columns.length - at)} columns from ${from.value}`, "ok");
+  };
+  const clear = () => Object.values(inputs).forEach((input) => (input.value = ""));
+  const key = keyForm(preview, saved.key && preview.columns.includes(saved.key.column) ? saved.key : preview.key);
+  const rules = rulesForm({ ...preview.rules, ...(saved.rules || {}) });
+  const mapped = Object.values(preview.mapping).filter(Boolean).length;
   container.append(
-    el("div", { class: "rv-meta" }, `${preview.count} rows in ${preview.file_name}. First rows (␣ = a space):`),
+    el("div", { class: "rv-meta" }, `${preview.count} rows in ${preview.file_name}. First rows as read (␣ = a space):`),
     el("div", { class: "cmp-sample" }, table),
     el("h4", {}, "How their rows find our sheets"),
     key.node,
-    el("h4", {}, `Columns to compare (${mapped} matched by name; clear a box to leave a column out)`),
+    el("h4", {}, `Columns to compare (${mapped} mapped; type our field for a column, clear a box to leave it out)`),
+    el("div", { class: "row gap wrap" }, el("span", { class: "small" }, "Map from column"), from, el("span", { class: "small" }, "onwards to"), range, el("button", { class: "small", onclick: fill }, "Fill"), el("button", { class: "small ghost", onclick: clear }, "Clear all")),
     list,
     mapping,
     el("h4", {}, "Rules"),
@@ -615,6 +768,19 @@ function showPreview(container, preview) {
     rules,
     mapping: () => Object.fromEntries(Object.entries(inputs).map(([column, input]) => [column, input.value.trim() || null])),
   };
+}
+
+function expandRange(text) {
+  const match = /^([^\d.]*)(\d+)\.{2,3}([^\d.]*)(\d+)$/.exec(text);
+  if (!match) {
+    if (text && !text.includes(".")) return [text];
+    throw new Error("Write a range like q1..q200");
+  }
+  const [, prefix, start, other, end] = match;
+  if (other && other !== prefix) throw new Error("Both ends need the same prefix");
+  const out = [];
+  for (let n = Number(start); n <= Number(end); n++) out.push(`${prefix}${n}`);
+  return out;
 }
 
 function editRules() {
