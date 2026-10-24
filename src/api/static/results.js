@@ -44,13 +44,13 @@ export function initResults() {
   for (const id of ["res-template", "res-view", "res-name", "res-flag", "res-job", "res-assigned"]) {
     $(id).addEventListener("change", () => {
       if (id === "res-template" || id === "res-job") refreshFacets();
-      load(0);
+      reload();
     });
   }
   let searchTimer;
   $("res-file").addEventListener("input", () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => load(0), 300);
+    searchTimer = setTimeout(() => reload(), 300);
   });
   $("res-prev-page").addEventListener("click", () => load(Math.max(0, r.offset - PAGE)));
   $("res-next-page").addEventListener("click", () => load(r.offset + PAGE));
@@ -72,7 +72,7 @@ export function initResults() {
       $("res-view").value = "all";
       document.querySelector('.tabs button[data-tab="results"]').click();
       refreshFacets();
-      load(0);
+      reload();
     });
   });
   // A correction saved on the review screen shows here at once
@@ -95,12 +95,14 @@ export function initResults() {
       $("res-view").value = "all";
       document.querySelector('.tabs button[data-tab="results"]').click();
       refreshFacets();
-      load(0);
+      reload();
     });
   });
   // A sheet id, or {id, field} to open with that field selected (from Compare)
   on("results-scan", async (target) => {
     const { id, field } = typeof target === "string" ? { id: target } : target;
+    // The list loading as the tab opens must not open its own first sheet
+    r.wanted = id;
     document.querySelector('.tabs button[data-tab="results"]').click();
     await open(id);
     if (field && r.data && r.data.scan_id === id && findItem(field)) select(field);
@@ -185,6 +187,12 @@ async function refreshFacets() {
   }
 }
 
+// A filter changed: the list's first sheet opens, whatever was asked for before
+function reload() {
+  r.wanted = null;
+  return load(0);
+}
+
 async function load(offset, keepPos) {
   r.filters = currentFilters();
   const params = new URLSearchParams({ ...r.filters, limit: String(PAGE), offset: String(offset) });
@@ -200,6 +208,7 @@ async function load(offset, keepPos) {
   renderList();
   if (keepPos === "first" && r.items.length) await openAt(0);
   else if (keepPos === "last" && r.items.length) await openAt(r.items.length - 1);
+  else if (r.wanted) renderList(); // a sheet asked for from another tab stays open
   else if (!keepPos && r.items.length && (!r.data || !r.items.some((i) => i.id === r.data.scan_id))) await openAt(0);
   else if (!r.items.length) {
     r.data = null;
@@ -245,6 +254,7 @@ function renderList() {
 async function openAt(index) {
   const item = r.items[index];
   if (!item) return;
+  r.wanted = null;
   r.pos = index;
   await open(item.id);
 }

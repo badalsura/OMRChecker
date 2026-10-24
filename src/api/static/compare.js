@@ -663,8 +663,10 @@ function onKey(e) {
     e.preventDefault();
     cycleView();
   } else if (key === "v" || key === "V") {
+    // Switch tabs after this key press: on Results, V would verify the sheet
     e.preventDefault();
-    openInResults();
+    e.stopImmediatePropagation();
+    setTimeout(openInResults, 0);
   } else if (key === "a" || key === "A") {
     e.preventDefault();
     toggleAll();

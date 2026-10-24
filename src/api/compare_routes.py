@@ -601,43 +601,88 @@ def register(app, ctx, secured):
         return out
 
     def write_to_results(session_id, scan_id, names, user):
-        """save_to "results": our result takes each chosen value (back to the
-        value as read when a choice is undone or ours is kept), as a correction
-        in Results would. A value our field cannot take (their bare "*" for a
-        multi-mark) is left for the reviewer to type."""
+        """
+        save_to "results": our result takes each chosen value, as a correction
+        in Results would; when a choice is undone or ours is kept, the value as
+        read comes back. Every write is checked by reading the result again:
+        a value our result did not take is reported (not_written: {name:
+        why}), never claimed. Their bare multi-mark code ("*") says no options,
+        so it is left for the reviewer to type.
+        """
         from src.api.review import current_value
 
+        rules = compare.DEFAULT_RULES | (
+            store.session(session_id)["settings"].get("rules") or {}
+        )
+        multi = {
+            str(c).strip() for c in rules.get("multi_codes") or [] if str(c).strip()
+        }
         items = {item["name"]: item for item in store.items(session_id, scan_id)}
         result = load_result(scan_id) or {}
-        changes = {}
+        labels = ctx.results.template_info(result).get("custom_labels") or {}
+        changes, wanted, refused = {}, {}, {}
         for name in names:
             item = items.get(name)
             if item is None:
                 continue
             if item["source"] in ("external", "manual"):
                 target = item["chosen"] or ""
-            else:
-                target = item["ours"] or ""
-            now = current_value(result, name)
-            if str("" if now is None else now) != target:
+                if item["source"] == "external" and target.strip() in multi:
+                    refused[name] = (
+                        f"their '{target.strip()}' does not say which options were "
+                        "marked: type the letters with E (kept in the reconciled layer)"
+                    )
+                    continue
                 changes[name] = target
-        if not changes:
-            return {"written": []}
-        try:
-            ctx.results.correct(scan_id, changes, None, user, source="compare")
-            return {"written": sorted(changes)}
-        except ResultsError:
-            pass
-        written, refused = [], {}
-        for name, value in changes.items():
+                wanted[name] = target
+            else:
+                # Ours kept or the choice undone: the value as first read
+                restore = read_values(result, name, labels)
+                changes.update(restore)
+                wanted[name] = None
+        now = {name: current_value(result, name) for name in changes}
+        changes = {
+            name: value
+            for name, value in changes.items()
+            if str("" if now[name] is None else now[name]) != value
+        }
+        if changes:
             try:
-                ctx.results.correct(
-                    scan_id, {name: value}, None, user, source="compare"
-                )
-                written.append(name)
-            except ResultsError as error:
-                refused[name] = str(error)
-        return {"written": written, "not_written": refused}
+                ctx.results.correct(scan_id, changes, None, user, source="compare")
+            except ResultsError:
+                for name, value in changes.items():
+                    try:
+                        ctx.results.correct(
+                            scan_id, {name: value}, None, user, source="compare"
+                        )
+                    except ResultsError as error:
+                        refused[name] = str(error)
+        after = load_result(scan_id) or {}
+        written = []
+        for name, target in wanted.items():
+            if name in refused:
+                continue
+            value = str(current_value(after, name) or "")
+            if target is None or value.strip() == target.strip():
+                if name in changes or any(m in changes for m in labels.get(name) or []):
+                    written.append(name)
+            else:
+                refused[name] = f"our result still reads '{value}' after the correction"
+        out = {"written": sorted(written)}
+        if refused:
+            out["not_written"] = refused
+        return out
+
+    def read_values(result, name, labels):
+        """{name: value as first read} to put back: a field or zone's original
+        value, or each column of a custom label."""
+        out = {}
+        for column in labels.get(name) or [name]:
+            for group in ("fields", "zones"):
+                entry = (result.get(group) or {}).get(column)
+                if isinstance(entry, dict) and "original_value" in entry:
+                    out[column] = entry["original_value"]
+        return out
 
     @app.get(
         "/compare/sessions/{session_id}/sheets/{scan_id}/fields",

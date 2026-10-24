@@ -635,3 +635,25 @@ def test_every_compared_field_side_by_side(compared):
     assert states["q3"] == "match"
     q3 = next(f for f in fields if f["name"] == "q3")
     assert q3["ours"] == results[0]["responses"]["q3"] or q3["ours"] == ""
+
+
+def test_their_bare_multi_mark_is_not_written_to_our_results(compared):
+    client, template_id, results, preview = compared
+    session = create(
+        client,
+        template_id,
+        preview,
+        rules={"save_to": "results", "multi_codes": ["*", "B", "C"]},
+    )
+    base = f"/compare/sessions/{session['id']}"
+    sheet = client.post(f"{base}/claim", json={}).json()["sheet"]
+    q1 = next(i for i in sheet["items"] if i["name"] == "q1")
+    saved = client.post(
+        f"{base}/sheets/{sheet['scan_id']}", json={"decisions": {"q1": "external"}}
+    ).json()
+    assert saved["written"] == [] and "type the letters" in saved["not_written"]["q1"]
+    assert saved["state"] in ("partial", "done")  # kept in the layer
+    assert (
+        client.get(f"/scans/{sheet['scan_id']}").json()["responses"]["q1"]
+        == results[0]["responses"]["q1"]
+    ), q1
