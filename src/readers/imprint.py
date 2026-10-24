@@ -26,6 +26,7 @@ Zone options:
 
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -39,114 +40,87 @@ from src.readers.base import ZoneReadResult
 DEFAULT_MODEL = "imprint"
 DEFAULT_CHARSET = "S0123456789"
 INPUT_HEIGHT = 32
-# A component this full of ink is a solid mark (timing mark, edge shadow),
-# not dot-matrix print, which covers well under half of its box
-MAX_FILL = 0.6
-# Line box padding, as a fraction of the line height
-PAD = 0.25
+# Ink: local mean threshold; a dot must be this much darker than its
+# surroundings (TERI's grey dots are 50-125 levels below the paper)
+INK_OFFSET = 35
+# Character heights tried when the zone gives none (template px)
+CHAR_HEIGHTS = (14, 18, 22, 28, 36, 46)
+# Line candidates read before giving up (best dot count first)
+CANDIDATES = 3
 
 _MODELS = {}
 _LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------ locating
-def ink_mask(grey):
-    """Dark pixels: an adaptive threshold, so a faint print on a bright page
-    and a dark one on a grey scan both come through."""
-    block = max(15, (min(grey.shape[:2]) // 4) | 1)
-    return cv2.adaptiveThreshold(
-        grey, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block, 12
-    )
+def line_candidates(grey, char_height=None, limit=CANDIDATES):
+    """
+    Boxes (x, y, w, h) in a horizontal strip that look like a line of
+    dot-matrix print, most dots first. With the character height h:
+
+    1. ink = adaptive mean threshold (block ~1.4 h, offset INK_OFFSET);
+    2. keep only dot-sized components (area <= (0.35 h)^2), or open
+       character-sized ones (dots run together): timing marks, printed lines
+       and the scanner's edge shadow drop out;
+    3. join the dots of a line (closing 1.4 h along the line, 0.4 h across);
+    4. candidates are 0.64-1.8 h thick and 2-25 h long, ranked by the dot
+       pixels they hold.
+
+    Without charHeight every height in CHAR_HEIGHTS is tried and the boxes
+    with the most dots win.
+    """
+    heights = [float(char_height)] if char_height else CHAR_HEIGHTS
+    found = []
+    for h in heights:
+        block = max(int(1.4 * h) | 1, 15)
+        ink = cv2.adaptiveThreshold(
+            grey, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block, INK_OFFSET
+        )
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
+        area = stats[:, cv2.CC_STAT_AREA]
+        bw, bh = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
+        # Dots, or dots run together into one open character (print heavier
+        # than TERI's): no bigger than a character and far from solid
+        glyph = (bw <= 1.3 * h) & (bh <= 1.3 * h) & (area < 0.5 * bw * bh)
+        dots_ok = (area <= max((0.35 * h) ** 2, 4)) | glyph
+        dots_ok[0] = False
+        dots = (dots_ok[labels] * 255).astype(np.uint8)
+        kernel = np.ones((max(int(0.4 * h), 3), max(int(1.4 * h), 5)), np.uint8)
+        joined = cv2.morphologyEx(dots, cv2.MORPH_CLOSE, kernel)
+        n, _, boxes, _ = cv2.connectedComponentsWithStats(joined, 8)
+        for i in range(1, n):
+            x, y, w, bh = (int(v) for v in boxes[i][:4])
+            if not (0.64 * h <= bh <= 1.8 * h and 2 * h <= w <= 25 * h):
+                continue
+            weight = int(np.count_nonzero(dots[y : y + bh, x : x + w]))
+            found.append((weight, (x, y, w, bh)))
+    found.sort(key=lambda item: -item[0])
+    boxes = []
+    for _, box in found:  # the same line found at several heights: keep one
+        if all(overlap(box, other) < 0.5 for other in boxes):
+            boxes.append(box)
+        if len(boxes) == limit:
+            break
+    return boxes
 
 
-def drop_solid(mask):
-    """Remove solid blobs (timing marks, edge shadows, filled boxes): ink
-    covering most of a box much bigger than a typical dot or stroke."""
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
-    if count <= 2:
-        return mask
-    sizes = np.minimum(stats[1:, cv2.CC_STAT_WIDTH], stats[1:, cv2.CC_STAT_HEIGHT])
-    typical = max(float(np.median(sizes)), 1.0)
-    fill = stats[1:, cv2.CC_STAT_AREA] / np.maximum(
-        stats[1:, cv2.CC_STAT_WIDTH] * stats[1:, cv2.CC_STAT_HEIGHT], 1
-    )
-    solid = np.nonzero((fill > MAX_FILL) & (sizes > 3 * typical))[0] + 1
-    if solid.size:
-        mask = mask.copy()
-        mask[np.isin(labels, solid)] = 0
-    return mask
-
-
-def estimate_char_height(mask):
-    """Height of the text from the tallest rows of joined dots; None if blank."""
-    rows = np.nonzero(mask.sum(axis=1) > 0)[0]
-    if rows.size == 0:
-        return None
-    count, _, stats, _ = cv2.connectedComponentsWithStats(
-        cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8)), 8
-    )
-    heights = sorted(stats[1:, cv2.CC_STAT_HEIGHT])
-    if not heights:
-        return None
-    return float(np.percentile(heights, 90))
+def overlap(a, b):
+    x0, y0 = max(a[0], b[0]), max(a[1], b[1])
+    x1, y1 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
+    inter = max(x1 - x0, 0) * max(y1 - y0, 0)
+    return inter / float(min(a[2] * a[3], b[2] * b[3]) or 1)
 
 
 def locate_line(grey, char_height=None):
-    """
-    (x, y, w, h) of the dot-matrix line in a horizontal strip, or None.
-
-    1. ink_mask, then join the dots into strokes (closing ~0.15 char height)
-       and the strokes of a line into blobs (closing ~0.8 char height wide);
-    2. drop blobs that are solid (fill > MAX_FILL in the stroke mask: timing
-       marks) or far from the character height;
-    3. start from the blob with the most ink and add the blobs level with it
-       and less than 1.5 character heights away (a wide gap between two
-       characters splits a line);
-    4. the line must be at least as wide as tall.
-    """
-    mask = drop_solid(ink_mask(grey))
-    char_height = char_height or estimate_char_height(mask)
-    if not char_height:
-        return None
-    dot = max(int(round(char_height * 0.15)), 2)
-    strokes = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((dot, dot), np.uint8))
-    join = max(int(round(char_height * 0.8)), 3)
-    lines = cv2.morphologyEx(
-        strokes, cv2.MORPH_CLOSE, np.ones((max(dot, 3), join), np.uint8)
-    )
-    count, _, stats, _ = cv2.connectedComponentsWithStats(lines, 8)
-    blobs = []
-    for i in range(1, count):
-        x, y, w, h, _ = (int(v) for v in stats[i])
-        if not 0.5 * char_height <= h <= 2.0 * char_height:
-            continue
-        fill = np.count_nonzero(strokes[y : y + h, x : x + w]) / float(w * h)
-        if fill > MAX_FILL:
-            continue
-        blobs.append([x, y, w, h, int(np.count_nonzero(mask[y : y + h, x : x + w]))])
-    if not blobs:
-        return None
-    x, y, w, h, _ = max(blobs, key=lambda b: b[4])
-    grown = True
-    while grown:
-        grown = False
-        for bx, by, bw, bh, _ in blobs:
-            overlap = min(y + h, by + bh) - max(y, by)
-            gap = max(bx - (x + w), x - (bx + bw))
-            inside = bx >= x and bx + bw <= x + w and by >= y and by + bh <= y + h
-            if inside or overlap < 0.5 * min(h, bh) or gap > 1.5 * char_height:
-                continue
-            x0, y0 = min(x, bx), min(y, by)
-            x, y, w, h = x0, y0, max(x + w, bx + bw) - x0, max(y + h, by + bh) - y0
-            grown = True
-    if w < h:
-        return None
-    return x, y, w, h
+    """The best line candidate, or None."""
+    boxes = line_candidates(grey, char_height, limit=1)
+    return boxes[0] if boxes else None
 
 
 def cut_line(grey, box):
+    """The line box with a margin of about a quarter of its height."""
     x, y, w, h = box
-    pad = int(round(h * PAD))
+    pad = max(int(round(h * 0.2)), 4)
     H, W = grey.shape[:2]
     return grey[max(y - pad, 0) : min(y + h + pad, H), max(x - pad, 0) : min(x + w + pad, W)]
 
@@ -293,21 +267,32 @@ def read_imprint_zone(zone, image, ocr_params=None):
     direction = options.get("direction") or (model.direction if model else "horizontal")
     strip = text_reader.rotate_crop(crop, direction)
     details = {"direction": direction}
-    box = locate_line(strip, options.get("charHeight"))
-    if box is None:
+    boxes = line_candidates(strip, options.get("charHeight"))
+    if not boxes:
         return ZoneReadResult(zone.name, zone.type, "", 0.0, ["not_found"], details=details)
-    details["line"] = list(box)
-    line = cut_line(strip, box)
     whitelist = options.get("whitelist")
     if model is None:
+        details["line"] = list(boxes[0])
+        line = cut_line(strip, boxes[0])
         return read_without_model(zone, line, whitelist or DEFAULT_CHARSET, details)
-    text, confidences = model.read(line, set(whitelist) if whitelist else None)
+    # Try the best few candidates; keep the read that fits the pattern, then
+    # the surest (a registration tick or bubble column can outrank faint print)
+    pattern = options.get("pattern")
+    best = None
+    for box in boxes:
+        text, confidences = model.read(cut_line(strip, box), set(whitelist) if whitelist else None)
+        confidence = float(min(confidences)) if confidences else 0.0
+        fits = bool(text) and (not pattern or re.fullmatch(pattern, text) is not None)
+        key = (fits, confidence)
+        if best is None or key > best[0]:
+            best = (key, box, text, confidences, confidence)
+    _, box, text, confidences, confidence = best
     details.update(
+        line=list(box),
         engine="imprint",
         model=model.path.stem,
         char_confidences=[round(c, 3) for c in confidences],
     )
-    confidence = float(min(confidences)) if confidences else 0.0
     flags = [] if text else ["empty"]
     return ZoneReadResult(
         zone.name, zone.type, text, confidence, flags, details=details, engine="imprint"

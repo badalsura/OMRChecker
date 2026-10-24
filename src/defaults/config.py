@@ -137,7 +137,8 @@ CONFIG_DEFAULTS = DotMap(
             "user_patterns": True,
             # Review when any character is below this confidence; 0 = off
             "min_char_confidence": 0,
-            # PaddleOCR reads boxed handwriting as well when its models are installed
+            # PaddleOCR as a second opinion on an ICR model's boxes: "paddle";
+            # "auto" (off) because it reads single boxes poorly
             "icr_second_reader": "auto",
             # Handwriting reader when no ICR model is loaded: PaddleOCR when its
             # models are installed ("auto"), or always Tesseract ("tesseract").

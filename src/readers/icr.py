@@ -147,8 +147,11 @@ def paddle_second_reader(settings, zone):
     """PaddleOCR recognition as a second reader for boxed handwriting, or None."""
     from src.readers import text_reader
 
+    # "auto" is off: PaddleOCR reading single cleaned boxes disagreed with a
+    # good box classifier on 915 of 932 TERI roll numbers, so it sent nearly
+    # every zone to review. "paddle" still turns it on.
     choice = settings.get("icr_second_reader", "auto")
-    if choice not in ("auto", "paddle"):
+    if choice != "paddle":
         return None
     try:
         engine = text_reader.paddle_engine(settings, zone=zone)
