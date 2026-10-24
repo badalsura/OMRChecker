@@ -13,7 +13,9 @@ Weights come from the Hugging Face cache (downloaded on first use), or from
 packaging/models/vlm/<name> when a copy is there (offline installs).
 
 The reader starts it by itself when ocr_params.icr_vlm_autostart is on (the
-default) and nothing answers on icr_vlm_url.
+default) and nothing answers on icr_vlm_url. It exits after --idle-minutes
+(10) without a read, so the model's memory is freed between jobs; the reader
+starts it again on the next read.
 
     GET  /health -> {"model": "...", "ready": true}
     POST /read   {"image": "<base64 PNG>", "prompt": "...", "max_tokens": 32}
@@ -66,6 +68,7 @@ class Model:
         self.name = model_id(name)
         self.model, self.processor = load(model_source(name))
         self.lock = threading.Lock()
+        self.last_used = time.time()
 
     def generate(self, png, prompt, max_tokens=32):
         from mlx_vlm import generate
@@ -78,6 +81,7 @@ class Model:
             handle.write(png)
         try:
             with self.lock:
+                self.last_used = time.time()
                 out = generate(
                     self.model,
                     self.processor,
@@ -88,6 +92,7 @@ class Model:
                     verbose=False,
                 )
         finally:
+            self.last_used = time.time()
             os.unlink(handle.name)
         # Older mlx-vlm returns the text, newer a GenerationResult
         return getattr(out, "text", out)
@@ -132,19 +137,36 @@ def make_handler(model):
     return Handler
 
 
+def exit_when_idle(server, model, idle_seconds):
+    while True:
+        time.sleep(min(30, idle_seconds))
+        if not model.lock.locked() and time.time() - model.last_used > idle_seconds:
+            print(f"No reads for {idle_seconds / 60:g} min; exiting", flush=True)
+            server.shutdown()
+            return
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", default="paddleocr-vl")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--idle-minutes", type=float, default=10,
+                        help="exit after this long without a read (0: never)")
     args = parser.parse_args(argv)
     model = Model(args.model)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(model))
     print(f"{model.name} ready on http://{args.host}:{args.port}", flush=True)
+    if args.idle_minutes > 0:
+        threading.Thread(
+            target=exit_when_idle, args=(server, model, args.idle_minutes * 60),
+            daemon=True,
+        ).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    server.server_close()
     return 0
 
 

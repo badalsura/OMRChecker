@@ -178,3 +178,37 @@ def test_digit_pattern_drops_stray_marks_without_a_whitelist(server):
     zone.options["pattern"] = r"\d{3}"
     server["reply"] = "9a0.2"
     assert icr.read_icr_zone(zone, page, None, settings_for(server["url"])).value == "902"
+
+
+def test_server_exits_when_idle():
+    from src.readers import vlm_server
+
+    class Model:
+        lock = threading.Lock()
+        last_used = 0.0
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    serving = threading.Thread(target=httpd.serve_forever, daemon=True)
+    serving.start()
+    vlm_server.exit_when_idle(httpd, Model(), 0.05)
+    serving.join(timeout=5)
+    assert not serving.is_alive()
+    httpd.server_close()
+
+
+def test_read_restarts_an_idle_exited_server(server, monkeypatch):
+    # Nothing listens on the first port, as after the server's idle exit
+    with ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler) as gone:
+        port = gone.server_address[1]
+    engine = vlm.VlmEngine(url=f"http://127.0.0.1:{port}")
+    started = []
+
+    def start_server():
+        started.append(True)
+        engine.url = server["url"]
+
+    monkeypatch.setattr(engine, "_start_server", start_server)
+    server["reply"] = "42"
+    page, _ = boxed("42", 2)
+    assert engine.read(page, "OCR:") == "42"
+    assert started == [True]

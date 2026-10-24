@@ -194,9 +194,17 @@ class VlmEngine:
                 ]}],
             })
             return reply["choices"][0]["message"]["content"] or ""
-        reply = self._request(
-            "/read", {"image": png, "prompt": prompt, "max_tokens": max_tokens}
-        )
+        body = {"image": png, "prompt": prompt, "max_tokens": max_tokens}
+        try:
+            reply = self._request("/read", body)
+        except urllib.error.URLError as error:
+            # The built-in server exits when idle; start it again and retry once
+            if not (self.autostart and self._local()) or isinstance(error, urllib.error.HTTPError):
+                raise
+            reason = self._start_server()
+            if reason:
+                raise RuntimeError(reason) from error
+            reply = self._request("/read", body)
         if "error" in reply:
             raise RuntimeError(reply["error"])
         return reply.get("text") or ""
