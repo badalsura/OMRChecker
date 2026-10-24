@@ -422,3 +422,37 @@ def test_reparse_a_previewed_file(compared):
         json={"template_id": template_id, "parse": {"header_row": 0}},
     ).json()
     assert again["columns"][0] == "C1" and again["count"] == preview["count"] + 1
+
+
+def test_release_matched_export_and_a_key_from_our_fields(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview)
+    base = f"/compare/sessions/{session['id']}"
+    sheet = client.post(f"{base}/claim", json={}, headers={"X-User": "asha"}).json()[
+        "sheet"
+    ]
+    # The first sheet is the first by file name
+    assert sheet["file_name"] == "100001.png"
+    refused = client.post(
+        f"{base}/sheets/{sheet['scan_id']}/release", headers={"X-User": "ravi"}
+    )
+    assert refused.status_code == 409
+    assert (
+        client.post(
+            f"{base}/sheets/{sheet['scan_id']}/release", headers={"X-User": "asha"}
+        ).status_code
+        == 200
+    )
+    everything = client.get(f"{base}/export").text.strip().splitlines()
+    matched = (
+        client.get(f"{base}/export", params={"matched": "true"})
+        .text.strip()
+        .splitlines()
+    )
+    assert len(everything) == len(matched) == 4  # all three sheets have a row
+    # Joined on one of our fields (read once, then from the cache)
+    key = {"column": "Q001", "ours": "q1", "normalize": "text"}
+    for _ in range(2):
+        patched = client.patch(base, json={"key": key})
+        assert patched.status_code == 200, patched.text
+    assert client.app.state.ctx.compare.cached_keys("q1")

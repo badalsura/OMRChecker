@@ -92,6 +92,11 @@ async function init() {
   initExport();
   initJobs();
   initTemplates();
+  // A link such as #compare opens that tab, also while the app is open
+  window.addEventListener("hashchange", () => {
+    const name = location.hash.slice(1);
+    if (TABS.includes(name)) showTab(name);
+  });
   const initial = (location.hash || "#scan").slice(1);
   if (TABS.includes(initial)) showTab(initial);
   // With accounts on, nothing loads until someone signs in

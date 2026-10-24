@@ -269,9 +269,9 @@ function render() {
         el("button", { class: `cmp-value${choice === "external" ? " on" : ""}`, onclick: () => choose("external") }, el("span", { class: "k" }, "1 · External"), el("span", { class: "v" }, shown(item.external))),
         el("button", { class: `cmp-value${choice === "ours" ? " on" : ""}`, onclick: () => choose("ours") }, el("span", { class: "k" }, "2 · Ours"), el("span", { class: "v" }, shown(item.ours)))
       ),
-      choice === "manual" ? el("div", { class: "cmp-manual" }, "Typed: ", el("code", {}, shown(c.choices[item.name].value))) : null,
       el("div", { id: "cmp-edit" })
     );
+    if (choice === "manual") current.append(el("div", { class: "cmp-manual" }, "Typed: ", el("code", {}, shown(c.choices[item.name].value))));
   }
   const list = document.getElementById("cmp-list");
   list.innerHTML = "";
@@ -462,6 +462,7 @@ function exportButtons() {
   return [
     el("button", { class: "primary", onclick: () => saveAs(base + "reconciled", `${stem}_reconciled.csv`), title: "Every sheet with our values, the chosen value wherever someone decided, and what is still open" }, "Reconciled CSV"),
     el("button", { onclick: () => saveAs(base + "audit", `${stem}_audit.csv`), title: "Every decision: who, when, both values and which was kept" }, "Audit CSV"),
+    el("button", { onclick: () => saveAs(base + "reconciled&matched=true", `${stem}_reconciled_matched.csv`), title: "Only the sheets that found a row in their file" }, "Reconciled CSV (matched sheets only)"),
     el("button", { onclick: () => saveAs(base + "unmatched", `${stem}_unmatched.csv`), title: "Their rows with no sheet, and our sheets with no row" }, "Unmatched CSV"),
   ];
 }

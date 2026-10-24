@@ -552,6 +552,14 @@ CREATE TABLE IF NOT EXISTS audit (
     at REAL
 );
 CREATE INDEX IF NOT EXISTS ix_cmp_audit ON audit(session_id, id);
+-- Our key values (an imprint or roll number) by result file version
+CREATE TABLE IF NOT EXISTS key_cache (
+    scan_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mtime REAL,
+    value TEXT,
+    PRIMARY KEY (scan_id, name)
+) WITHOUT ROWID;
 -- Saved layouts (how a scanner's file is read and mapped), reused for the next file
 CREATE TABLE IF NOT EXISTS profiles (
     name TEXT PRIMARY KEY,
@@ -866,11 +874,28 @@ class CompareStore:
         return row
 
     def release(self, session_id, scan_id, user):
-        self.execute(
-            "UPDATE sheets SET locked_by=NULL, locked_at=NULL "
-            "WHERE session_id=? AND scan_id=? AND locked_by=?",
-            (session_id, scan_id, user),
+        """Let go of a sheet this user holds; False when they do not hold it."""
+        return bool(
+            self.execute(
+                "UPDATE sheets SET locked_by=NULL, locked_at=NULL "
+                "WHERE session_id=? AND scan_id=? AND locked_by=?",
+                (session_id, scan_id, user),
+            )
         )
+
+    def cached_keys(self, name):
+        return {
+            row["scan_id"]: (row["mtime"], row["value"])
+            for row in self.query("SELECT * FROM key_cache WHERE name=?", (name,))
+        }
+
+    def cache_keys(self, name, rows):
+        with self.lock:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO key_cache VALUES (?,?,?,?)",
+                [(scan_id, name, mtime, value) for scan_id, mtime, value in rows],
+            )
+            self.conn.commit()
 
     def decide(self, session_id, scan_id, user, decisions, now=None):
         """
@@ -1022,12 +1047,23 @@ def our_key(row, result, ours, normalize):
     return key_of(current_value(result or {}, ours), normalize)
 
 
-def build(store, session, content, scans, load_result, template_json, empty_values):
+def build(
+    store,
+    session,
+    content,
+    scans,
+    load_result,
+    template_json,
+    empty_values,
+    key_values=None,
+):
     """
     (Re)compute a comparison: join the external rows to our sheets, compare the
     mapped fields and write the reconciled layer, keeping every decision whose
     two values are unchanged. scans: our sheets in order (rows with id,
-    file_name); load_result(scan_id) -> result dict. Returns the summary.
+    file_name); load_result(scan_id) -> result dict; key_values: {scan_id:
+    our raw key value} when the key is one of our fields (read beforehand,
+    cached). Returns the summary.
     """
     settings = session["settings"]
     rules = {**DEFAULT_RULES, **(settings.get("rules") or {})}
@@ -1079,8 +1115,16 @@ def build(store, session, content, scans, load_result, template_json, empty_valu
     ours = []
     our_counts = {}
     for ord_, row in enumerate(scans):
-        result = None if (ours_source in ("file", "order")) else load_result(row["id"])
-        value = str(ord_) if by_order else our_key(row, result, ours_source, normalize)
+        result = None
+        if by_order:
+            value = str(ord_)
+        elif ours_source == "file":
+            value = our_key(row, None, "file", normalize)
+        elif key_values is not None and row["id"] in key_values:
+            value = key_of(key_values[row["id"]], normalize)
+        else:
+            result = load_result(row["id"])
+            value = our_key(row, result, ours_source, normalize)
         ours.append((ord_, row, value, result))
         our_counts[value] = our_counts.get(value, 0) + 1
 

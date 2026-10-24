@@ -22,7 +22,9 @@ are never changed.
 import csv
 import io
 import json
+import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +42,14 @@ from src.api.review import item_box, related_names
 from src.api.storage import new_id, read_json, safe_filename, write_json_atomic
 
 PAGE_WIDTH = 1600
+
+
+def natural(text):
+    """Sort key: 'sheet10' after 'sheet9'."""
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", str(text))
+    ]
 
 
 class KeySpec(BaseModel):
@@ -122,12 +132,43 @@ def register(app, ctx, secured):
         return read_json(ctx.data.scan_dir(scan_id) / "result.json")
 
     def our_sheets(template_id, job_id):
-        return [
-            row
-            for row in ctx.index.iter_results(
-                template_id=template_id, job_id=job_id or None
-            )
-        ]
+        """Our sheets in order: a job's scan order, else by file name (numbers
+        in the name counted as numbers)."""
+        rows = list(
+            ctx.index.iter_results(template_id=template_id, job_id=job_id or None)
+        )
+        if not job_id:
+            rows.sort(key=lambda row: natural(row.get("file_name") or ""))
+        return rows
+
+    def key_values(scans, name):
+        """{scan_id: our value of `name`} for the join, from a cache kept per
+        result file version (reading 12,000 results takes half a minute)."""
+        from src.api.review import current_value
+
+        cached = store.cached_keys(name)
+        out, fresh = {}, []
+
+        def read(row):
+            path = ctx.data.scan_dir(row["id"]) / "result.json"
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                return row["id"], None, ""
+            hit = cached.get(row["id"])
+            if hit and hit[0] == mtime:
+                return row["id"], None, hit[1]
+            value = str(current_value(read_json(path) or {}, name) or "")
+            return row["id"], mtime, value
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for scan_id, mtime, value in pool.map(read, scans):
+                out[scan_id] = value
+                if mtime is not None:
+                    fresh.append((scan_id, mtime, value))
+        if fresh:
+            store.cache_keys(name, fresh)
+        return out
 
     def empty_values(scans):
         for row in scans[:20]:
@@ -139,6 +180,8 @@ def register(app, ctx, secured):
     def run_build(session):
         template_json = template_or_404(session["template_id"])
         scans = our_sheets(session["template_id"], session.get("job_id"))
+        ours = (session["settings"].get("key") or {}).get("ours") or "file"
+        keys = None if ours in ("file", "order") else key_values(scans, ours)
         try:
             return compare.build(
                 store,
@@ -148,6 +191,7 @@ def register(app, ctx, secured):
                 load_result,
                 template_json,
                 empty_values(scans),
+                keys,
             )
         except compare.CompareError as error:
             fail(error)
@@ -452,7 +496,8 @@ def register(app, ctx, secured):
         dependencies=secured,
     )
     def compare_release(session_id: str, scan_id: str, request: Request):
-        store.release(session_id, scan_id, user_of(request))
+        if not store.release(session_id, scan_id, user_of(request)):
+            raise HTTPException(409, "You do not hold this sheet")
         return {"released": scan_id}
 
     @app.get(
@@ -507,6 +552,10 @@ def register(app, ctx, secured):
     def compare_export(
         session_id: str,
         kind: str = Query("reconciled", pattern="^(reconciled|audit|unmatched)$"),
+        matched: bool = Query(
+            False,
+            description="reconciled: only the sheets that found a row in their file",
+        ),
     ):
         session = session_or_404(session_id)
         sheets = store.iter_sheets(session_id)
@@ -557,6 +606,8 @@ def register(app, ctx, secured):
 
             def reconciled():
                 for sheet in sheets:
+                    if matched and sheet["row_no"] is None:
+                        continue
                     result = load_result(sheet["scan_id"]) or {}
                     responses = dict(result.get("responses") or {})
                     unresolved, external = [], 0
