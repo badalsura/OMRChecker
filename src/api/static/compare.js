@@ -9,7 +9,7 @@
 // Choices go to the reconciled layer on the server; with the rule "save to our
 // results" they also become corrections of our results. A comparison runs in
 // the background: review starts on the first sheets while a counter shows the rest.
-import { api, chip, confidenceColor, displayName, el, emit, modal, on, safeStorage, saveAs, state, toast, url } from "./api.js";
+import { api, chip, confidenceColor, displayName, el, emit, modal, on, safeStorage, saveAs, scrollWithin, state, toast, url } from "./api.js";
 
 const VIEWS = ["aligned", "original", "color"];
 const VIEW_NAMES = { aligned: "Aligned", original: "Original scan", color: "Colour" };
@@ -629,17 +629,6 @@ function drawZoom() {
 function focusBox() {
   const node = c.peek ? document.querySelector(`.cmp-box.match[data-name="${CSS.escape(c.peek.name)}"]`) : document.querySelector(`.cmp-box[data-i="${c.idx}"]`);
   if (node && !node.hidden) scrollWithin(document.querySelector(".cmp-page"), node);
-}
-
-// Scroll a box (only it, never the whole window) so the node sits in view
-function scrollWithin(box, node) {
-  if (!box || !node) return;
-  const outer = box.getBoundingClientRect();
-  const inner = node.getBoundingClientRect();
-  const top = box.scrollTop + inner.top - outer.top;
-  const left = box.scrollLeft + inner.left - outer.left;
-  if (inner.top < outer.top + 24 || inner.bottom > outer.bottom - 24) box.scrollTo({ top: Math.max(0, top - (box.clientHeight - inner.height) / 2), behavior: "smooth" });
-  if (inner.left < outer.left || inner.right > outer.right) box.scrollTo({ left: Math.max(0, left - (box.clientWidth - inner.width) / 2), behavior: "smooth" });
 }
 
 function go(i) {

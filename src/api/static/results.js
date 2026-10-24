@@ -1,7 +1,7 @@
 // Results tab: browse every graded sheet, see the exact overlay it was graded
 // with (re-rendered by the server, drawn here), correct it by clicking bubbles
 // or typing, verify it, regrade it with overrides, and read the accuracy.
-import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, state, toast, url } from "./api.js";
+import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, scrollWithin, state, toast, url } from "./api.js";
 import { scoreSummary } from "./score_view.js";
 import { historyBox, isAdmin } from "./activity.js";
 
@@ -248,7 +248,7 @@ function renderList() {
   $("res-prev-page").disabled = r.offset === 0;
   $("res-next-page").disabled = end >= r.total;
   const selectedNode = list.querySelector("li.selected");
-  if (selectedNode && selectedNode.scrollIntoView) selectedNode.scrollIntoView({ block: "nearest" });
+  if (selectedNode) scrollWithin(list, selectedNode, { center: false });
 }
 
 async function openAt(index) {
@@ -918,7 +918,7 @@ function select(name, focusInput) {
     if (match) {
       const details = row.closest("details");
       if (details) details.open = true;
-      if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+      scrollWithin($("res-side"), row, { center: false });
       const input = row.querySelector(`input[data-name="${CSS.escape(name)}"]`);
       if (focusInput && input) {
         input.focus();

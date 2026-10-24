@@ -716,11 +716,11 @@ What **Save** does:
 
 #### Grid: accept many at once
 
-Tick **Grid** to see up to 30 crops of the same field (or the same flag, with **by** *flag*) from different sheets, each with the value read underneath (∅ means blank). All crops start ticked.
+Tick **Grid** to see up to 30 crops of the same field (or the same flag, with **by** *flag*) from different sheets, each with the sheet's file name above it and the value read underneath (∅ means blank). All crops start ticked; unticked ones are greyed out. The tile of the queue's current item has an orange border. **Select all** and **Unselect all** tick or untick every crop at once (unselect all, then tick the few that read right, when most read wrong), and the count beside them shows how many are ticked.
 
 1. Look over the grid. Click a crop (or its tick box) to untick any that read wrong.
 2. Click **Accept ticked**. The ticked items are accepted as read.
-3. The unticked ones open one by one in the normal card so you can correct them. **Open** on a tile jumps straight to that item.
+3. The unticked ones open one by one in the normal card so you can correct them. **Open** on a tile jumps straight to that item; **Results** opens its sheet on the Results tab with the item selected.
 
 This is the fastest way through a common flag such as `weak_mark`, where most items are in fact right.
 
@@ -1431,7 +1431,7 @@ Each row shows:
 
 - the sheet's file, status, who verified and who approved it, and when it was last changed,
 - **Scanned:** who scanned it, **Assigned to:** who has it, and **Changed:** everyone who changed it, with what they did,
-- the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it,
+- the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it and a picture of the field on the sheet (click it to open the sheet in Results with that field selected; a value with no stored image has no picture),
 - **Open** (shows the sheet on the Results screen), **Approve** and **Send back**.
 
 **Approve** is the administrator's second check, separate from **Verify ✓** on the Results screen. Approving a sheet nobody verified yet verifies it too (its values are accepted as they are now, flagged ones included), and asks first.

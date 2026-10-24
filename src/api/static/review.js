@@ -586,24 +586,35 @@ function showGrid(main, item) {
     if (matches(it) && it.decided === undefined && !othersDone(it)) same.push([i, it]);
   }
   const ticks = new Map();
+  const count = el("span", { class: "muted small" });
+  const syncTicks = () => {
+    const n = [...ticks.values()].filter((t) => t.checked).length;
+    count.textContent = `${n} of ${ticks.size} ticked`;
+    for (const [it, t] of ticks) t.closest(".rv-tile").classList.toggle("unticked", !t.checked);
+  };
+  const tickAll = (on) => {
+    for (const t of ticks.values()) t.checked = on;
+    syncTicks();
+  };
   const tiles = same.map(([index, it]) => {
-    const tick = el("input", { type: "checkbox", checked: true });
+    const tick = el("input", { type: "checkbox", checked: true, onchange: () => syncTicks() });
     ticks.set(it, tick);
     const src = cropUrl(it, 24);
     return el(
       "div",
-      { class: "rv-tile" },
-      src ? el("img", { src, alt: it.name, onclick: () => (tick.checked = !tick.checked), onerror: (e) => { if (e.target.dataset.fallback) return; e.target.dataset.fallback = "1"; e.target.src = cropUrlAligned(it, 24); } }) : el("div", { class: "muted small" }, "no image"),
+      { class: `rv-tile${index === q.pos ? " current" : ""}`, title: index === q.pos ? "The current item of the queue" : "" },
+      el("div", { class: "rv-tile-file", title: it.file_id || it.scan_id }, it.file_id || it.scan_id.slice(0, 8)),
+      src ? el("img", { src, alt: it.name, onclick: () => { tick.checked = !tick.checked; syncTicks(); }, onerror: (e) => { if (e.target.dataset.fallback) return; e.target.dataset.fallback = "1"; e.target.src = cropUrlAligned(it, 24); } }) : el("div", { class: "muted small" }, "no image"),
       el(
         "div",
-        { class: "row gap" },
+        { class: "row gap wrap" },
         tick,
         flag ? el("span", { class: "muted small" }, displayName(it.name)) : null,
         el("code", {}, it.value === "" || it.value === null || it.value === undefined ? "∅" : String(it.value)),
         el("span", { class: "spacer" }),
-        el("button", { class: "small ghost", title: "Review this one on its own", onclick: () => { document.getElementById("rv-grid").checked = false; q.pos = index; show(); } }, "Open")
-      ),
-      el("div", { class: "muted small rv-tile-file" }, it.file_id || it.scan_id)
+        el("button", { class: "small ghost", title: "Review this one on its own", onclick: () => { document.getElementById("rv-grid").checked = false; q.pos = index; show(); } }, "Open"),
+        el("button", { class: "small ghost", title: "Open this sheet on the Results tab with this item selected", onclick: () => openInResults(it) }, "Results")
+      )
     );
   });
   const acceptTicked = () => {
@@ -628,10 +639,14 @@ function showGrid(main, item) {
       el("h3", {}, flag ? `${flag}: ${same.length} item(s)` : `${displayName(item.name)}: ${same.length} sheet(s)`),
       el("span", { class: "muted small" }, "Untick any crop that read wrong, then accept the rest. Unticked crops stay in the queue."),
       el("span", { class: "spacer" }),
+      count,
+      el("button", { class: "small", onclick: () => tickAll(true), title: "Tick every crop" }, "Select all"),
+      el("button", { class: "small", onclick: () => tickAll(false), title: "Untick every crop, then tick the ones that read right" }, "Unselect all"),
       el("button", { class: "primary", onclick: acceptTicked }, "Accept ticked")
     ),
     el("div", { class: "rv-grid" }, tiles)
   );
+  syncTicks();
 }
 
 function move(delta, skip = false) {

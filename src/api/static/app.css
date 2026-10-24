@@ -171,7 +171,9 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .rv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-top: 8px; }
 .rv-tile { border: 1px solid var(--line, #ddd); border-radius: 6px; padding: 6px; }
 .rv-tile img { width: 100%; cursor: pointer; image-rendering: pixelated; }
-.rv-tile-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-tile-file { font-size: 14px; font-weight: 600; word-break: break-all; margin-bottom: 4px; }
+.rv-tile.current { border: 2px solid #ff8c00; box-shadow: 0 0 0 2px rgba(255, 140, 0, 0.25); }
+.rv-tile.unticked { opacity: 0.55; border-style: dashed; }
 .keys { margin-top: 8px; font-size: 12px; }
 
 /* compare tab */
@@ -289,7 +291,7 @@ div.cmp-value { display: flex; border: 1px solid var(--border); border-radius: 6
 .res-side { padding: 10px 12px; }
 .res-side h3 { font-size: 12px; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .res-head { display: flex; flex-direction: column; gap: 4px; }
-.res-file { word-break: break-all; }
+.res-file { word-break: break-all; font-size: 18px; }
 .res-path { word-break: break-all; margin: 4px 0; }
 .res-warning { background: var(--warn-soft); color: var(--warn); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin: 6px 0; }
 .res-warning.error { background: var(--err-soft); color: var(--err); }
@@ -458,6 +460,9 @@ div.cmp-value { display: flex; border: 1px solid var(--border); border-radius: 6
 /* Check changes (activity.js) */
 .act-table td { vertical-align: top; }
 .act-values { margin: 4px 0 0; padding-left: 16px; }
+.act-values li { margin-bottom: 6px; }
+.act-crop { display: block; max-width: 320px; max-height: 90px; margin-top: 3px; border: 1px solid var(--border); border-radius: 4px; background: #fff; cursor: pointer; }
+.act-crop:hover { border-color: var(--accent); }
 .regrade-head { margin: 10px 0 4px; font-size: 13px; }
 .regrade-image { display: flex; gap: 14px; align-items: flex-start; }
 .regrade-image .regrade-grid { flex: 1; }
