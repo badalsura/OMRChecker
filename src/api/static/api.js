@@ -121,6 +121,23 @@ export function toast(message, kind = "", ms = 3500) {
   setTimeout(() => node.remove(), ms);
 }
 
+// Scroll a scrolling box (never the window) so the node sits in view; a
+// box that does not scroll (a narrow screen's single column) is left alone
+export function scrollWithin(box, node, { center = true } = {}) {
+  if (!box || !node || box.scrollHeight <= box.clientHeight + 1 && box.scrollWidth <= box.clientWidth + 1) return;
+  const outer = box.getBoundingClientRect();
+  const inner = node.getBoundingClientRect();
+  const margin = center ? 24 : 0;
+  if (inner.top < outer.top + margin || inner.bottom > outer.bottom - margin) {
+    const top = box.scrollTop + inner.top - outer.top;
+    box.scrollTo({ top: Math.max(0, center ? top - (box.clientHeight - inner.height) / 2 : inner.top < outer.top ? top : top - box.clientHeight + inner.height), behavior: center ? "smooth" : "auto" });
+  }
+  if (inner.left < outer.left || inner.right > outer.right) {
+    const left = box.scrollLeft + inner.left - outer.left;
+    box.scrollTo({ left: Math.max(0, left - (box.clientWidth - inner.width) / 2), behavior: center ? "smooth" : "auto" });
+  }
+}
+
 export function chip(text, kind) {
   return el("span", { class: `chip ${kind || text}` }, String(text).replace("_", " "));
 }

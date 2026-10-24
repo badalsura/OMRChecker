@@ -316,10 +316,18 @@ def test_go_client(server, assets):
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-@pytest.mark.skipif(
-    shutil.which("javac") is None or shutil.which("java") is None,
-    reason="JDK not installed",
-)
+def jdk_installed():
+    # macOS ships /usr/bin/java and javac stubs that only print "Unable to
+    # locate a Java Runtime"
+    if shutil.which("javac") is None or shutil.which("java") is None:
+        return False
+    try:
+        return subprocess.run(["javac", "-version"], capture_output=True, timeout=30).returncode == 0
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not jdk_installed(), reason="JDK not installed")
 def test_java_client(server, assets, tmp_path):
     sources = sorted(str(p) for p in (CLIENTS / "java" / "src").rglob("*.java"))
     classes = tmp_path / "classes"

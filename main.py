@@ -15,6 +15,22 @@ from src.entry import entry_point
 from src.logger import logger
 
 
+def _require_license():
+    """Stop before any processing unless this machine is licensed. Prints how
+    to activate and exits rather than raising a traceback."""
+    from src.licensing import gate
+
+    status = gate.current_status()
+    if status.valid:
+        return
+    logger.error(f"OMRChecker is not licensed on this machine: {status.message}")
+    logger.error(
+        "Activate in the app (the Activate screen), or place a valid license "
+        "file next to the program. See docs/licensing.md."
+    )
+    sys.exit(3)
+
+
 def parse_args():
     # construct the argument parse and parse the arguments
     argparser = argparse.ArgumentParser()
@@ -87,6 +103,7 @@ def entry_point_for_args(args):
     if args["debug"] is True:
         # Disable tracebacks
         sys.tracebacklimit = 0
+    _require_license()
     for root in args["input_paths"]:
         entry_point(
             Path(root),

@@ -3,7 +3,7 @@
 // by sheet numbers), change who has what, then check every sheet reviewers
 // verified or changed (with its settings and values) and approve it (the
 // administrator's second check) or send it back to review.
-import { api, chip, el, emit, state, toast } from "./api.js";
+import { api, chip, el, emit, state, toast, url } from "./api.js";
 
 const ACTIONS = {
   scanned: "Scanned",
@@ -89,7 +89,7 @@ export function historyBox(scanId) {
 }
 
 // ---------------------------------------------------------------- admin screen
-function valuesList(values) {
+function valuesList(values, scanId) {
   if (!values || !values.length) return el("span", { class: "muted" }, "no value changes");
   // The latest change of each value
   const last = {};
@@ -97,8 +97,31 @@ function valuesList(values) {
   return el(
     "ul",
     { class: "act-values" },
-    Object.values(last).map((v) => el("li", {}, el("code", {}, v.name), ` ${shown(v.original ?? v.old)} → ${shown(v.new)}`, el("span", { class: "muted" }, ` · ${v.user}`)))
+    Object.values(last).map((v) =>
+      el(
+        "li",
+        {},
+        el("div", {}, el("code", {}, v.name), ` ${shown(v.original ?? v.old)} → ${shown(v.new)}`, el("span", { class: "muted" }, ` · ${v.user}`)),
+        changeCrop(scanId, v.name)
+      )
+    )
   );
+}
+
+// The changed field as it is on the sheet; a click opens it in Results.
+// Loaded only when scrolled to; a value with no outline (no image stored,
+// a joined value no longer in review) shows no picture.
+function changeCrop(scanId, name) {
+  if (!scanId) return null;
+  return el("img", {
+    class: "act-crop",
+    loading: "lazy",
+    alt: name,
+    title: `${name}: open in Results`,
+    src: url(`/scans/${scanId}/crop?name=${encodeURIComponent(name)}&pad=12&outline=true`),
+    onerror: (e) => e.target.remove(),
+    onclick: () => emit("results-scan", { id: scanId, field: name }),
+  });
 }
 
 function changeCell(item) {
@@ -106,7 +129,7 @@ function changeCell(item) {
   if (item.regrade) parts.push(el("div", {}, el("strong", {}, "Regraded "), `by ${item.regrade.by}: `, el("code", {}, settingsText(item.regrade))));
   if (item.manual_alignment) parts.push(el("div", {}, el("strong", {}, "Aligned by hand "), `by ${item.manual_alignment.by} (${item.manual_alignment.kind === "index" ? "index points" : "page corners"})`));
   if (item.manual_entry) parts.push(el("div", {}, el("strong", {}, "Values typed "), `by ${item.manual_entry.by}`));
-  parts.push(valuesList(item.values));
+  parts.push(valuesList(item.values, item.scan_id));
   return el("td", {}, parts);
 }
 

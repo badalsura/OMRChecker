@@ -220,7 +220,7 @@ ZONE_SCHEMA = {
     "properties": {
         "type": {
             "type": "string",
-            "enum": ["barcode", "qrcode", "ocr", "icr", "image"],
+            "enum": ["barcode", "qrcode", "ocr", "icr", "imprint", "image"],
         },
         "origin": two_positive_integers,
         "dimensions": two_positive_integers,
@@ -278,6 +278,22 @@ ZONE_SCHEMA = {
                     "type": "string",
                     "enum": ["default", "none", "tesseract", "paddle"],
                 },
+                # Imprint (scanner-printed dot-matrix number, src/readers/imprint.py):
+                # model name in packaging/models/imprint or an .onnx path, and
+                # the character height in template px (default: found)
+                "model": {"type": "string", "minLength": 1},
+                # Flag file_name_mismatch when the value differs from the sheet's
+                # file name, both normalised (default digits: S100001 = 100001.jpg)
+                "matchFileName": {"type": "boolean"},
+                "fileNameNormalize": NORMALIZE_SCHEMA,
+                "charHeight": {"type": "number", "exclusiveMinimum": 0},
+                # ICR: handwriting reader for this zone ("default": config
+                # ocr_params.icr_engine) and the VLM it uses (src/readers/vlm.py)
+                "icrEngine": {
+                    "type": "string",
+                    "enum": ["default", "auto", "paddle", "tesseract", "vlm"],
+                },
+                "vlmModel": {"type": "string", "minLength": 1},
                 # OCR / ICR: PaddleOCR model size and recogniser for this zone
                 # ("ch" = the main multilingual recogniser, also handwriting)
                 "paddleModel": {"type": "string", "enum": ["mobile", "server"]},

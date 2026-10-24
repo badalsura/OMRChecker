@@ -25,6 +25,7 @@ from src.defaults import CONFIG_DEFAULTS
 from src.evaluation import EvaluationConfig, evaluate_concatenated_response
 from src.logger import console, logger
 from src.readers import read_zone, read_zones
+from src.readers.base import check_file_names
 from src.readers.image_zone import attach_zone_images, save_zone_images
 from src.template import Template
 from src.utils.file import Paths, setup_dirs_for_paths, setup_outputs_for_template
@@ -298,6 +299,7 @@ def _process_single_image(
         zone_results = read_zones(
             template.zones, detailed["aligned_image"], zone_engines
         )
+    check_file_names(zone_results, template.zones, file_id)
     save_zone_images(
         attach_zone_images(zone_results, template.zones, file_id),
         outputs_namespace.paths.output_dir.joinpath("ZoneImages"),
