@@ -59,7 +59,7 @@ DEFAULT_RULES = {
     # holding the level; source: "theirs", "ours" or "either" (both bands);
     # map: "1: q1..q50; 2: q51..q100". Empty field: every question.
     "band_field": "",
-    "band_source": "theirs",
+    "band_source": "theirs_then_ours",
     "band_map": "",
 }
 
@@ -492,15 +492,23 @@ def sheet_band(rules, bands, theirs, ours):
     """The questions this sheet answers, or None for all of them."""
     if not bands:
         return None
-    values = {
-        "theirs": [theirs],
-        "ours": [ours],
-        "either": [theirs, ours],
-    }.get(rules.get("band_source") or "theirs", [theirs])
-    keys = [str(v).strip().upper() for v in values if v is not None and str(v).strip()]
-    chosen = [bands[k] for k in keys if k in bands]
+    source = rules.get("band_source") or "theirs_then_ours"
+
+    def band_of(value):
+        key = "" if value is None else str(value).strip().upper()
+        return bands.get(key) if key else None
+
+    if source == "theirs_then_ours":
+        # Their level, or ours where theirs is blank or a multi-mark
+        chosen = [band_of(theirs) or band_of(ours)]
+    else:
+        values = {"theirs": [theirs], "ours": [ours], "either": [theirs, ours]}.get(
+            source, [theirs]
+        )
+        chosen = [band_of(value) for value in values]
+    chosen = [band for band in chosen if band]
     if not chosen:
-        return None  # level blank or unknown: compare every question
+        return None  # level blank or unknown on both sides: every question
     return set().union(*chosen)
 
 

@@ -497,13 +497,13 @@ function rulesForm(rules) {
     blank_codes: el("input", { size: 12, value: codesText(rules.blank_codes) }),
     multi_codes: el("input", { size: 8, value: codesText(rules.multi_codes) }),
     band_field: el("input", { size: 10, value: rules.band_field || "", placeholder: "e.g. level", spellcheck: "false" }),
-    band_source: el("select", {}, el("option", { value: "theirs" }, "their value"), el("option", { value: "ours" }, "our value"), el("option", { value: "either" }, "either (both bands)")),
+    band_source: el("select", {}, el("option", { value: "theirs_then_ours" }, "theirs, else ours"), el("option", { value: "theirs" }, "their value"), el("option", { value: "ours" }, "our value"), el("option", { value: "either" }, "either (both bands)")),
     band_map: el("input", { size: 46, value: rules.band_map || "", placeholder: "1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200", spellcheck: "false" }),
   };
   f.fields.value = rules.fields || "all";
   f.blank.value = rules.blank || "mismatch";
   f.multi.value = rules.multi || "same";
-  f.band_source.value = rules.band_source || "theirs";
+  f.band_source.value = rules.band_source || "theirs_then_ours";
   const node = el(
     "div",
     { class: "cmp-form" },

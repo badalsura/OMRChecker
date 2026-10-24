@@ -875,7 +875,7 @@ The choices go into a **separate reconciled layer**. The read results are never 
 | Their multi-mark is written as | default `*` |
 | Upper and lower case differ | off by default |
 | Ignore spaces inside values | on by default: a roll number `12 45` with a blank digit equals `1245` |
-| Only the questions of the level in field … | off by default. Give the field that holds the sheet's level (e.g. `level`), where to take it from (their value, ours, or either), and the bands: `1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200`. Each sheet's questions are then compared only inside its band. A scanner can report stray marks in other bands (show-through, erasures); on the TERI OpScan file these were 85% of all answer differences. A sheet whose level is blank or not listed is compared in full |
+| Only the questions of the level in field … | off by default. Give the field that holds the sheet's level (e.g. `level`), where to take it from (theirs, else ours where theirs is blank or `*` — the default; theirs only; ours; or either), and the bands: `1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200`. Each sheet's questions are then compared only inside its band. A scanner can report stray marks in other bands (show-through, erasures); on the TERI OpScan file these were 85% of all answer differences. A sheet whose level is blank or not listed is compared in full |
 
 **Reviewing.** The sheet is on the left with every mismatch boxed (orange: the current one, green: decided). On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
 

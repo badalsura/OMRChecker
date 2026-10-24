@@ -503,6 +503,10 @@ def test_level_bands_limit_the_questions_compared(compared):
         "q4",
     }
     assert compare.sheet_band({"band_source": "theirs"}, bands, " ", "1") is None
+    # Default: their level, ours where theirs is blank or a multi-mark
+    assert compare.sheet_band({}, bands, "*", "1") == {"q1", "q2"}
+    assert compare.sheet_band({}, bands, "2", "1") == {"q3", "q4"}
+    assert compare.sheet_band({}, bands, "", "") is None
     with pytest.raises(compare.CompareError):
         compare.parse_bands("q1..q5")
 
