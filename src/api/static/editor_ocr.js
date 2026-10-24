@@ -179,6 +179,27 @@ export function ocrZoneControls(editor, raw, opts, setOpt, zoneName) {
     );
   }
   if (raw.type === "ocr" || raw.type === "icr") nodes.push(paddleControls(raw, opts, setOpt));
+  if (raw.type === "imprint") {
+    const dirs = [["", "the model's own"], ...DIRECTIONS.filter(([v]) => v !== "auto")];
+    const status = el("div", { class: "muted small" });
+    ocrCapabilities().then((caps) => {
+      const models = caps?.imprint_models;
+      if (!models) return;
+      status.textContent = models.length
+        ? `Imprint models installed: ${models.join(", ")}.`
+        : "No imprint model installed: these zones are read by Tesseract and always go to review.";
+    });
+    nodes.push(
+      el(
+        "div",
+        { class: "two" },
+        withHelp("Text direction", select(opts.direction || "", dirs, (v) => setOpt("direction", v || null)), "How the printed number reads on the page. Left at the model's own, the direction the model was trained on is used (TERI: vertical, top to bottom)."),
+        withHelp("Model", textBox(opts.model, "imprint", (v) => setOpt("model", v || null)), "Name of the imprint model in packaging/models/imprint (without .onnx), or a path to one.")
+      ),
+      withHelp("Character height (px)", numberBox(opts.charHeight, "found", "1", (v) => setOpt("charHeight", v || null)), "Height of one printed character in template pixels. Left empty, it is measured on each sheet."),
+      status
+    );
+  }
   if (raw.type === "icr") {
     const readers = [["default", "config default"], ["auto", "PaddleOCR (or Tesseract)"], ["vlm", "Vision-language model"], ["tesseract", "Tesseract"]];
     const models = [["", "config default"], ["paddleocr-vl", "PaddleOCR-VL 1.5 (best, 1.3 GB)"], ["qwen3-vl-2b", "Qwen3-VL 2B"], ["qwen2.5-vl-3b", "Qwen2.5-VL 3B"]];

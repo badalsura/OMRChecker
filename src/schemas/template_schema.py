@@ -220,7 +220,7 @@ ZONE_SCHEMA = {
     "properties": {
         "type": {
             "type": "string",
-            "enum": ["barcode", "qrcode", "ocr", "icr", "image"],
+            "enum": ["barcode", "qrcode", "ocr", "icr", "imprint", "image"],
         },
         "origin": two_positive_integers,
         "dimensions": two_positive_integers,
@@ -278,6 +278,11 @@ ZONE_SCHEMA = {
                     "type": "string",
                     "enum": ["default", "none", "tesseract", "paddle"],
                 },
+                # Imprint (scanner-printed dot-matrix number, src/readers/imprint.py):
+                # model name in packaging/models/imprint or an .onnx path, and
+                # the character height in template px (default: found)
+                "model": {"type": "string", "minLength": 1},
+                "charHeight": {"type": "number", "exclusiveMinimum": 0},
                 # ICR: handwriting reader for this zone ("default": config
                 # ocr_params.icr_engine) and the VLM it uses (src/readers/vlm.py)
                 "icrEngine": {

@@ -83,6 +83,10 @@ datas += tree("packaging/tesseract", "tesseract", skip=())
 # OCR models and choices from packaging/fetch_ocr_models.py (packaging/ocr_models.md)
 datas += tree("packaging/tessdata", "tessdata", skip=())
 datas += tree("packaging/models/paddleocr", "models/paddleocr", skip=())
+# Scanner imprint models (src/readers/imprint.py): optional, only bundled when
+# copied into packaging/models/imprint, and left out with OMR_BUNDLE_IMPRINT=0
+if os.environ.get("OMR_BUNDLE_IMPRINT", "1") != "0":
+    datas += tree("packaging/models/imprint", "models/imprint", skip=())
 # cloudflared for the launcher's "Start remote" (packaging/prepare_bundle.py):
 # a server-build feature, so the app leaves it out even when it is in place
 if not APP:

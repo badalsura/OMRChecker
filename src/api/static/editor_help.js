@@ -22,7 +22,7 @@ export const HELP = {
   "block:Border gap (px from bubbles to the box)": "Distance from the outer bubbles to the printed box. Empty: measured on each sheet.",
   // zone
   "zone:Name": "Output column name of this zone. Renaming it also renames it in validation rules, checks and fallbacks.",
-  "zone:Type": "barcode / qrcode: decode a symbol. ocr: printed text (Tesseract). icr: handwritten characters in boxes (needs a model).",
+  "zone:Type": "barcode / qrcode: decode a symbol. ocr: printed text (Tesseract). icr: handwritten characters in boxes (needs a model). imprint: a number the scanner printed in dot-matrix (draw the zone over the whole area where it can land).",
   "zone:x": "Left edge of the zone, in template pixels.",
   "zone:y": "Top edge of the zone, in template pixels.",
   "zone:Width": "Zone width in template pixels. Leave some margin around the text or barcode.",

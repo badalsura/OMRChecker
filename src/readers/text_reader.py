@@ -369,7 +369,7 @@ def read_text_zone(zone, image, ocr_params=None):
 
 def ocr_capabilities(ocr_params=None):
     """What the GUI needs: engines, their availability and languages."""
-    from src.readers import ocr, paddle_ocr, vlm
+    from src.readers import imprint, ocr, paddle_ocr, vlm
 
     settings = ocr_settings(ocr_params)
     paddle = paddle_engine(settings)
@@ -393,6 +393,7 @@ def ocr_capabilities(ocr_params=None):
             and paddle_ocr.find_model_file(name, settings.get("paddle_model_dir"))
         ],
         "vlm": vlm.capabilities(settings),
+        "imprint_models": imprint.installed_models(),
         "directions": list(DIRECTIONS) + ["auto"],
         "defaults": {k: settings[k] for k in OCR_DEFAULTS},
     }

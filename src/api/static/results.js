@@ -705,7 +705,7 @@ const COLORS = {
   corrected: "#8e44ad",
   selected: "#d0342c",
   hover: "#00a3a3",
-  zone: { barcode: "#c85a14", qrcode: "#a028a0", ocr: "#1e8c1e", icr: "#1478dc" },
+  zone: { barcode: "#c85a14", qrcode: "#a028a0", ocr: "#1e8c1e", icr: "#1478dc", imprint: "#008c8c" },
   block: { found: "#1e8c1e", fitted: "#1478dc", failed: "#d0342c", skipped: "#8a909c" },
 };
 

@@ -38,6 +38,8 @@ ZONE_REVIEW_FLAGS = {
     # ICR: an inked box read as no character, or two characters over one box
     "unread_box",
     "icr_alignment",
+    # Imprint: no trained model, so Tesseract read the dot-matrix print
+    "no_imprint_model",
 }
 
 
@@ -76,6 +78,10 @@ def read_zone(zone, image, engines=None):
             result = icr.read_icr_zone(
                 zone, image, engines.get("icr"), engines.get("ocr_params")
             )
+        elif zone.type == "imprint":
+            from src.readers import imprint
+
+            result = imprint.read_imprint_zone(zone, image, engines.get("ocr_params"))
         elif zone.type == "image":
             result = image_zone.read_image_zone(zone, image)
         else:

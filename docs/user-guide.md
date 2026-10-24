@@ -773,6 +773,7 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `pattern_mismatch` | always | The value does not have the expected form (for example 6 digits). | Is it a misread, or a genuine wrong code? |
 | `engine_unavailable` | always | The reading engine needed for this zone is not installed or could not start. | Type the value by hand. Tell whoever set up the app, because every sheet will show this. |
 | `no_icr_model` | always | A handwriting zone has no handwriting model set up. | Type the value by hand; ask whoever set up the template. |
+| `no_imprint_model` | always | A scanner imprint zone has no trained model, so the number was read by a general text reader. | The printed number against the value, digit by digit. |
 | `read_error` | always | Reading the zone failed with an error. | Type the value by hand. If it happens on many sheets, report it. |
 | `engine_disagree` | always (when the template asks for it) | Two text-reading engines read different text. | Which reading is right. |
 | `low_char_confidence` | always | At least one character was read with low confidence. | Each character, especially look-alikes (0/O, 1/7, 5/S). |
@@ -1840,6 +1841,7 @@ Zones are rectangles read by something other than bubble detection. Choose the t
 | **qrcode** | QR codes. |
 | **ocr** | Printed text, e.g. a serial number. |
 | **icr** | Handwritten characters written one per box. Needs a handwriting model (Learned models, next section); without one these zones always go to review. |
+| **imprint** | A number the scanner itself printed on each sheet as it fed through (an imprinter, dot-matrix print), e.g. `S100001`. Draw the zone over the whole strip where the print can land; the reader finds it. Needs an imprint model (see *Scanner imprint numbers* below). |
 | **image** | Saves a picture of the area, e.g. the candidate's photo or signature. |
 
 #### Options for every zone
@@ -1921,6 +1923,33 @@ Settings in `config.json` › `ocr_params`: `icr_vlm_model` (`paddleocr-vl`, `qw
 | **Min character confidence** | `minCharConfidence` | off | OCR | Send the zone to review when any single character is below this confidence (0–1), so one doubtful digit is checked by hand. |
 
 If PaddleOCR is not available on the server, a note says so and zones set to it use Tesseract.
+
+#### Scanner imprint numbers
+
+Many production scanners have an imprinter that prints a running number on each sheet as it feeds, in small dot-matrix characters (for example `S` and six digits on the TERI sheets). The print lands wherever the paper was when it fired, often outside the timing marks, and can be faint or broken. An **imprint** zone reads it:
+
+1. Draw the zone over the whole strip where the number can appear, with some room on every side. On TERI that is the left margin between the page edge and the timing marks. The reader finds the line of dots inside the zone on each sheet, so the number may move from sheet to sheet.
+2. Set **Text direction** to how the number reads on the page (TERI: vertical, top to bottom), or leave it at the model's own.
+3. Set **Pattern the value must match**, e.g. `S\d{6}`, so a misread length goes to review.
+
+| Option | Template key | Default | What it does |
+|---|---|---|---|
+| **Model** | `model` | `imprint` | Name of the model in `packaging/models/imprint` (without `.onnx`), or a path to one. |
+| **Text direction** | `direction` | the model's own | Horizontal, vertical (either way) or upside down. |
+| **Character height (px)** | `charHeight` | measured | Height of one printed character in template pixels. |
+| **Allowed characters** | `whitelist` | the model's characters | Limits what the reader may return. |
+
+The reader is an optional module. It loads only when a template has an imprint zone, and its model is a separate file of about 1 MB (`<name>.onnx` plus `<name>.json`) in `packaging/models/imprint`. Builds include the models found there; set `OMR_BUNDLE_IMPRINT=0` to leave them out. Without a model the zone is read by Tesseract and always goes to review (`no_imprint_model`).
+
+**Training a model for a scanner.** Each scanner's print looks a little different, so the model is trained on that scanner's sheets (this needs `pip install -r requirements.ml.txt`):
+
+1. Cut the imprint out of scanned sheets, the same way the reader does. When the scanner names its files after the imprint number, as on TERI (`100001.jpg` carries `S100001`), the file names are the labels:
+   `python -m src.ml.train_imprint crops --template template.json --input scans/ --label "S{stem}" --out data/imprint`.
+   Otherwise give a CSV of `file,label` with `--truth`. Each sub-folder of `scans/` (a scanning batch) becomes a group.
+2. Train, mixing the real crops with synthetic dot-matrix lines of random numbers, so the model reads any number and not only the ones it saw:
+   `python -m src.ml.train_imprint train --data data/imprint --out packaging/models/imprint/teri_imprint --direction rot90ccw`.
+   Add `--holdout all` first to train once per batch with that batch left out and see how well it reads sheets it has never seen.
+3. Check a model on crops: `python -m src.ml.train_imprint eval --data data/imprint --model packaging/models/imprint/teri_imprint.onnx`.
 
 #### Image zone options (photo, signature)
 
@@ -2190,6 +2219,7 @@ These always send their field, zone or sheet to review when they happen. Many on
 | `pattern_mismatch` | any zone | a pattern set | The value does not match the zone's pattern (for example 10 digits). |
 | `engine_unavailable` | OCR / ICR zone | always | The reading engine (Tesseract or PaddleOCR) is not installed or did not start. |
 | `no_icr_model` | ICR zone | always | No handwriting model is available for the zone. |
+| `no_imprint_model` | Imprint zone | always | No imprint model is installed, so Tesseract read the dot-matrix print. |
 | `read_error` | any zone | always | Reading the zone failed with an error; the rest of the sheet is kept. |
 | `validation_failed` | field or zone | a validation rule set | A validation rule (length, range, allowed values, pattern) failed. |
 | `cross_check_failed` | check | a check set | The check's sources disagree, and the check is set to review conflicts (or to error). |
