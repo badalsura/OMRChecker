@@ -6,6 +6,7 @@ import { initCompare, onShowCompare } from "./compare.js";
 import { initDesktop, isDesktop } from "./desktop.js";
 import { initExport, refreshExports } from "./export.js";
 import { initJobs, onShowJobs } from "./jobs.js";
+import { ensureLicensed } from "./license.js";
 import { bindToolbar, initResults, onShowResults } from "./results.js";
 import { initReview, refreshBadge } from "./review.js";
 import { initScan } from "./scan.js";
@@ -58,6 +59,9 @@ async function applyBranding() {
 async function init() {
   if (isDesktop()) initDesktop();
   applyBranding();
+  // Licensing comes before anything else: an unlicensed station shows the
+  // activation screen and the app does not boot.
+  if (!(await ensureLicensed())) return;
   for (const button of document.querySelectorAll(".tabs button")) {
     button.addEventListener("click", () => showTab(button.dataset.tab));
   }

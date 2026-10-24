@@ -70,6 +70,15 @@ datas += tree("branding", "branding")
 datas += [(str(ROOT / "docs" / "user-guide.md"), "docs")]
 datas += tree("src/schemas", "src/schemas")
 datas += tree("src/defaults", "src/defaults")
+# Licensing public key: bundled so the app can verify licenses. Copy your
+# vendor public key to src/licensing/public_key.pem before building (see
+# docs/licensing.md); the private key is never bundled.
+_pubkey = ROOT / "src" / "licensing" / "public_key.pem"
+if _pubkey.exists():
+    datas += [(str(_pubkey), "license")]
+else:
+    print("WARNING: src/licensing/public_key.pem is missing; the build will "
+          "not be able to verify licenses. See docs/licensing.md.")
 # Client-side (in-browser) reader, if built: served at /browser
 datas += tree("web/omr-browser", "web/omr-browser")
 # Sample templates (JSON + marker images), handy for first runs

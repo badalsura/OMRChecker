@@ -29,3 +29,10 @@ packaging/models/
 packaging/tesseract/
 packaging/cloudflared/
 packaging/ocr-models.zip
+
+# Licensing: never commit private keys or issued license files
+license-keys/
+*.omrlic
+private_key.pem
+src/licensing/public_key.pem
+.license_state

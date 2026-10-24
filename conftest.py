@@ -5,6 +5,11 @@ import time
 os.environ["TZ"] = "Asia/Kolkata"
 time.tzset()
 
+# The whole suite runs with licensing off, so tests exercise the engine and API
+# without installing a license. test_licensing.py re-enables it (the gate reads
+# this env var live) with its own ephemeral key and license.
+os.environ.setdefault("OMR_LICENSE_DISABLE", "1")
+
 import pytest  # noqa: E402
 
 

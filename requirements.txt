@@ -17,3 +17,5 @@ onnxruntime>=1.16.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
 tesserocr>=2.6.0; platform_system == "Linux"
+# RSA-signed license verification (src/licensing)
+cryptography>=41.0.0
