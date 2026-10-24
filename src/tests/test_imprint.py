@@ -46,8 +46,16 @@ def model(tmp_path):
 
     value = logits_for("S100042")[None]
     graph = helper.make_graph(
-        [helper.make_node("Constant", [], ["logits"], value=helper.make_tensor(
-            "v", TensorProto.FLOAT, value.shape, value.flatten().tolist()))],
+        [
+            helper.make_node(
+                "Constant",
+                [],
+                ["logits"],
+                value=helper.make_tensor(
+                    "v", TensorProto.FLOAT, value.shape, value.flatten().tolist()
+                ),
+            )
+        ],
         "imprint",
         [helper.make_tensor_value_info("x", TensorProto.FLOAT, [None, 1, 32, None])],
         [helper.make_tensor_value_info("logits", TensorProto.FLOAT, None)],
@@ -56,7 +64,9 @@ def model(tmp_path):
     proto.ir_version = 8
     path = tmp_path / "teri_imprint.onnx"
     onnx.save(proto, str(path))
-    path.with_suffix(".json").write_text(json.dumps({"charset": CHARSET, "blank": 0, "direction": "horizontal"}))
+    path.with_suffix(".json").write_text(
+        json.dumps({"charset": CHARSET, "blank": 0, "direction": "horizontal"})
+    )
     imprint.reset_cache()
     yield path
     imprint.reset_cache()
@@ -64,7 +74,10 @@ def model(tmp_path):
 
 def test_ctc_greedy_collapses_repeats_and_blanks():
     logits = logits_for("S100")
-    logits[2, 0], logits[2, CHARSET.index("S") + 1] = -5.0, 7.0  # "S" over two frames: one S
+    logits[2, 0], logits[2, CHARSET.index("S") + 1] = (
+        -5.0,
+        7.0,
+    )  # "S" over two frames: one S
     text, confidences = imprint.ctc_greedy(logits, CHARSET)
     assert text == "S100" and len(confidences) == 4
     assert all(0.9 < c <= 1.0 for c in confidences)
@@ -89,12 +102,19 @@ def test_imprint_zone_reads_with_its_model(model):
     page = np.full((600, 400), 240, np.uint8)
     turned = cv2.rotate(strip, cv2.ROTATE_90_CLOCKWISE)
     page[10 : 10 + turned.shape[0], 20 : 20 + turned.shape[1]] = turned
-    zone = Zone("imprint_no", "imprint", [20, 10], [turned.shape[1], turned.shape[0]],
-                {"model": str(model), "direction": "rot90ccw", "pattern": r"S\d{6}"})
+    zone = Zone(
+        "imprint_no",
+        "imprint",
+        [20, 10],
+        [turned.shape[1], turned.shape[0]],
+        {"model": str(model), "direction": "rot90ccw", "pattern": r"S\d{6}"},
+    )
     result = read_zone(zone, page)
     assert result.value == "S100042" and result.engine == "imprint"
     assert not result.needs_review and result.confidence > 0.9
-    assert result.details["direction"] == "rot90ccw" and len(result.details["line"]) == 4
+    assert (
+        result.details["direction"] == "rot90ccw" and len(result.details["line"]) == 4
+    )
 
 
 def test_imprint_zone_without_a_model_goes_to_review(tmp_path, monkeypatch):
@@ -124,7 +144,13 @@ def test_a_line_split_by_a_faint_character_is_also_tried_whole():
 def test_file_name_check_flags_a_different_number():
     from src.readers.base import ZoneReadResult, check_file_names, finalize
 
-    zone = Zone("imprint_no", "imprint", [0, 0], [10, 10], {"matchFileName": True, "pattern": r"S\d{6}"})
+    zone = Zone(
+        "imprint_no",
+        "imprint",
+        [0, 0],
+        [10, 10],
+        {"matchFileName": True, "pattern": r"S\d{6}"},
+    )
 
     def read(value, file_id):
         result = finalize(ZoneReadResult(zone.name, zone.type, value, 0.99, []), zone)
@@ -138,8 +164,52 @@ def test_file_name_check_flags_a_different_number():
     # An empty or malformed read cannot confirm the file name: flagged too
     assert "file_name_mismatch" in read("3100001", "100001.jpg").flags
     empty = read("", "100001.jpg")
-    assert "file_name_mismatch" in empty.flags and empty.details["file_name"]["read"] == ""
+    assert (
+        "file_name_mismatch" in empty.flags and empty.details["file_name"]["read"] == ""
+    )
     # PDF pages: the page suffix is not part of the name
     assert "file_name_mismatch" not in read("S100001", "100001_p1.png").flags
     zone.options["matchFileName"] = False
     assert "file_name_mismatch" not in read("S100007", "100001.jpg").flags
+
+
+def test_directions_follow_the_model_and_the_strip_shape():
+    class Model:
+        direction = "rot90ccw"
+
+    tall = np.zeros((1000, 60), np.uint8)
+    wide = np.zeros((60, 1000), np.uint8)
+    # Unset: the model's own
+    assert imprint.imprint_directions({}, Model(), tall) == ["rot90ccw"]
+    # A tall strip left at "horizontal" (an editor default) is tried turned first
+    tried = imprint.imprint_directions({"direction": "horizontal"}, Model(), tall)
+    assert tried[0] == "rot90ccw" and set(tried) == {
+        "rot90ccw",
+        "horizontal",
+        "rot90cw",
+    }
+    assert imprint.imprint_directions({"direction": "horizontal"}, Model(), wide) == [
+        "horizontal"
+    ]
+    assert len(imprint.imprint_directions({"direction": "auto"}, Model(), wide)) == 3
+
+
+def test_a_tall_strip_set_to_horizontal_still_reads(model):
+    meta = json.loads(model.with_suffix(".json").read_text())
+    meta.update(direction="rot90ccw", pattern=r"S\d{6}", char_height=None)
+    model.with_suffix(".json").write_text(json.dumps(meta))
+    imprint.reset_cache()
+    strip, _ = strip_with("S100042")
+    page = np.full((600, 400), 240, np.uint8)
+    turned = cv2.rotate(strip, cv2.ROTATE_90_CLOCKWISE)
+    page[10 : 10 + turned.shape[0], 20 : 20 + turned.shape[1]] = turned
+    zone = Zone(
+        "imprint_no",
+        "imprint",
+        [20, 10],
+        [turned.shape[1], turned.shape[0]],
+        {"model": str(model), "direction": "horizontal"},
+    )
+    result = read_zone(zone, page)
+    assert result.value == "S100042" and result.details["direction"] == "rot90ccw"
+    assert "pattern_mismatch" not in result.flags

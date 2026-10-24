@@ -2015,15 +2015,15 @@ If PaddleOCR is not available on the server, a note says so and zones set to it 
 
 Many production scanners have an imprinter that prints a running number on each sheet as it feeds, in small dot-matrix characters (for example `S` and six digits on the TERI sheets). The print lands wherever the paper was when it fired, often outside the timing marks, and can be faint or broken. An **imprint** zone reads it:
 
-1. Draw the zone over the whole strip where the number can appear, with some room on every side. On TERI that is the left margin between the page edge and the timing marks: origin `[0, 800]`, size `[60, 1000]`, character height 22. The reader finds the line of dots inside the zone on each sheet, so the number may move from sheet to sheet.
-2. Set **Text direction** to how the number reads on the page (TERI: vertical, top to bottom), or leave it at the model's own.
+1. Draw the zone over the whole strip where the number can appear, with some room on every side. On TERI that is the left margin between the page edge and the timing marks: origin `[0, 800]`, size `[60, 1000]`, character height 22. The reader finds the line of dots inside the zone on each sheet, so the number may move from sheet to sheet, and a larger zone is fine: a 45 × 1145 strip read 193 of 200 unseen TERI sheets right.
+2. Leave **Text direction** at the model's own (TERI: vertical, top to bottom). A tall narrow zone set to *horizontal* is also tried turned, and **auto** tries every turn.
 3. Set **Pattern the value must match**, e.g. `S\d{6}`, so a misread length goes to review.
 
 | Option | Template key | Default | What it does |
 |---|---|---|---|
 | **Model** | `model` | `imprint` | Name of the model in `packaging/models/imprint` (without `.onnx`), or a path to one. |
-| **Text direction** | `direction` | the model's own | Horizontal, vertical (either way) or upside down. |
-| **Character height (px)** | `charHeight` | measured | Height of one printed character in template pixels. |
+| **Text direction** | `direction` | the model's own | Horizontal, vertical (either way), upside down or auto (every turn; the read that fits the pattern wins). |
+| **Character height (px)** | `charHeight` | the model's, else measured | Height of one printed character in template pixels. In a large zone, timing marks can throw the measurement off, so set it, or train the model with `--char-height`. |
 | **Allowed characters** | `whitelist` | the model's characters | Limits what the reader may return. |
 | **Check against the file name** | `matchFileName` | off | Sends a sheet to review (`file_name_mismatch`) when the number it carries differs from its file name. Both are reduced to their digits first, so `S100001` matches `100001.jpg`. A missing or malformed number counts as a mismatch too (it also keeps `not_found` or `pattern_mismatch`), so the `file_name_mismatch` filter finds every sheet whose number could not be confirmed. The zone details show both values. Works on any zone type. |
 | (no editor control) | `fileNameNormalize` | `digits` | How both values are reduced before comparing: `digits`, `alnum`, `upper`, `strip`, `none`, or `{"regex": "...", "group": 1}` to take one part. |
@@ -2036,7 +2036,7 @@ The reader is an optional module. It loads only when a template has an imprint z
    `python -m src.ml.train_imprint crops --template template.json --input scans/ --label "S{stem}" --out data/imprint`.
    Otherwise give a CSV of `file,label` with `--truth`. Each sub-folder of `scans/` (a scanning batch) becomes a group.
 2. Train, mixing the real crops with synthetic dot-matrix lines of random numbers, so the model reads any number and not only the ones it saw:
-   `python -m src.ml.train_imprint train --data data/imprint --out packaging/models/imprint/teri_imprint --direction rot90ccw`.
+   `python -m src.ml.train_imprint train --data data/imprint --out packaging/models/imprint/teri_imprint --direction rot90ccw --char-height 22 --pattern "S\d{6}"`. The character height and pattern become the zone defaults for this model.
    Add `--holdout all` first to train once per batch with that batch left out and see how well it reads sheets it has never seen.
 3. Check a model on crops: `python -m src.ml.train_imprint eval --data data/imprint --model packaging/models/imprint/teri_imprint.onnx`.
 

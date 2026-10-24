@@ -17,10 +17,13 @@ Zone options:
     model          model name in packaging/models/imprint (default "imprint")
                    or a path to the .onnx file
     direction      how the print reads in the template (as for OCR zones);
-                   default: the model's own
-    charHeight     character height in template px (default: found)
+                   default: the model's own; "auto" tries every turn
+                   (a tall strip set to "horizontal" is tried turned too)
+    charHeight     character height in template px (default: the model's
+                   char_height, else found)
     whitelist      characters allowed (default: the model's charset)
     pattern        regular expression the value must match, e.g. "S\\d{6}"
+                   (default: the model's pattern, used to pick the line)
     minConfidence  as for other zones
 """
 
@@ -74,7 +77,12 @@ def line_candidates(grey, char_height=None, limit=CANDIDATES):
     for h in heights:
         block = max(int(1.4 * h) | 1, 15)
         ink = cv2.adaptiveThreshold(
-            grey, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block, INK_OFFSET
+            grey,
+            255,
+            cv2.ADAPTIVE_THRESH_MEAN_C,
+            cv2.THRESH_BINARY_INV,
+            block,
+            INK_OFFSET,
         )
         count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
         area = stats[:, cv2.CC_STAT_AREA]
@@ -151,7 +159,9 @@ def cut_line(grey, box):
     x, y, w, h = box
     pad = max(int(round(h * 0.2)), 4)
     H, W = grey.shape[:2]
-    return grey[max(y - pad, 0) : min(y + h + pad, H), max(x - pad, 0) : min(x + w + pad, W)]
+    return grey[
+        max(y - pad, 0) : min(y + h + pad, H), max(x - pad, 0) : min(x + w + pad, W)
+    ]
 
 
 def model_input(line, height=INPUT_HEIGHT, max_width=None):
@@ -177,7 +187,11 @@ def model_dirs():
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             roots.insert(1, Path(meipass))
-    dirs = [Path(os.environ["OMR_IMPRINT_MODEL_DIR"])] if os.environ.get("OMR_IMPRINT_MODEL_DIR") else []
+    dirs = (
+        [Path(os.environ["OMR_IMPRINT_MODEL_DIR"])]
+        if os.environ.get("OMR_IMPRINT_MODEL_DIR")
+        else []
+    )
     for root in roots:
         dirs += [root / "models" / "imprint", root / "packaging" / "models" / "imprint"]
     return dirs
@@ -285,12 +299,42 @@ def installed_models():
     names = set()
     for directory in model_dirs():
         if directory.is_dir():
-            names |= {p.stem for p in directory.glob("*.onnx") if p.with_suffix(".json").is_file()}
+            names |= {
+                p.stem
+                for p in directory.glob("*.onnx")
+                if p.with_suffix(".json").is_file()
+            }
     return sorted(names)
 
 
 # ------------------------------------------------------------------ zone
+def imprint_directions(options, model, crop):
+    """
+    Directions to try, most likely first. Unset: the model's own. "auto", or
+    a direction the zone's shape contradicts (a tall narrow strip set to
+    "horizontal", which an editor default can leave behind): the model's
+    own, then the others; the read that fits the pattern wins.
+    """
+    default = model.direction if model else "horizontal"
+    given = options.get("direction")
+    every = list(dict.fromkeys([default, "rot90ccw", "rot90cw", "horizontal"]))
+    if given == "auto":
+        return every
+    if not given:
+        return [default]
+    h, w = crop.shape[:2]
+    turned = given in ("rot90ccw", "rot90cw")
+    if (not turned and h > 3 * w) or (turned and w > 3 * h):
+        return list(dict.fromkeys([default, given] + every))
+    return [given]
+
+
 def read_imprint_zone(zone, image, ocr_params=None):
+    """
+    Zone options fall back to the model's sidecar: char_height (the print's
+    character height in template px) and pattern (e.g. S\\d{6}), so a search
+    strip drawn larger than the print still finds it.
+    """
     from src.readers import text_reader
 
     options = zone.options
@@ -298,36 +342,57 @@ def read_imprint_zone(zone, image, ocr_params=None):
     if crop.ndim == 3:
         crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     model = get_model(options.get("model"))
-    direction = options.get("direction") or (model.direction if model else "horizontal")
-    strip = text_reader.rotate_crop(crop, direction)
-    details = {"direction": direction}
-    boxes = line_candidates(strip, options.get("charHeight"))
-    if not boxes:
-        return ZoneReadResult(zone.name, zone.type, "", 0.0, ["not_found"], details=details)
+    meta = model.meta if model else {}
+    char_height = options.get("charHeight") or meta.get("char_height")
+    pattern = options.get("pattern") or meta.get("pattern")
     whitelist = options.get("whitelist")
-    if model is None:
-        details["line"] = list(boxes[0])
-        line = cut_line(strip, boxes[0])
-        return read_without_model(zone, line, whitelist or DEFAULT_CHARSET, details)
-    # Try the best few candidates; keep the read that fits the pattern, then
-    # the surest (a registration tick or bubble column can outrank faint print)
-    pattern = options.get("pattern")
+    directions = imprint_directions(options, model, crop)
     best = None
-    for box in boxes:
-        text, confidences = model.read(cut_line(strip, box), set(whitelist) if whitelist else None)
-        confidence = float(min(confidences)) if confidences else 0.0
-        fits = bool(text) and (not pattern or re.fullmatch(pattern, text) is not None)
-        key = (fits, confidence)
-        if best is None or key > best[0]:
-            best = (key, box, text, confidences, confidence)
-    _, box, text, confidences, confidence = best
-    details.update(
-        line=list(box),
-        engine="imprint",
-        model=model.path.stem,
-        char_confidences=[round(c, 3) for c in confidences],
-    )
+    for direction in directions:
+        strip = text_reader.rotate_crop(crop, direction)
+        boxes = line_candidates(strip, char_height)
+        if not boxes:
+            continue
+        if model is None:
+            details = {"direction": direction, "line": list(boxes[0])}
+            return read_without_model(
+                zone, cut_line(strip, boxes[0]), whitelist or DEFAULT_CHARSET, details
+            )
+        # Try the best few candidates; keep the read that fits the pattern,
+        # then the surest (a registration tick or bubble column can outrank
+        # faint print)
+        for box in boxes:
+            text, confidences = model.read(
+                cut_line(strip, box), set(whitelist) if whitelist else None
+            )
+            confidence = float(min(confidences)) if confidences else 0.0
+            fits = bool(text) and (
+                not pattern or re.fullmatch(pattern, text) is not None
+            )
+            key = (fits, confidence)
+            if best is None or key > best[0]:
+                best = (key, direction, box, text, confidences)
+        if best and best[0][0] and best[0][1] >= 0.9:
+            break  # a sure read that fits: no need to turn further
+    if best is None:
+        details = {"direction": directions[0], "directions_tried": directions}
+        return ZoneReadResult(
+            zone.name, zone.type, "", 0.0, ["not_found"], details=details
+        )
+    (fits, confidence), direction, box, text, confidences = best
+    details = {
+        "direction": direction,
+        "line": list(box),
+        "engine": "imprint",
+        "model": model.path.stem,
+        "char_confidences": [round(c, 3) for c in confidences],
+    }
+    if len(directions) > 1:
+        details["directions_tried"] = directions
     flags = [] if text else ["empty"]
+    if text and not fits and not options.get("pattern"):
+        # The model's pattern (the zone's own is checked with the other zones)
+        flags.append("pattern_mismatch")
     return ZoneReadResult(
         zone.name, zone.type, text, confidence, flags, details=details, engine="imprint"
     )
@@ -340,7 +405,12 @@ def read_without_model(zone, line, whitelist, details):
     flags = ["no_imprint_model"]
     if not ocr.tesseract_available():
         return ZoneReadResult(
-            zone.name, zone.type, "", 0.0, flags + ["engine_unavailable"], details=details
+            zone.name,
+            zone.type,
+            "",
+            0.0,
+            flags + ["engine_unavailable"],
+            details=details,
         )
     dot = max(int(round(line.shape[0] * 0.08)), 2)
     joined = cv2.morphologyEx(line, cv2.MORPH_OPEN, np.ones((dot, dot), np.uint8))
@@ -348,6 +418,11 @@ def read_without_model(zone, line, whitelist, details):
         ocr.prepare_for_ocr(joined), psm=7, whitelist=whitelist
     )
     return ZoneReadResult(
-        zone.name, zone.type, text.replace(" ", ""), confidence, flags,
-        details=details, engine="tesseract",
+        zone.name,
+        zone.type,
+        text.replace(" ", ""),
+        confidence,
+        flags,
+        details=details,
+        engine="tesseract",
     )
