@@ -1,5 +1,5 @@
 // Jobs tab: start bulk jobs (chunked uploads or a server folder) and watch progress.
-import { api, chip, chunk, el, emit, fmtDuration, modal, state, toast, url } from "./api.js";
+import { api, chip, chunk, el, emit, fileStem, fmtDuration, modal, saveButton, state, toast } from "./api.js";
 import { includeSubfolders, initFolderPicker, onShowFolders } from "./folders.js";
 import { appendPdfParams, mountPdfOptions } from "./pdf_options.js";
 
@@ -31,6 +31,7 @@ async function startJob() {
   const files = [...document.getElementById("job-files").files].filter((f) => ACCEPTED.test(f.name));
   const folder = document.getElementById("job-folder").value.trim();
   if (!files.length && !folder) return toast("Choose files or enter a server folder", "error");
+  if (document.getElementById("job-watch").checked && (files.length || !folder)) return toast("Watching works on a server folder alone: clear the chosen files", "error", 6000);
   const status = document.getElementById("job-upload-status");
   const button = document.getElementById("job-start");
   const base = () => {
@@ -53,6 +54,11 @@ async function startJob() {
       const form = base();
       form.append("folder", folder);
       form.append("recursive", includeSubfolders() ? "true" : "false");
+      if (document.getElementById("job-watch").checked) {
+        form.append("watch", "true");
+        const interval = document.getElementById("job-watch-interval").value;
+        if (interval) form.append("watch_interval_s", interval);
+      }
       job = await api("/jobs", { method: "POST", form });
     } else {
       const parts = chunk(files, UPLOAD_CHUNK);
@@ -103,7 +109,7 @@ export async function refreshJobs() {
   body.innerHTML = "";
   let active = false;
   for (const job of data.jobs) {
-    if (["queued", "running", "uploading"].includes(job.state)) active = true;
+    if (["queued", "running", "uploading", "watching"].includes(job.state)) active = true;
     const total = job.total_files || 0;
     const pct = total ? Math.round((100 * (job.processed_files || 0)) / total) : 0;
     const counts = job.counts || {};
@@ -114,7 +120,7 @@ export async function refreshJobs() {
         el("td", {}, el("div", {}, job.name || job.id.slice(0, 8)), el("div", { class: "muted small" }, job.label || (job.source === "folder" ? job.folder || "folder" : job.source === "batch" ? "camera / single uploads" : "upload"))),
         el("td", {}, names[job.template_id] || job.template_id),
         el("td", {}, chip(job.state, job.state)),
-        el("td", {}, el("div", { class: "progress" }, el("div", { style: { width: `${pct}%` } })), el("div", { class: "muted small" }, `${job.processed_files || 0} / ${total} files · ${pct}%`)),
+        el("td", {}, el("div", { class: "progress" }, el("div", { style: { width: `${pct}%` } })), el("div", { class: "muted small" }, `${job.processed_files || 0} / ${total} files · ${pct}%`), fastPassLine(job)),
         el("td", {}, counts.ok || 0),
         el("td", {}, counts.needs_review || 0),
         el("td", {}, counts.error || 0),
@@ -124,7 +130,7 @@ export async function refreshJobs() {
         el(
           "td",
           { class: "actions" },
-          el("a", { class: "button small", href: url(`/jobs/${job.id}/results.csv`) }, "CSV"),
+          saveButton(`/jobs/${job.id}/results.csv`, `${fileStem(job.name || `job-${job.id.slice(0, 8)}`)}.csv`, "CSV", { class: "small", title: "Save this job's results as a CSV file" }),
           el("button", { class: "small", onclick: () => emit("export-open", { job_id: job.id, template_id: job.template_id }) }, "Export…"),
           job.pages ? el("button", { class: "small", onclick: () => emit("results-job", job.id) }, "Results") : null,
           counts.needs_review ? el("button", { class: "small", onclick: () => emit("review-job", job.id) }, "Review") : null,
@@ -134,10 +140,13 @@ export async function refreshJobs() {
           ["paused", "interrupted", "failed"].includes(job.state)
             ? el("button", { class: "small primary", title: "Read the remaining sheets", onclick: () => jobAction(job, "resume") }, "Resume")
             : null,
-          counts.error && ["completed", "paused", "interrupted", "failed"].includes(job.state) && job.source !== "batch"
+          job.options?.watch?.active && ["watching", "queued", "running", "paused"].includes(job.state)
+            ? el("button", { class: "small", title: `Stop reading new files from ${job.options.watch.folder}; sheets being read finish first`, onclick: () => jobAction(job, "stop-watching") }, "Stop watching")
+            : null,
+          counts.error && ["completed", "paused", "interrupted", "failed", "watching"].includes(job.state) && job.source !== "batch"
             ? el("button", { class: "small", title: "Read the sheets that ended in an error again (reviewed sheets are kept)", onclick: () => jobAction(job, "rescan-errors") }, "Rescan errors")
             : null,
-          ["queued", "running", "uploading", "paused", "interrupted"].includes(job.state)
+          ["queued", "running", "uploading", "paused", "interrupted", "watching"].includes(job.state)
             ? el("button", { class: "small danger", onclick: () => cancelJob(job) }, "Cancel")
             : el("button", { class: "small danger ghost", title: "Delete this job and its results", onclick: () => deleteJob(job) }, "Delete")
         )
@@ -152,10 +161,22 @@ export async function refreshJobs() {
 }
 
 // Delete a job and every result it produced, after a confirmation
+// Test mode (fast pass): how many sheets kept the half-size read
+function fastPassLine(job) {
+  const p = job.read_passes;
+  if (!p || !(p.fast + p.full)) return null;
+  const share = Math.round((100 * p.fast) / (p.fast + p.full));
+  return el(
+    "div",
+    { class: "muted small", title: "Fast pass (Speed › test mode): sheets whose half-size read was kept, and sheets it was not good enough for, which were read again in full" },
+    `Fast pass: ${p.fast.toLocaleString()} kept (${share}%) · ${p.full.toLocaleString()} read again in full`
+  );
+}
+
 async function jobAction(job, action) {
   try {
     await api(`/jobs/${job.id}/${action}`, { method: "POST" });
-    toast(action === "pause" ? "Pausing: sheets being read finish first" : action === "rescan-errors" ? "Reading the error sheets again" : "Job resumed", "ok");
+    toast(action === "pause" ? "Pausing: sheets being read finish first" : action === "stop-watching" ? "Stopped watching the folder" : action === "rescan-errors" ? "Reading the error sheets again" : "Job resumed", "ok");
   } catch (error) {
     toast(error.message, "error", 6000);
   }

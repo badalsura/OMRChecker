@@ -105,6 +105,7 @@
               <option value="unflagged" data-label="Not flagged">Not flagged</option>
               <option value="not_reviewed" data-label="Not reviewed">Not reviewed</option>
               <option value="reviewed" data-label="Reviewed">Reviewed</option>
+              <option value="approved" data-label="Approved">Approved (second check)</option>
               <option value="corrected" data-label="Corrected">Corrected</option>
               <option value="errors" data-label="Errors">Errors</option>
               <option value="duplicates" data-label="Duplicates">Duplicates (same key)</option>
@@ -162,6 +163,7 @@
             <button id="res-undo" class="small ghost" disabled title="Undo this sheet's last change (Ctrl+Z)">↶ Undo</button>
             <button id="res-redo" class="small ghost" disabled title="Redo (Ctrl+Y or Ctrl+Shift+Z)">↷ Redo</button>
             <button id="res-regrade" class="small" title="Re-read with different settings (R)">Regrade…</button>
+            <button id="res-place" class="small" title="Lay the template over this sheet, drag it into place and read it again (P)">Place by hand</button>
             <span class="spacer"></span>
             <button id="res-accuracy" class="small ghost">Accuracy</button>
             <button id="res-remap" class="small ghost" title="Input folders moved?">Path remap</button>
@@ -187,8 +189,14 @@
           <label class="field">Job <select id="chg-job"><option value="">All jobs</option></select></label>
         </div>
         <h2>Hand out review work</h2>
-        <p class="muted small">Assign sheets of the template and job above to people. They find them in Results with <b>Assigned to: me</b>, review them, and you verify their work below. The sheets are split into equal runs, in sheet order, between the people named.</p>
+        <p class="muted small">Assign sheets of the template and job above to people. They find them in Results with <b>Assigned to: me</b>, review them, and you approve their work below. Sheet numbers count only the sheets <b>Which sheets</b> picks, in job order: with <b>Flagged</b>, 1 to 500 is the first 500 flagged sheets. Results shows the same numbers (#12) with the same job and view picked.</p>
         <div class="row gap wrap">
+          <label class="field">How
+            <select id="chg-mode">
+              <option value="split">Split evenly between people</option>
+              <option value="ranges">Each person's sheet numbers</option>
+            </select>
+          </label>
           <label class="field">Which sheets
             <select id="chg-which">
               <option value="flagged">Flagged, not verified</option>
@@ -198,27 +206,43 @@
               <option value="all">All sheets</option>
             </select>
           </label>
-          <label class="field">People (comma between names) <input id="chg-people" list="chg-people-list" placeholder="asha, bob"></label>
-          <datalist id="chg-people-list"></datalist>
-          <label class="field">At most <input id="chg-limit" type="number" min="1" placeholder="all"></label>
           <label class="small"><input type="checkbox" id="chg-only-new" checked> only sheets nobody has yet</label>
+        </div>
+        <datalist id="chg-people-list"></datalist>
+        <div id="chg-split" class="row gap wrap">
+          <div class="field">People
+            <input id="chg-people-search" type="search" class="small" placeholder="search people, or type a new name and press Enter">
+            <div id="chg-people" class="chg-people"></div>
+          </div>
+          <label class="field">From sheet <input id="chg-from" type="number" min="1" placeholder="first"></label>
+          <label class="field">To sheet <input id="chg-to" type="number" min="1" placeholder="last"></label>
+          <label class="field">At most <input id="chg-limit" type="number" min="1" placeholder="all"></label>
+        </div>
+        <div id="chg-ranges" class="hidden">
+          <p class="muted small">One row per person: sheets from and to (included), counting only the sheets <b>Which sheets</b> picks in the job above.</p>
+          <div id="chg-range-rows"></div>
+          <button id="chg-range-add" class="small ghost">+ Add a person</button>
+        </div>
+        <div class="row gap wrap">
+          <span id="chg-preview" class="muted small"></span>
+          <span class="spacer"></span>
           <button id="chg-assign" class="primary">Assign</button>
         </div>
         <div id="chg-summary"></div>
       </div>
       <div class="panel">
-        <h2>Changed sheets</h2>
-        <p class="muted small">Sheets people changed after scanning (values changed or accepted, regraded, aligned or typed by hand) and nobody verified since. Check the settings and values, open a sheet to look at it, then verify it or send it back to review.</p>
+        <h2>Check and approve</h2>
+        <p class="muted small">Sheets reviewers verified or changed after scanning (values changed or accepted, regraded, aligned or typed by hand) that you have not approved since. Approve is your second check, separate from the reviewer's Verify: check the settings and values, open a sheet to look at it, then approve it or send it back to review. Any later change lists the sheet here again.</p>
         <div class="row gap wrap">
           <input id="chg-user" type="search" class="small" placeholder="changed by (user name)">
-          <label class="small"><input type="checkbox" id="chg-all"> include sheets already verified</label>
+          <label class="small"><input type="checkbox" id="chg-all"> include sheets already approved</label>
           <span id="chg-count" class="muted small"></span>
           <button id="chg-prev" class="small ghost">‹ Newer</button>
           <button id="chg-next" class="small ghost">Older ›</button>
           <span class="spacer"></span>
-          <button id="chg-verify-page">Verify all on this page</button>
+          <button id="chg-verify-page">Approve all on this page</button>
           <button id="chg-return" disabled>Send ticked back</button>
-          <button id="chg-verify" class="primary" disabled>Verify ticked</button>
+          <button id="chg-verify" class="primary" disabled>Approve ticked</button>
         </div>
         <div id="chg-table"></div>
       </div>
@@ -232,13 +256,13 @@
           <label class="field">Name <input id="job-name" placeholder="optional"></label>
           <label class="field">Keep images
             <select id="job-images">
+              <option value="none" selected>None: draw review crops from the original files</option>
               <option value="review">Only sheets that need review</option>
               <option value="all">All sheets</option>
-              <option value="none">None: draw review crops from the original files</option>
             </select>
           </label>
           <label class="field">Worker processes <input id="job-workers" type="number" min="1" placeholder="auto"></label>
-          <label class="field" title="Files read into memory ahead of the workers, so they never wait on the disk. About 0.2 MB per JPEG scan; 0 turns it off on small machines">Read ahead (files) <input id="job-prefetch" type="number" min="0" placeholder="64"></label>
+          <label class="field" title="Files read into memory ahead of the workers, so they never wait on the disk. About 0.2 MB per JPEG scan (128 files: about 25 MB); 0 turns it off on small machines">Read ahead (files) <input id="job-prefetch" type="number" min="0" placeholder="128"></label>
         </div>
         <div id="job-workers-warning" class="small fs-warn"></div>
         <div id="job-pdf"></div>
@@ -261,6 +285,10 @@
             <div class="row gap wrap">
               <label class="small"><input id="job-recursive" type="checkbox" checked> Include subfolders <span class="help-i" tabindex="0" title="Also read the sheets in every folder inside this one. Untick to read only the files directly in this folder.">ⓘ</span></label>
               <span id="job-folder-check" class="small muted"></span>
+            </div>
+            <div class="row gap wrap">
+              <label class="small"><input id="job-watch" type="checkbox"> Keep watching this folder <span class="help-i" tabindex="0" title="After reading what is in the folder now, the job keeps reading every new file that arrives in it until you press Stop watching. A file is read only once it has finished copying: its size has stopped changing for a few seconds, it can be opened, and its end is complete.">ⓘ</span></label>
+              <label class="small">look every <input id="job-watch-interval" type="number" min="1" max="3600" step="1" placeholder="5" style="width: 4.5em"> s</label>
             </div>
             <div class="help-line small muted">Reads the sheets where they already are; nothing is copied. Fastest for large batches. The folder must be on the machine running this program (on the portable app, that is this PC) or on a network drive it can reach.</div>
             <div class="small muted">Examples: Windows <code>D:\scans\batch-01</code> · network share <code>\\server\scans\batch-01</code> · Linux <code>/srv/scans/batch-01</code></div>

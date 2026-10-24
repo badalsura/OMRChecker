@@ -112,6 +112,9 @@ TIMING_MARK_OPTIONS_SCHEMA = {
         # Mean residual (template px) of any page region above which the
         # sheet goes to review
         "maxRegionResidual": positive_number,
+        # Share (0-1) of timing marks + index points left unmatched above
+        # which the sheet goes to review
+        "maxUnmatchedShare": {"type": "number", "minimum": 0, "maximum": 1},
     },
 }
 
@@ -335,6 +338,10 @@ TEMPLATE_SCHEMA = {
                     },
                 }
             },
+        },
+        "editorLocked": {
+            "description": "Template editor only: blocks and zones can't be moved or resized on the page",
+            "type": "boolean",
         },
         "primaryKey": {
             "description": "Output columns that identify a sheet; sheets sharing them are duplicates",
@@ -577,6 +584,15 @@ TEMPLATE_SCHEMA = {
         "colorDropout": {
             **COLOR_DROPOUT_SCHEMA,
             "description": "How a colour scan is turned into the grey image that is read (default: plain grey)",
+        },
+        "colorDropoutFallback": {
+            "description": "When more than blankShare of the bubble questions come out blank with the colour dropout (ink in the dropped colour), read the sheet again in plain grey ('grey'), do that and flag it ('grey_and_flag'), or only flag it ('flag')",
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "blankShare": zero_to_one_number,
+                "action": {"type": "string", "enum": ["grey", "grey_and_flag", "flag"]},
+            },
         },
         "zones": {
             "description": "Non-bubble regions to read: barcodes, QR codes, printed text (OCR) and handwriting (ICR)",

@@ -92,6 +92,16 @@ def column_state(value, details=None, empty_value=""):
     return "ok"
 
 
+def column_flagged(state, details=None):
+    """Does this column of a group need a look? An unclear column always does;
+    a multi-marked one only when multi_marked is one of the template's review
+    flags (the column's own needs_review): turned off, the group still writes
+    its multi placeholder but is not flagged."""
+    if state == "issue":
+        return True
+    return state == "multi" and bool(details and details.get("needs_review"))
+
+
 def join_group(columns, omr_response, options, field_details=None, empty_value=""):
     """(value, states) of one group: one placeholder or bubble value per column."""
     pieces, states = [], []
@@ -132,13 +142,20 @@ def get_concatenated_response(
                 concatenate_keys, omr_response, options, field_details, empty_value
             )
             if groups_out is not None:
+                columns = [
+                    {
+                        "name": k,
+                        "state": st,
+                        "flagged": column_flagged(
+                            st, field_details.get(k) if field_details else None
+                        ),
+                    }
+                    for k, st in zip(concatenate_keys, states)
+                ]
                 groups_out[field_label] = {
                     "value": custom_label,
-                    "columns": [
-                        {"name": k, "state": st}
-                        for k, st in zip(concatenate_keys, states)
-                    ],
-                    "flagged": any(st in ("multi", "issue") for st in states),
+                    "columns": columns,
+                    "flagged": any(c["flagged"] for c in columns),
                 }
         concatenated_response[field_label] = custom_label
 
@@ -166,15 +183,21 @@ def group_review_items(groups, review):
         columns = [c["name"] for c in group["columns"]]
         if any(c in listed for c in columns):
             continue
-        flags = sorted(
-            {
-                "multi_marked" if c["state"] == "multi" else "group_issue"
-                for c in group["columns"]
-                if c["state"] in ("multi", "issue")
-            }
-        )
+        # Only the columns that need a look are named as flagged
+        field_flags = {
+            c["name"]: ["multi_marked" if c["state"] == "multi" else "group_issue"]
+            for c in group["columns"]
+            if c.get("flagged", c["state"] in ("multi", "issue"))
+        }
+        flags = sorted({flag for found in field_flags.values() for flag in found})
         items.append(
-            {"kind": "custom_label", "name": name, "flags": flags, "fields": columns}
+            {
+                "kind": "custom_label",
+                "name": name,
+                "flags": flags,
+                "fields": columns,
+                "field_flags": field_flags,
+            }
         )
     return items
 

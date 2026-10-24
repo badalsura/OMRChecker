@@ -1,7 +1,8 @@
 // Who did what: a sheet's history (Results side panel) and the administrators'
-// "Check changes" tab: hand flagged sheets out to people for review, then check
-// every sheet people changed (with its settings and values), verify it or send
-// it back to review.
+// "Check changes" tab: hand sheets out to people for review (split evenly or
+// by sheet numbers), change who has what, then check every sheet reviewers
+// verified or changed (with its settings and values) and approve it (the
+// administrator's second check) or send it back to review.
 import { api, chip, el, emit, state, toast } from "./api.js";
 
 const ACTIONS = {
@@ -12,6 +13,7 @@ const ACTIONS = {
   aligned: "Aligned by hand",
   typed: "Typed the values",
   verified: "Verified",
+  approved: "Approved",
   unverified: "Took back the verification",
   undone: "Undid",
   redone: "Redid",
@@ -110,7 +112,7 @@ function changeCell(item) {
 
 // ---------------------------------------------------------------- the tab
 const $ = (id) => document.getElementById(id);
-const tab = { offset: 0, items: [], total: 0, ticked: new Set(), started: false };
+const tab = { offset: 0, items: [], total: 0, ticked: new Set(), started: false, people: [], picked: new Set(), editing: null };
 
 function filters() {
   const f = { template_id: $("chg-template").value, job_id: $("chg-job").value };
@@ -141,17 +143,103 @@ async function fillPeople() {
   } catch (e) {
     /* sign-in off, or not an administrator */
   }
-  try {
-    const data = await api(`/assignments/summary?${new URLSearchParams(filters())}`);
-    for (const u of data.users) names.add(u.user);
-  } catch (e) {
-    /* ignore */
+  const accounts = state.auth && state.auth.accounts;
+  if (!accounts) {
+    try {
+      const data = await api(`/assignments/summary?${new URLSearchParams(filters())}`);
+      for (const u of data.users) names.add(u.user);
+    } catch (e) {
+      /* ignore */
+    }
+    for (const name of tab.picked) names.add(name);
   }
+  tab.people = [...names].sort((a, b) => a.localeCompare(b));
   const list = $("chg-people-list");
   list.innerHTML = "";
-  for (const name of [...names].sort()) list.append(el("option", { value: name }));
-  return [...names].sort();
+  for (const name of tab.people) list.append(el("option", { value: name }));
+  renderPicker();
+  return tab.people;
 }
+
+// The people picker: tick who gets work, search to narrow a long list
+function renderPicker() {
+  const box = $("chg-people");
+  const query = $("chg-people-search").value.trim().toLowerCase();
+  box.innerHTML = "";
+  const shown = tab.people.filter((n) => !query || n.toLowerCase().includes(query));
+  if (!tab.people.length) {
+    const accounts = state.auth && state.auth.accounts;
+    box.append(el("p", { class: "muted small" }, accounts ? "No active accounts yet (Users screen)." : "Type a name above and press Enter."));
+  }
+  for (const name of shown) {
+    const box2 = el("input", { type: "checkbox" });
+    box2.checked = tab.picked.has(name);
+    box2.addEventListener("change", () => {
+      if (box2.checked) tab.picked.add(name);
+      else tab.picked.delete(name);
+      pickedLine();
+    });
+    box.append(el("label", { class: "small" }, box2, ` ${name}`));
+  }
+  if (tab.people.length && !shown.length) box.append(el("p", { class: "muted small" }, "Nobody matches."));
+  pickedLine();
+}
+
+function pickedLine() {
+  const picked = [...tab.picked];
+  $("chg-preview").textContent = $("chg-mode").value === "split" ? (picked.length ? `To: ${picked.join(", ")}` : "Tick at least one person") : "";
+}
+
+function addTypedPerson() {
+  const name = $("chg-people-search").value.trim();
+  if (!name) return;
+  const accounts = state.auth && state.auth.accounts;
+  if (!tab.people.includes(name)) {
+    if (accounts) return toast(`No active account named ${name}`, "error");
+    tab.people.push(name);
+    tab.people.sort((a, b) => a.localeCompare(b));
+  }
+  tab.picked.add(name);
+  $("chg-people-search").value = "";
+  renderPicker();
+}
+
+function personInput(value = "") {
+  return el("input", { class: "chg-person", list: "chg-people-list", placeholder: "person", value, autocomplete: "off" });
+}
+
+function addRangeRow(user = "", first = "", last = "") {
+  const row = el(
+    "div",
+    { class: "chg-range-row" },
+    personInput(user),
+    el("label", { class: "small" }, "sheets ", el("input", { type: "number", min: "1", class: "chg-r-from", placeholder: "from", value: first })),
+    el("label", { class: "small" }, "to ", el("input", { type: "number", min: "1", class: "chg-r-to", placeholder: "last", value: last })),
+    el("button", { class: "small ghost", title: "Remove this row", onclick: () => row.remove() }, "✕")
+  );
+  $("chg-range-rows").append(row);
+}
+
+function syncMode() {
+  const ranges = $("chg-mode").value === "ranges";
+  $("chg-split").classList.toggle("hidden", ranges);
+  $("chg-ranges").classList.toggle("hidden", !ranges);
+  if (ranges && !$("chg-range-rows").children.length) {
+    addRangeRow();
+    addRangeRow();
+  }
+  pickedLine();
+}
+
+const num = (input) => (Number(input.value) > 0 ? Math.floor(Number(input.value)) : null);
+const ago = (at) => {
+  if (!at) return "never";
+  const s = Date.now() / 1000 - at;
+  if (s < 90) return "just now";
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+  return new Date(at * 1000).toLocaleDateString();
+};
 
 async function renderSummary() {
   const box = $("chg-summary");
@@ -168,61 +256,109 @@ async function renderSummary() {
     box.append(el("p", { class: "muted small" }, "No sheets are assigned for this template and job."));
     return;
   }
-  box.append(
-    el(
-      "table",
-      { class: "table act-table" },
-      el("thead", {}, el("tr", {}, ["Person", "Assigned", "Still to review", "Nothing left to review", "Verified", ""].map((h) => el("th", {}, h)))),
+  const heads = ["Person", "Assigned", "Still to review", "Reviewed", "Verified", "Approved", "Sent back", "Last worked", ""];
+  const rows = [];
+  for (const u of data.users) {
+    rows.push(
       el(
-        "tbody",
+        "tr",
         {},
-        data.users.map((u) =>
-          el(
-            "tr",
-            {},
-            el("td", {}, u.user),
-            el("td", {}, String(u.assigned)),
-            el("td", {}, String(u.to_review)),
-            el("td", {}, String(u.reviewed)),
-            el("td", {}, String(u.verified)),
-            el(
-              "td",
-              {},
-              el("button", { class: "small ghost", title: "Show this person's changed sheets below", onclick: () => { $("chg-user").value = u.user; tab.offset = 0; refresh(); } }, "Their changes"),
-              " ",
-              el(
-                "button",
-                {
-                  class: "small ghost",
-                  disabled: !isAdmin(),
-                  title: "Take back every sheet assigned to this person (in this template and job)",
-                  onclick: async () => {
-                    if (!confirm(`Take back all sheets assigned to ${u.user}?`)) return;
-                    try {
-                      const r = await api("/assignments/clear", { method: "POST", json: { user: u.user, ...filters() } });
-                      toast(`${r.unassigned} sheet(s) taken back`, "ok");
-                      renderSummary();
-                    } catch (error) {
-                      toast(error.message, "error", 5000);
-                    }
-                  },
-                },
-                "Take back"
-              )
-            )
-          )
+        el("td", {}, u.user),
+        el("td", {}, String(u.assigned)),
+        el("td", {}, String(u.to_review)),
+        el("td", {}, String(u.reviewed)),
+        el("td", {}, String(u.verified)),
+        el("td", {}, String(u.approved)),
+        el("td", {}, String(u.sent_back)),
+        el("td", { class: "small", title: u.last_active ? when(u.last_active) : "" }, ago(u.last_active)),
+        el(
+          "td",
+          {},
+          el("button", { class: "small ghost", title: "Open their sheets in Results", onclick: () => emit("results-assigned", { user: u.user, ...filters() }) }, "Their sheets"),
+          " ",
+          el("button", { class: "small ghost", title: "Show the sheets they changed below", onclick: () => { $("chg-user").value = u.user; tab.offset = 0; refresh(); } }, "Their changes"),
+          " ",
+          el("button", { class: "small", disabled: !isAdmin(), title: "Move their sheets to someone else, or take them back", onclick: () => { tab.editing = tab.editing === u.user ? null : u.user; renderSummary(); } }, tab.editing === u.user ? "Close" : "Change…")
         )
       )
-    )
+    );
+    if (tab.editing === u.user) rows.push(el("tr", { class: "chg-edit" }, el("td", { colspan: String(heads.length) }, editForm(u))));
+  }
+  box.append(el("table", { class: "table act-table" }, el("thead", {}, el("tr", {}, heads.map((h) => el("th", {}, h)))), el("tbody", {}, rows)));
+}
+
+// Change one person's work: move some or all of it to someone else, or take it back
+function editForm(u) {
+  const action = el("select", {}, el("option", { value: "move" }, "Move to"), el("option", { value: "clear" }, "Take back (nobody)"));
+  const to = personInput();
+  const from = el("input", { type: "number", min: "1", placeholder: "first" });
+  const till = el("input", { type: "number", min: "1", placeholder: "last" });
+  const open = el("input", { type: "checkbox", checked: true });
+  action.addEventListener("change", () => to.classList.toggle("hidden", action.value !== "move"));
+  const apply = async () => {
+    const body = { user: u.user, ...filters(), only_open: open.checked };
+    if (num(from)) body.first_sheet = num(from);
+    if (num(till)) body.last_sheet = num(till);
+    if ((body.first_sheet || body.last_sheet) && !body.job_id) return toast("Pick one job above to give sheet numbers", "error");
+    const range = body.first_sheet || body.last_sheet ? ` ${body.first_sheet || "first"} to ${body.last_sheet || "last"} of the` : "";
+    const which = open.checked ? "unfinished sheets" : "sheets";
+    try {
+      if (action.value === "move") {
+        body.to = to.value.trim();
+        if (!body.to) return toast("Pick who gets the sheets", "error");
+        if (!confirm(`Move ${u.user}'s${range} ${which} to ${body.to}?`)) return;
+        const r = await api("/assignments/move", { method: "POST", json: body });
+        toast(`${r.moved} sheet(s) moved to ${r.to}`, "ok");
+      } else {
+        if (!confirm(`Take back ${u.user}'s${range} ${which}?`)) return;
+        const r = await api("/assignments/clear", { method: "POST", json: body });
+        toast(`${r.unassigned} sheet(s) taken back`, "ok");
+      }
+      tab.editing = null;
+      renderSummary();
+      fillPeople();
+    } catch (error) {
+      toast(error.message, "error", 6000);
+    }
+  };
+  return el(
+    "div",
+    { class: "row gap wrap" },
+    el("strong", {}, `${u.user}:`),
+    action,
+    to,
+    el("label", { class: "small", title: "Places in their list, in job order (Their sheets shows the numbers)" }, "their sheets ", from),
+    el("label", { class: "small" }, "to ", till),
+    el("label", { class: "small", title: "Leave alone the sheets they already reviewed or verified" }, open, " only sheets not finished yet"),
+    el("button", { class: "small primary", onclick: apply }, "Apply")
   );
 }
 
 async function handOut() {
-  const users = $("chg-people").value.split(",").map((s) => s.trim()).filter(Boolean);
-  if (!users.length) return toast("Name at least one person (comma between names)", "error");
-  const body = { users, view: $("chg-which").value, only_unassigned: $("chg-only-new").checked, ...filters() };
-  const limit = Number($("chg-limit").value);
-  if (limit > 0) body.limit = limit;
+  const body = { view: $("chg-which").value, only_unassigned: $("chg-only-new").checked, ...filters() };
+  if ($("chg-mode").value === "ranges") {
+    if (!body.job_id) return toast("Pick one job above: sheet numbers count the sheets of one job", "error", 5000);
+    const ranges = [];
+    for (const row of $("chg-range-rows").children) {
+      const user = row.querySelector(".chg-person").value.trim();
+      const first = num(row.querySelector(".chg-r-from"));
+      const last = num(row.querySelector(".chg-r-to"));
+      if (!user && !first && !last) continue;
+      if (!user) return toast("Name a person for every range", "error");
+      if (!first && !last) return toast(`Give ${user} a first or last sheet`, "error");
+      ranges.push({ user, first_sheet: first, last_sheet: last });
+    }
+    if (!ranges.length) return toast("Add at least one person and their sheets", "error");
+    body.ranges = ranges;
+  } else {
+    const users = [...tab.picked];
+    if (!users.length) return toast("Tick at least one person", "error");
+    body.users = users;
+    if (num($("chg-from"))) body.first_sheet = num($("chg-from"));
+    if (num($("chg-to"))) body.last_sheet = num($("chg-to"));
+    if ((body.first_sheet || body.last_sheet) && !body.job_id) return toast("Pick one job above to give sheet numbers", "error");
+    if (num($("chg-limit"))) body.limit = num($("chg-limit"));
+  }
   try {
     const data = await api("/assignments", { method: "POST", json: body });
     const parts = Object.entries(data.assigned).map(([name, n]) => `${name}: ${n}`);
@@ -249,12 +385,12 @@ async function refresh() {
   tab.ticked.clear();
   syncButtons();
   const end = Math.min(tab.offset + tab.items.length, tab.total);
-  $("chg-count").textContent = tab.total ? `${tab.offset + 1}–${end} of ${tab.total} sheet(s)${$("chg-all").checked ? "" : " waiting for a check"}` : "";
+  $("chg-count").textContent = tab.total ? `${tab.offset + 1}–${end} of ${tab.total} sheet(s)${$("chg-all").checked ? "" : " waiting for approval"}` : "";
   $("chg-prev").disabled = tab.offset === 0;
   $("chg-next").disabled = end >= tab.total;
   table.innerHTML = "";
   if (!tab.items.length) {
-    table.append(el("p", { class: "muted" }, $("chg-all").checked ? "No sheet was changed after scanning." : "Every changed sheet is verified."));
+    table.append(el("p", { class: "muted" }, $("chg-all").checked ? "No sheet was verified or changed after scanning." : "Every verified or changed sheet is approved."));
     return;
   }
   const head = el("input", { type: "checkbox", title: "Tick every sheet on this page" });
@@ -283,12 +419,13 @@ async function refresh() {
             else tab.ticked.delete(item.scan_id);
             syncButtons();
           });
-          const verified = item.verified ? el("div", { class: "small" }, chip(`verified by ${item.verified.by}`, "ok")) : null;
+          const verified = item.verified ? el("div", { class: "small" }, chip(`verified by ${item.verified.by}`, "ok")) : el("div", { class: "small" }, chip("not verified"));
+          const approved = item.approved ? el("div", { class: "small" }, chip(`approved by ${item.approved.by}`, "ok")) : null;
           return el(
             "tr",
             {},
             el("td", {}, box),
-            el("td", {}, el("div", { class: "mono" }, item.file_name || item.scan_id), el("div", {}, chip(item.status, item.status === "ok" ? "ok" : "flag")), verified, el("div", { class: "muted small" }, when(item.changed_at))),
+            el("td", {}, el("div", { class: "mono" }, item.file_name || item.scan_id), el("div", {}, chip(item.status, item.status === "ok" ? "ok" : "flag")), verified, approved, el("div", { class: "muted small" }, when(item.changed_at))),
             el(
               "td",
               { class: "small" },
@@ -303,7 +440,7 @@ async function refresh() {
               {},
               el("button", { class: "small", title: "Open this sheet in Results", onclick: () => emit("results-scan", item.scan_id) }, "Open"),
               " ",
-              el("button", { class: "small primary", disabled: !isAdmin(), onclick: () => verify([item.scan_id]) }, "Verify"),
+              el("button", { class: "small primary", disabled: !isAdmin() || !!item.approved, title: item.verified ? "Approve: your second check of the reviewer's work" : "Approve (this also verifies the sheet: nobody verified it yet)", onclick: () => approve([item.scan_id]) }, item.approved ? "Approved" : "Approve"),
               " ",
               el("button", { class: "small ghost", disabled: !isAdmin(), title: "Take back the verification and put its flagged and changed values back in the review queue", onclick: () => sendBack([item.scan_id]) }, "Send back")
             )
@@ -316,19 +453,21 @@ async function refresh() {
 
 function syncButtons() {
   const n = tab.ticked.size;
-  $("chg-verify").textContent = n ? `Verify ticked (${n})` : "Verify ticked";
+  $("chg-verify").textContent = n ? `Approve ticked (${n})` : "Approve ticked";
   $("chg-return").textContent = n ? `Send ticked back (${n})` : "Send ticked back";
   $("chg-verify").disabled = $("chg-return").disabled = !n || !isAdmin();
   $("chg-verify-page").disabled = !isAdmin();
 }
 
-async function verify(ids) {
+async function approve(ids) {
   if (!ids.length) return;
-  if (ids.length > 1 && !confirm(`Verify ${ids.length} sheet(s) with their current values? Flagged values on them are accepted as they are now.`)) return;
+  const unverified = tab.items.filter((i) => ids.includes(i.scan_id) && !i.verified).length;
+  const also = unverified ? ` ${unverified} of them nobody verified yet: they are verified too, and their flagged values accepted as they are now.` : "";
+  if ((ids.length > 1 || unverified) && !confirm(`Approve ${ids.length} sheet(s) with their current values?${also}`)) return;
   try {
-    const data = await api("/activity/verify", { method: "POST", json: { scan_ids: ids } });
-    const failed = data.failed.length ? ` · ${data.failed.length} not verified: ${data.failed.map((f) => f.error).join("; ")}` : "";
-    toast(`${data.verified.length} sheet(s) verified${failed}`, data.failed.length ? "error" : "ok", failed ? 7000 : 3000);
+    const data = await api("/activity/approve", { method: "POST", json: { scan_ids: ids } });
+    const failed = data.failed.length ? ` · ${data.failed.length} not approved: ${data.failed.map((f) => f.error).join("; ")}` : "";
+    toast(`${data.approved.length} sheet(s) approved${failed}`, data.failed.length ? "error" : "ok", failed ? 7000 : 3000);
     emit("review-changed");
     emit("results-deleted");
   } catch (error) {
@@ -340,7 +479,7 @@ async function verify(ids) {
 
 async function sendBack(ids) {
   if (!ids.length) return;
-  const to = prompt(`Send ${ids.length} sheet(s) back to review. Hand them to (a name, or leave empty to keep the current assignee):`, "");
+  const to = prompt(`Send ${ids.length} sheet(s) back to review. Hand them to (a name, or leave empty to keep the current assignee)${tab.people.length ? `\nPeople: ${tab.people.join(", ")}` : ""}:`, "");
   if (to === null) return;
   const note = prompt("A note for the reviewer (optional):", "") || "";
   try {
@@ -380,9 +519,18 @@ export function initChanges() {
     refresh();
   });
   $("chg-assign").addEventListener("click", handOut);
-  $("chg-verify").addEventListener("click", () => verify([...tab.ticked]));
+  $("chg-mode").addEventListener("change", syncMode);
+  $("chg-range-add").addEventListener("click", () => addRangeRow());
+  $("chg-people-search").addEventListener("input", renderPicker);
+  $("chg-people-search").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addTypedPerson();
+    }
+  });
+  $("chg-verify").addEventListener("click", () => approve([...tab.ticked]));
   $("chg-return").addEventListener("click", () => sendBack([...tab.ticked]));
-  $("chg-verify-page").addEventListener("click", () => verify(tab.items.filter((i) => !i.verified).map((i) => i.scan_id)));
+  $("chg-verify-page").addEventListener("click", () => approve(tab.items.filter((i) => !i.approved).map((i) => i.scan_id)));
 }
 
 // The tab is for administrators when sign-in is on

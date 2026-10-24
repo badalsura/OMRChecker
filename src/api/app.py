@@ -163,6 +163,11 @@ class Context:
         return image
 
 
+def form_flag(value):
+    """A true/false form field sent as text ("true", "false", "1", "0", "on", "off")."""
+    return str(value).strip().lower() not in ("false", "0", "no", "off", "")
+
+
 def has_crops(result):
     """Crops come from the stored aligned image or from the original + geometry."""
     return bool(result.get("has_images") or result.get("geometry"))
@@ -345,10 +350,17 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             ..., description="template.json plus assets, or one .zip of the folder"
         ),
         name: Optional[str] = Form(None),
+        flags_off: bool = Form(
+            False,
+            description="Start with every optional review flag off unless config.json "
+            "chooses its own (the screens send true)",
+        ),
     ):
         staged = [(upload.filename or "file", read_upload(upload)) for upload in files]
         try:
-            template_id, _ = ctx.templates.create_from_files(name, staged)
+            template_id, _ = ctx.templates.create_from_files(
+                name, staged, flags_off=flags_off
+            )
         except TemplateError as error:
             return JSONResponse(
                 status_code=422, content={"detail": str(error), "errors": error.errors}
@@ -562,6 +574,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 name or "generated",
                 staged,
                 status="draft",
+                flags_off=True,
                 extra={
                     "report": report,
                     "generated": True,
@@ -990,30 +1003,50 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
         template_id: str = Form(...),
         files: Optional[List[UploadFile]] = File(None),
         folder: Optional[str] = Form(None, description="Server-side folder to read"),
-        recursive: bool = Form(True),
-        save_images: str = Form(SAVE_REVIEW),
+        recursive: str = Form("true", description="false: only the folder's own files"),
+        save_images: str = Form(SAVE_NONE),
         workers: Optional[int] = Form(None),
         prefetch: Optional[int] = Form(
             None, ge=0, le=10000, description="Files read into memory ahead of the workers (0 = off)"
         ),
         name: Optional[str] = Form(None),
-        start: bool = Form(True, description="false: add more files, then /start"),
+        start: str = Form("true", description="false: add more files, then /start"),
         pdf_dpi: Optional[str] = Form(None, description="PDF render DPI or 'auto'"),
         pdf_page: Optional[str] = Form(
             None, description="PDF pages: '1', '2-4', '3-' or 'all'"
         ),
+        watch: bool = Form(
+            False, description="Keep reading new files dropped into the folder until stopped"
+        ),
+        watch_interval_s: Optional[float] = Form(
+            None, ge=1, le=3600, description="Seconds between looks at a watched folder (default 5)"
+        ),
     ):
         require_template(template_id)
+        # Strings, not bools: FastAPI 0.16x reads a bool form field that was
+        # not sent as false (an unticked checkbox), losing the true default
+        recursive = form_flag(recursive)
+        start = form_flag(start)
         pdf_params = editor_routes.parse_pdf_params(pdf_dpi, pdf_page)
         if save_images not in (SAVE_ALL, SAVE_REVIEW, SAVE_NONE):
             raise HTTPException(400, "save_images must be all, review or none")
         if not files and not folder and start:
             raise HTTPException(400, "Upload files or give a server-side folder")
+        if watch and not folder:
+            raise HTTPException(400, "Watching needs a server-side folder")
         folder_files = []
+        watch_options = None
         if folder:
-            folder_files = jobs_module.collect_folder(resolve_folder(folder, request), recursive)
-            if not folder_files and not files:
+            resolved = resolve_folder(folder, request)
+            folder_files = jobs_module.collect_folder(resolved, recursive)
+            if not folder_files and not files and not watch:
                 raise HTTPException(400, "No images or PDFs found in that folder")
+            if watch:
+                watch_options = {
+                    "folder": str(resolved),
+                    "recursive": bool(recursive),
+                    "interval_s": watch_interval_s or 5,
+                }
         job = ctx.jobs.create(
             template_id,
             [],
@@ -1025,6 +1058,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
                 "name": name,
                 "pdf_params": pdf_params,
                 "created_by": request_user(request, None, DEFAULT_USER),
+                "watch": watch_options,
             },
             start=False,
         )
@@ -1116,6 +1150,13 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             raise HTTPException(409, f"Job is {job['state']}; error sheets can be read again once it has stopped")
         job, files = done
         return {**ctx.jobs.get(job_id), "rescan_files": files}
+
+    @app.post("/jobs/{job_id}/stop-watching", tags=["jobs"], dependencies=secured)
+    def stop_watching_job(job_id: str):
+        job = ctx.jobs.stop_watching(job_id)
+        if job is None:
+            raise HTTPException(404, f"Job '{job_id}' not found")
+        return ctx.jobs.get(job_id)
 
     @app.post("/jobs/{job_id}/cancel", tags=["jobs"], dependencies=secured)
     def cancel_job(job_id: str):

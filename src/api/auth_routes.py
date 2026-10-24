@@ -109,6 +109,8 @@ def register(app, ctx):
             "accounts": accounts.enabled(),
             "registration": accounts.registration() if accounts.enabled() else "first",
             "user": user,
+            # The app window: every page of it behaves as the app
+            "desktop": bool(ctx.settings.desktop),
         }
 
     @app.post("/auth/register", tags=["auth"], status_code=201)

@@ -272,6 +272,36 @@ def test_pen_matching_print_and_too_few_marks(tmp_path, spec):
         OMREngine(path, template_overrides={"colorDropout": {"mode": "purple"}})
 
 
+def test_dropout_fallback_reads_ink_in_the_dropped_colour(tmp_path, spec):
+    # Pen in the dropped colour: the red dropout reads every question blank
+    image, truth = colour_sheet(spec, 4, ink_color=PINK)
+    for action in ("grey", "grey_and_flag", "flag"):
+        path = write_template(
+            tmp_path,
+            spec,
+            colorDropout={"mode": "red"},
+            colorDropoutFallback={"blankShare": 0.5, "action": action},
+        )
+        result = OMREngine(path).scan(image)
+        names = [item.get("name") for item in result.review if item["kind"] == "sheet"]
+        if action == "flag":
+            assert names == ["dropout_blank"] and result.status == "needs_review"
+            assert result.dropout_fallback is None
+            assert result.review[-1]["blank_questions"] > result.review[-1]["questions"] / 2
+            continue
+        assert_reads(result, truth)
+        assert result.dropout_fallback["read"] == "grey"
+        assert result.to_dict()["dropout_fallback"]["questions"] > 0
+        assert ("dropout_fallback" in names) == (action == "grey_and_flag")
+
+    # A blue pen reads fine with the dropout: no second read
+    image, truth = colour_sheet(spec, 5)
+    result = OMREngine(path).scan(image)
+    assert_reads(result, truth)
+    assert result.dropout_fallback is None
+    assert not any(item.get("name") == "dropout_blank" for item in result.review)
+
+
 def tint_region(image, box, color):
     """Reprint the dark parts of box in `color` (multiply blend)."""
     x, y, w, h = box
@@ -312,8 +342,8 @@ def test_zone_override_reads_its_own_variant(tmp_path):
     calls = []
     original = engine.template.prepare_image
 
-    def counting(image):
-        grey, variants = original(image)
+    def counting(image, page_dropout=None):
+        grey, variants = original(image, page_dropout)
         calls.append(len(variants))
         return grey, variants
 

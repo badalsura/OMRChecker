@@ -17,8 +17,8 @@ sections that contain all the words you type, for example `double mark`,
 | Get a CSV / Excel file of the answers | 2. Export |
 | Look at one sheet, correct a bubble, verify it | 3. Results screen |
 | Re-read a sheet with other settings, or a sheet read upside down, mirrored or a row off | 3. Results screen → Regrade, Place the page by hand |
-| See who scanned, reviewed, changed, regraded or verified a sheet; check and verify changed sheets in bulk | 3. Results screen → Who did what, Check changes |
-| Hand flagged sheets out to reviewers, see your own sheets, send a sheet back to review | 3. Results screen → Check changes (Hand out review work, Send back); Results › Assigned to |
+| See who scanned, reviewed, changed, regraded or verified a sheet; check and approve their work in bulk | 3. Results screen → Who did what, Check changes |
+| Hand sheets out to reviewers (evenly or by sheet numbers), move or take back their work, see your own sheets, send a sheet back to review | 3. Results screen → Check changes (Hand out review work, Send back); Results › Assigned to |
 | Make or change a template (blocks, bubbles, roll number, barcode) | 4. Templates and the template editor |
 | Choose an alignment method (timing tracks, index points, corner markers) | 4. → Alignment |
 | Tune how dark a mark must be, double marks, light pencil | 5. → Review thresholds |
@@ -361,6 +361,7 @@ The API key is for **programs** that talk to the station (scanning scripts, the 
 - The station requires a key only when it was started with `--api-key <secret>` (or the `OMR_API_KEY` environment variable).
 - The **API key** button in the top bar lets you type the key into this browser. Leave it empty if the server has none. It is remembered by this browser.
 - If the station needs a key and the browser does not have it, the app asks "This server requires an API key:" the first time it is needed.
+- The **app** (the OMRChecker window) is local to its computer and never uses an API key: it has no API key button and never asks for one.
 - With sign-in turned on, a signed-in person does not need the key; programs can keep using the key.
 
 ### The top bar
@@ -388,6 +389,12 @@ The address in the browser follows the tab, for example `http://127.0.0.1:8765/#
 | **Templates** | Create, upload, generate and edit templates: the description of where every bubble, field and zone is on your sheet, how to align the page, how to score it. |
 
 A typical day: set up a template once in **Templates**, start a batch in **Jobs**, clear the **Review queue**, check and correct in **Results**, and export. Each tab has its own section later in this guide.
+
+### Saving files
+
+Every button that gives you a file (an export, a job's CSV, a template package, the scan results CSV, a JSON file from the template editor) opens a **Save As** box first, so you choose the folder and the file name. The file is then written straight from the server into that file, so even a very large export never has to fit in memory. Closing the box saves nothing.
+
+This needs Chrome or Edge (or the app's own window). In Firefox and Safari the file goes to the browser's usual Downloads folder instead. For exports there is also **Save to folder**, which writes the file on the scanning computer without any download.
 
 ### Name and icon (branding)
 
@@ -509,9 +516,9 @@ Use a job for anything more than a few dozen sheets. A job runs on the server in
 |---|---|---|
 | **Template** | first template | The template every sheet in the job is read with. |
 | **Name** | *optional* (empty) | A name shown in the Jobs list, the Review and Results filters and exports, for example "Physics mock 2026 day 1". Without one, the job is shown by the first 8 characters of its id. Naming jobs makes them much easier to find later. |
-| **Keep images** | *Only sheets that need review* | Which sheet images the server stores. *Only sheets that need review* stores the aligned image only for flagged sheets. *All sheets* stores every image: the most disk space, but sheets can be shown even if the original scans are later moved or deleted. *None: draw review crops from the original files* stores nothing and is the fastest; review crops and the Results view are rebuilt from your original scan files. With *None*, do not move or delete the scan folder until review and checking are finished (if it does move, use **Path remap** on the Results tab). |
+| **Keep images** | *None* | Which sheet images the server stores. *Only sheets that need review* stores the aligned image only for flagged sheets. *All sheets* stores every image: the most disk space, but sheets can be shown even if the original scans are later moved or deleted. *None: draw review crops from the original files* stores nothing and is the fastest; review crops and the Results view are rebuilt from your original scan files. With *None*, do not move or delete the scan folder until review and checking are finished (if it does move, use **Path remap** on the Results tab). |
 | **Worker processes** | *auto* (one per CPU core) | How many sheets are read at the same time. Leave it on auto in most cases. Lower it to keep the computer responsive for other work. More workers than CPU cores is allowed, and the app warns you ("… more workers than cores only helps when reading from a slow disk or network share, and uses more memory"). |
-| **Read ahead (files)** | 64 | How many files are loaded into memory ahead of the readers so they never wait for the disk. About 0.2 MB per JPEG scan. Raise it for slow network shares. Set **0** to turn it off on machines with little memory. |
+| **Read ahead (files)** | 128 | How many files are loaded into memory ahead of the readers so they never wait for the disk. About 0.2 MB per JPEG scan. Raise it for slow network shares. Set **0** to turn it off on machines with little memory. |
 | **PDF options** | template default | **PDF render DPI** and **PDF pages**, as on the Scan tab. |
 
 Then choose where the sheets come from. Use one of the two boxes.
@@ -530,6 +537,8 @@ Then choose where the sheets come from. Use one of the two boxes.
 | **Browse…** | — | Opens **Choose a folder on the server**: a folder browser of the server's drives and folders. **Drives** goes back to the list of drives, **← Back** to the previous folder, **↑ Up** to the parent folder. Each folder shows how many images and PDFs are directly inside it. **Select this folder** puts the path in the box. |
 | **Recent folders…** | — | The last 10 folders jobs were started from. Pick one to fill the box. |
 | **Include subfolders** | ticked | Also reads the sheets in every folder inside this one. Untick to read only the files directly in the folder. |
+| **Keep watching this folder** | off | After reading what is in the folder now, the job keeps reading every new file that arrives in it, until you press **Stop watching**. See [Watching a folder](#watching-a-folder). Works with a server folder alone (no uploaded files). |
+| **look every … s** | 5 | How often a watched folder is looked at, in seconds (1 to 3600). |
 
 An administrator can limit which server folders may be read. In that case the browser shows only the allowed folders, and with none allowed for your account it says so: upload the files instead, or ask an administrator.
 
@@ -565,19 +574,21 @@ The list shows the 50 newest jobs. While any job is queued or running and the ta
 | *interrupted* | The server stopped (closed, crashed or the PC restarted) while the job was running. Normally interrupted jobs restart by themselves when the server starts again; if this has been turned off on the server, press **Resume**. |
 | *failed* | The job stopped because of a problem, for example the reader processes kept crashing. **Resume** continues it. |
 | *cancelled* | Stopped for good with **Cancel**. Sheets already read keep their results. |
+| *watching* | A job with **Keep watching this folder** has read every file so far and waits for new ones. A new file turns it *queued* and *running* again for a moment, then back to *watching*. |
 
 #### Job actions
 
 | Button | Shown when | What it does |
 |---|---|---|
-| **CSV** | always | Downloads a quick CSV of the job: file name, page, scan id, status, score, needs review, reviewed, error and every answer column. It always uses the corrected values. |
+| **CSV** | always | Saves a quick CSV of the job (you choose where, see [Saving files](#saving-files)): file name, page, scan id, status, score, needs review, reviewed, error and every answer column. It always uses the corrected values. |
 | **Export…** | always | Opens the Export dialog limited to this job (see Export below). |
 | **Results** | the job has sheets | Opens the Results tab filtered to this job. |
 | **Review** | sheets need review | Opens the Review queue filtered to this job. |
+| **Stop watching** | a watching job (watching, queued, running or paused) | Stops reading new files from the folder. Sheets being read finish first, then the job is *completed*. "Stopped watching the folder." |
 | **Pause** | queued or running | Lets the sheets being read now finish, then stops. "Pausing: sheets being read finish first." |
 | **Resume** | paused, interrupted or failed | Reads the remaining sheets. Sheets that already have results are not read again. |
 | **Rescan errors** | the job has error sheets and is completed, paused, interrupted or failed | Reads the sheets that ended in an error again, for example after fixing the template or putting back a missing file. Sheets someone already reviewed are kept. For a paused, interrupted or failed job it also reads the rest. Not available for the Single uploads and camera jobs. |
-| **Cancel** | uploading, queued, running, paused or interrupted | Asks first. The remaining sheets will not be read; the ones already read keep their results. A cancelled job cannot be resumed, so to stop for now and continue later use **Pause**. |
+| **Cancel** | uploading, queued, running, paused, interrupted or watching | Asks first. The remaining sheets will not be read; the ones already read keep their results. A cancelled job cannot be resumed, so to stop for now and continue later use **Pause**. |
 | **Delete** | finished jobs | Deletes the job and all its sheet results: values, corrections, review items and stored images. You must type `delete` to confirm. It cannot be undone. Scans in a server folder are not touched; uploaded copies are deleted. The deletion is recorded in the audit log with your name. |
 
 #### When something goes wrong while reading
@@ -588,12 +599,26 @@ The app is built so that one bad sheet does not stop a job of thousands:
 - **Readers that keep crashing.** After 20 restarts in a row the job stops as *failed* ("The reader processes kept crashing; Resume continues the job").
 - **The PC or server stops.** Each job remembers its list of files. When the server starts again, unfinished jobs are queued again and continue where they left off, skipping sheets that already have results. A sheet read again after a crash replaces its earlier result, so you do not get duplicates. (A server administrator can turn the automatic restart off with `OMR_RESUME_JOBS=0`; the jobs then show as *interrupted* until you press **Resume**.)
 
+#### Watching a folder
+
+Tick **Keep watching this folder** on the New Job screen for a folder that a scanner, a shared drive or other people keep filling. The job first reads what is already in the folder, then looks at it every few seconds (**look every … s**, 5 by default) and reads each new file as it arrives. The job's progress and counts grow as files come in.
+
+A file is read only once it has finished arriving, so a scan that is still being copied is never read half-way:
+
+1. Its size and modified time must stay the same over two looks at least 3 seconds apart, and it must not have been changed in the last 3 seconds.
+2. It must open for reading. Windows refuses while the copying program still holds the file.
+3. Its end must be complete: a JPEG must end with its end marker, a PNG with its last chunk (IEND), a PDF with `%%EOF`. A file that still looks cut off after 2 minutes is read anyway, so a damaged file shows up as an error sheet instead of being skipped quietly.
+
+Names that copy programs use while a file is arriving are ignored: `.tmp`, `.part`, `.partial`, `.crdownload`, `.download`, `.filepart`, names starting with `~$`, and hidden files (starting with `.`).
+
+Each file is read once. A file that is replaced with a new version (a different size or modified time) is read again as a new sheet; a file that is deleted is simply no longer looked at. The files already read are remembered in the job's `.watch` file next to it in the jobs folder, so a watching job carries on after the server or app restarts, without reading old files again. **Pause** and **Resume** work as for other jobs: while paused, new files wait in the folder. **Stop watching** ends the job; **Cancel** stops it for good.
+
 #### How to read a large batch from a folder
 
 1. Copy or scan the sheets into one folder on the server PC or a network share.
 2. On the **Jobs** tab choose the **Template** and type a **Name**.
 3. In **…or a folder on the server**, click **Browse…**, find the folder and click **Select this folder**. Check that the line underneath shows the number of images you expect.
-4. Leave **Keep images** on *Only sheets that need review* and **Worker processes** on *auto*.
+4. Leave **Keep images** on *None* (or pick *Only sheets that need review* if the scan folder may move before review is done) and **Worker processes** on *auto*.
 5. Click **Start job** and watch the **Progress**, **Sheets/s** and **ETA** columns.
 6. When it is done, click **Review** to clear the flagged items, then **Export…**.
 
@@ -854,8 +879,8 @@ Type notes:
 
 - **Preview** shows the number of sheets and the first rows exactly as they will be written, with any warnings (amber) or errors (red). Hover over a column heading to see its field and type.
 - **Save to folder** (optional): a folder on the computer running the scanner. Type it or click **Browse…**. The export is then written straight into that folder, so a large export needs no download afterwards. If a file of that name is already there, the new one is called "*name* (2)". Deleting the export from the list later keeps the file in your folder. Leave the box empty to download from the browser as before. The app remembers the folder.
-- **Export** runs the export on the server with a progress bar ("running · N / M rows"). When it is ready, click **Download *file name* (N rows)**, or, with a folder chosen, the dialog shows where the file was saved. The rows are written to the file as they are read, a few thousand at a time, so even very large jobs export without filling memory. A PDF is the exception: it is assembled in memory, which is why it has row and sheet limits.
-- **Following an export.** An export runs on the server, not in the window: closing the Export window, going back or switching tabs does not stop it. The window has a **Cancel export** button while it runs. Every export, running or finished, is listed under **Jobs › Exports** with its progress, how long it took and who ran it. There you can **Download** it, **Pause** and **Resume** one still running (it carries on from the sheet where it stopped), **Cancel** it (the part written so far is removed) or **Delete** a finished one (a file saved into your own folder stays). The Export window has the same **Pause** and **Cancel export** buttons. An export that was running or paused when the server was closed shows as **interrupted**, and so cannot be resumed: click **Run again** to start the same export (same sheets, format, columns and folder) from the beginning. **Run again** also works for a cancelled or failed export.
+- **Export** runs the export on the server with a progress bar ("running · N / M rows"). When it is ready, click **Save *file name* as… (N rows)** and choose where to save it (see [Saving files](#saving-files)), or, with a folder chosen, the dialog shows where the file was saved. The rows are written to the file as they are read, a few thousand at a time, so even very large jobs export without filling memory. A PDF is the exception: it is assembled in memory, which is why it has row and sheet limits.
+- **Following an export.** An export runs on the server, not in the window: closing the Export window, going back or switching tabs does not stop it. The window has a **Cancel export** button while it runs. Every export, running or finished, is listed under **Jobs › Exports** with its progress, how long it took and who ran it. There you can save it with **Save as…**, **Pause** and **Resume** one still running (it carries on from the sheet where it stopped), **Cancel** it (the part written so far is removed) or **Delete** a finished one (a file saved into your own folder stays). The Export window has the same **Pause** and **Cancel export** buttons. An export that was running or paused when the server was closed shows as **interrupted**, and so cannot be resumed: click **Run again** to start the same export (same sheets, format, columns and folder) from the beginning. **Run again** also works for a cancelled or failed export.
 
 #### Export profiles
 
@@ -1177,7 +1202,7 @@ Clicks must land on the **Original** view. In side-by-side mode, click in the Or
 
 #### "Place the page by hand…"
 
-This tool is offered on failed sheets, and for **any** sheet from the Regrade dialog (**Place the page by hand…**). Use it for a sheet that was read but is out of place, for example shifted by a row or turned the wrong way.
+This tool is offered on failed sheets, and for **any** sheet from the **Place by hand** button in the sheet toolbar (next to **Regrade…**), the **P** key, or the Regrade dialog (**Place the page by hand…**). Use it for a sheet that was read but is out of place, for example shifted by a row or turned the wrong way.
 
 The view switches to **Original**, and the template is drawn over the scan:
 
@@ -1255,32 +1280,49 @@ A regrade needs the original scan file. If the file was moved, set a [path remap
 
 **Check changes** is its own tab, next to Results. When sign-in is on, only administrators see it; without sign-in everyone does. It has a **Template** and **Job** picker at the top, used by both of its parts.
 
-The work flow it supports: administrators hand flagged sheets out to reviewers (other administrators or reviewers), the reviewers work through the sheets assigned to them, and an administrator checks what they changed and does the final verification, or sends a sheet back.
+The work flow it supports: administrators hand sheets out to reviewers (other administrators or reviewers), the reviewers work through the sheets assigned to them, and an administrator checks what they did and **approves** it (a second check, on top of the reviewer's verification), or sends a sheet back.
 
 #### Hand out review work
 
-- **Which sheets:** Flagged, not verified (the usual choice) · Not reviewed · Errors · Corrected · All sheets.
-- **People:** names separated by commas. With sign-in on, the box suggests the accounts.
-- **At most:** hand out only this many sheets (empty = all that match).
+- **How:** **Split evenly between people**, or **Each person's sheet numbers**.
+- **Which sheets:** Flagged, not verified (the usual choice) · Not reviewed · Errors · Corrected · All sheets. With Flagged only flagged sheets are assigned; with All sheets every sheet is.
 - **only sheets nobody has yet:** on by default, so assigning again only hands out the rest. Untick it to move sheets that someone already has.
-- **Assign** splits the sheets into equal runs, in sheet order, between the people named. For example, 300 flagged sheets for "asha, bob, meena" gives each 100 consecutive sheets. Each sheet has one person; assigning it again moves it.
 
-Below it, a table shows per person: **Assigned**, **Still to review** (sheets with items waiting), **Nothing left to review** (not verified yet) and **Verified**, and the number of flagged sheets nobody has yet. **Their changes** fills that person's name into the list below. **Take back** removes all their assignments in this template and job.
+Sheet **numbers** count only the sheets **Which sheets** picks, in job order. With *Flagged, not verified*, 1 to 500 is the first 500 flagged sheets of the job, wherever they are in it. Sheets someone already has still count, so the numbers stay put when you hand out the next range. Results shows the same numbers (#12) next to each sheet when the same job and view are picked there. Sheet numbers need one job picked at the top.
+
+**Split evenly:**
+
+- **People:** tick the people in the list; the search box above narrows a long list. With sign-in on the list holds the active accounts. Without sign-in it holds names already used, and you add a new one by typing it and pressing Enter.
+- **From sheet** / **To sheet** (optional): only these sheet numbers (counted as above).
+- **At most:** hand out only this many sheets (empty = all that match).
+- **Assign** splits the matching sheets into equal runs, in sheet order, between the people ticked. For example, 300 flagged sheets for asha, bob and meena gives each 100 consecutive sheets. Each sheet has one person; assigning it again moves it.
+
+**Each person's sheet numbers:** one row per person with the first and last sheet number (both included), for example asha 1 to 500 and bob 501 to 900 of the flagged sheets. **+ Add a person** adds a row. Ranges may not overlap. The person box suggests names as you type.
+
+With sign-in on, work can only go to an active account: an unknown or disabled name is refused with a message naming it.
+
+Below it, a table shows per person: **Assigned**, **Still to review** (not reviewed or verified yet), **Reviewed** (not verified yet), **Verified**, **Approved**, **Sent back**, **Last worked** (their last action), and the number of flagged sheets nobody has yet. Its buttons:
+
+- **Their sheets** opens Results with only that person's sheets (of this template and job).
+- **Their changes** fills that person's name into the list below.
+- **Change…** opens a line to **Move to** someone else or **Take back** (nobody): all their sheets, or their sheets from / to a number (their 1st, 2nd... sheet in job order, as **Their sheets** numbers them in Results), and with **only sheets not finished yet** (on by default) the sheets they already reviewed or verified stay with them.
 
 A reviewer finds their sheets in **Results › Assigned to › Me** (it also offers **Anyone** and **Nobody**). The side panel of an assigned sheet says who it is assigned to and by whom.
 
-#### Changed sheets
+#### Check and approve
 
-This lists every sheet people changed after scanning that is not verified since its last change. A change is: values corrected, values accepted in review, a regrade, an alignment by hand or typed values.
+This lists every sheet people verified or changed after scanning that is not approved since. A change is: values corrected, values accepted in review, a regrade, an alignment by hand, typed values, an undo or redo, a verification or one taken back. Any later change lists an approved sheet again and takes its approval away.
 
 Each row shows:
 
-- the sheet's file, status and when it was last changed,
+- the sheet's file, status, who verified and who approved it, and when it was last changed,
 - **Scanned:** who scanned it, **Assigned to:** who has it, and **Changed:** everyone who changed it, with what they did,
 - the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it,
-- **Open** (shows the sheet on the Results screen), **Verify** and **Send back**.
+- **Open** (shows the sheet on the Results screen), **Approve** and **Send back**.
 
-Above the table: a box to show only the changes of one person, **include sheets already verified** (to look back at checked sheets), and **‹ Newer** / **Older ›** for more pages (25 sheets each). **Verify ticked** verifies the ticked sheets and **Verify all on this page** every unverified sheet shown; both ask first. Verifying accepts the sheet's values as they are now, flagged ones included, exactly like **Verify ✓**. A verified sheet leaves the list until someone changes it again. Sheets that can't be verified (a failed sheet with no values) are named in the message.
+**Approve** is the administrator's second check, separate from **Verify ✓** on the Results screen. Approving a sheet nobody verified yet verifies it too (its values are accepted as they are now, flagged ones included), and asks first.
+
+Above the table: a box to show only the changes of one person, **include sheets already approved** (to look back at checked sheets), and **‹ Newer** / **Older ›** for more pages (25 sheets each). **Approve ticked** approves the ticked sheets and **Approve all on this page** every sheet shown; both ask first. Sheets that can't be approved (a failed sheet with no values) are named in the message. Results shows approved sheets with ✓✓, and **Approved (second check)** in its view list shows only them.
 
 **Send back** (or **Send ticked back**) returns sheets to review: their verification is taken back, and the items flagged when the sheet was read, plus every value someone changed, wait in the review queue again with their current values. It asks who to hand them to (leave it empty to keep the current person) and for an optional note. The Results side panel shows "Sent back to review by *name*: *note*". Undo on the sheet takes it back.
 
@@ -1290,7 +1332,7 @@ With sign-in on, only administrators can verify or unverify a sheet, on the Resu
 
 Every step is in the sheet's **Who did what** list: assigned (to whom, by whom), sent back (with the note), and all the changes.
 
-The same information is available to programs: `GET /activity/sheets`, `GET /scans/{id}/activity`, `GET /activity`, `POST /activity/verify`, `POST /activity/return`, `POST /assignments`, `POST /assignments/clear`, `GET /assignments/summary`, and `assigned=` on `GET /results`.
+The same information is available to programs: `GET /activity/sheets`, `GET /scans/{id}/activity`, `GET /activity`, `POST /activity/verify`, `POST /activity/approve`, `POST /activity/return`, `POST /assignments` (with `users`, or `ranges` of sheet numbers), `POST /assignments/move`, `POST /assignments/clear`, `GET /assignments/summary`, and `assigned=` and `view=approved` on `GET /results`.
 
 ### The Accuracy dialog
 
@@ -1345,6 +1387,7 @@ Shortcuts work while the Results tab is open, no dialog is open, and you are not
 | **S** | Side by side on/off |
 | **B** | Borders on/off |
 | **R** | Open the Regrade dialog |
+| **P** | Place the page by hand |
 | **Esc** | Cancel a barcode/QR scan, or leave "place the page by hand". In a value box: put the value back and leave the box. |
 | **Enter** (in a value box) | Save the value |
 | **Arrow keys** (while placing the page) | Nudge the selected corner or the whole page by 1 px. With **Shift**: 10 px. |
@@ -1369,7 +1412,7 @@ Shortcuts work while the Results tab is open, no dialog is open, and you are not
 1. Open the sheet and choose **View › Original as background**. Turn on **borders** (B).
 2. Look at the dashed blue page outline and its **top-left** dot. If the dot is at the bottom of the page, the sheet was read upside down. If the bubble outlines sit one row above or below the printed bubbles, it was read a row off.
 3. For an upside-down sheet: press **R**, set **Turn the sheet** to **Upside down (180°)**, click **Preview**, check the changes, then click **Apply**.
-4. For a sheet a row off, or when turning does not help: press **R** and click **Place the page by hand…**. Use **Turn image 180°** (or **Turn image 90°**) if the scan is turned. Then drag the corners, or the centre cross, until the red timing-mark boxes and grey bubble boxes sit on the printed ones. Fine-tune with the arrow keys (Shift for bigger steps).
+4. For a sheet a row off, or when turning does not help: press **P** (or click **Place by hand** in the sheet toolbar). Use **Turn image 180°** (or **Turn image 90°**) if the scan is turned. Then drag the corners, or the centre cross, until the red timing-mark boxes and grey bubble boxes sit on the printed ones. Fine-tune with the arrow keys (Shift for bigger steps).
 5. Click **Regrade with this placement**, check the values, and verify the sheet.
 
 #### How to rescue a sheet that could not be read
@@ -1444,7 +1487,7 @@ Buttons on each row:
 
 - **Edit** opens the editor.
 - **Layout** opens a picture of the layout drawn over the reference image in a new browser tab. Handy to print or send to someone.
-- **Download** saves the template as one file, *name*.omr-template.zip: the layout, reading options, answer key, reference image and other files, plus the template's name. To give the template to someone else, send them this file. On their system they choose it under **Upload** in the Templates tab (leave the name empty to keep the original name). If their system already has a template with that name, the imported one is called "*name* (2)". Alignment test sheets are not included.
+- **Download** asks where to save the template and saves it as one file, *name*.omr-template.zip: the layout, reading options, answer key, reference image and other files, plus the template's name. To give the template to someone else, send them this file. On their system they choose it under **Upload** in the Templates tab (leave the name empty to keep the original name). If their system already has a template with that name, the imported one is called "*name* (2)". Alignment test sheets are not included.
 - **Duplicate** asks for a new name (suggested: "<name> copy") and copies the layout, its reading options, answer key and reference image, then opens the copy. Scans and results of the original stay with the original. Use this to make a variant (another exam with the same form, a different answer key) without risking the original.
 - **Rename** changes only the name. Past jobs, results and review items stay linked. You can also rename by clicking the title inside the editor.
 - **Delete** removes the template after you confirm. Stored scans are kept. New jobs can no longer use the template, so only delete templates you are finished with.
@@ -1472,6 +1515,7 @@ Opening a template shows the editor: a toolbar across the top, the page (the can
 | **+ Zone** (Z) | Then drag on the page to draw a new zone. The dropdown next to it picks the zone type: **barcode**, **qrcode**, **ocr**, **icr** or **image**. |
 | **Duplicate** (Ctrl+D) | Copies the selected block or zone (see "Drawing and moving blocks"). |
 | **Delete** (Del) | Deletes the selected block or zone. |
+| **🔓 Lock placement** (L) | Locks the position and size of every block and zone on the page, so a stray drag while you edit a block's options can't move it. While locked (the button reads **🔒 Locked**), a click still selects a block or zone and a drag pans the page, but nothing can be dragged, resized or moved with the arrow keys. The side panel still works, including typed positions, and new blocks and zones can still be drawn. Click it again to unlock. The lock is saved with the template (`"editorLocked": true` in template.json), so press **Save** to keep it. It has no effect on reading. |
 | **−** / **Fit** / **+** | Zoom out, fit the page in the window (F), zoom in. |
 | **grid N px** | Snap grid for drawing, moving and resizing: 1, 2, **5** (default), 10 or 20 template pixels. Use 1 for fine work. |
 | **edges** | On by default. Moving or resizing snaps to the edges and centres of other blocks and zones, shown with pink dashed guide lines. Untick it when the snapping gets in the way of small corrections. |
@@ -1611,14 +1655,14 @@ The side list shows each block with its border status (and "(bubbles)" when it w
 
 ### Alignment: lining each sheet up with the template
 
-Before any bubble is read, each scan is turned, shifted and stretched so that it matches the template page. Pick the method under **Options → Alignment**. The section title shows the current method, e.g. "Alignment · Timing tracks".
+Before any bubble is read, each scan is turned, shifted and stretched so that it matches the template page. Pick the method under **Options → Alignment**. The section title shows the current method, e.g. "Alignment · Timing tracks + index points".
 
 #### Alignment method
 
 | Choice | Best for | Needs |
 |---|---|---|
 | **None (sheets are already straight)** | Scans that are already perfectly straight and cropped to the page. | Nothing. Any shift in the scan shifts every bubble. |
-| **Timing tracks** | Forms with rows of solid black marks along the edges (most machine-read forms). The most precise and robust choice. | The tracks drawn in the track editor (or at least 4 index points). |
+| **Timing tracks + index points** | Forms with rows of solid black marks along the edges (most machine-read forms), with or without extra index points (corner squares, dots). The marks and the points are fitted together. The most precise and robust choice. | The tracks drawn in the track editor (or at least 4 index points). New templates flag a sheet when more than 15% of the marks and points together don't match (see `maxUnmatchedShare` below). |
 | **Index points only (no timing tracks)** | Forms without timing tracks that have a few distinct printed marks: corner squares of any size, dots, L-shaped corners. Works like corner markers, but each mark keeps its own size and shape and no marker picture is needed. | 4 or more index points (5 or more lets a wrong match be caught). Choosing it keeps index points already set, or fills in the marks the generator suggested; add more with **+ Add index point**. The panel shows how many points there are and warns below 4. Search radius and Max leftover error work as for tracks. |
 | **Corner markers** | Forms with four identical printed squares or symbols near the corners. | A picture of the marker, uploaded with the template files. |
 | **Page edges** | Scans that show background around the paper. | A visible paper edge. |
@@ -1648,6 +1692,7 @@ Expert options with no form control (set in **Edit JSON**, inside the timing-tra
 | `jointFit` | on | Fit the page to the index points, timing marks and printed block corners together. |
 | `trimMargins` | on | Report and trim scan margins that lie outside the template page. |
 | `maxRegionResidual` | off | Send a sheet to review (flag `alignment_residual`) when the leftover error in any part of the page is above this many pixels. |
+| `maxUnmatchedShare` | off (0.15 in templates made in the editor) | Send a sheet to review (flag `alignment_unmatched`) when more than this share of the timing marks and index points together could not be matched. 0.15 means 15%: with 36 marks and 4 index points (40 in all), a sheet with 7 or more unmatched is flagged. In the editor, tick **Flag sheets where too many marks and index points don't match** to turn it on (15% to start) and change the % in **Unmatched share that flags a sheet (%)** under it; untick it to turn the flag off. Each sheet's counts are kept in its geometry as `unmatched_points`. |
 
 #### Corner markers options
 
@@ -1735,7 +1780,7 @@ With 4 or more index points and no tracks, the template switches to aligning on 
 | Set up with | **+ Add track** | **+ Add index point**, Calibrate on samples | Marker image file and Marker width share |
 | Choose it when | The form has tracks | The form has no tracks but has a few printed marks, or to make tracks safer | The form only has four matching corner symbols and you have a picture of one |
 
-A generated template may set four corner squares up as a short track called `corners` under **Timing tracks**; that works like corner markers but is matched like a track.
+A generated template may set four corner squares up as a short track called `corners` under **Timing tracks + index points**; that works like corner markers but is matched like a track.
 
 ### Groups (grouped fields)
 
@@ -1911,8 +1956,9 @@ They work while the Templates tab is open and you are not typing in a box (Ctrl+
 | Ctrl+Shift+Z or Ctrl+Y | Redo |
 | Ctrl+D | Duplicate the selection |
 | Del or Backspace | Delete the selection |
-| Arrow keys | Move the selection 1 px (Shift: 10 px) |
+| Arrow keys | Move the selection 1 px (Shift: 10 px); not while placement is locked |
 | B / Z | Draw a block / a zone |
+| L | Lock or unlock placement |
 | Esc | Cancel drawing or a tool; otherwise clear the selection |
 | Tab / Shift+Tab | Select the next / previous block or zone |
 | F | Fit the page |
@@ -1949,7 +1995,7 @@ They work while the Templates tab is open and you are not typing in a box (Ctrl+
 
 ### How to add timing tracks
 
-1. Under **Options → Alignment**, choose **Timing tracks**.
+1. Under **Options → Alignment**, choose **Timing tracks + index points**.
 2. Click **+ Add track** and drag a box over the whole strip of marks on one edge. Repeat for each track (usually left and right, sometimes top and bottom).
 3. Check the numbers: every printed mark should have an orange rectangle. Use **Edit marks** to remove false marks or add missed ones.
 4. Check **Mark width** / **Mark height** against the printed marks.
@@ -1957,7 +2003,7 @@ They work while the Templates tab is open and you are not typing in a box (Ctrl+
 
 ### How to add index points
 
-1. Make sure the Alignment method is **Timing tracks** (with or without tracks).
+1. Make sure the Alignment method is **Timing tracks + index points** (with or without tracks).
 2. Click **+ Add index point**. Suggested marks are circled.
 3. Click each printed mark you want to use, or drag a box around a small one. Spread them over the page, at least one in each corner area, and include one that has no twin at the opposite corner so upside-down sheets can be told apart.
 4. Without tracks, add at least 4 (5 or more is safer). The template then aligns on them.
@@ -2082,22 +2128,56 @@ The review rules apply to every bubble field, roll numbers and other grouped fie
 
 #### Flags you can tick
 
-| Tick box (as shown) | Flag | Ticked by default | What it means |
+A template you make on the screens (uploaded on the Templates tab or made by **Generate template**) starts with **every one of these unticked**: nothing goes to review for these reasons until you tick it. Templates made before this change, and templates uploaded by programs through the API, keep the old default list (the *Old default* column) until you change their ticks. A template whose config.json already chooses its flags keeps its choice.
+
+Unticked flags are still recorded on the sheet and shown on the Results screen; they only stop creating review work. For a grouped field (a roll number, for example) a multi-marked column still writes the group's multi placeholder (such as `*`), but it only sends the group to review while `multi_marked` is ticked.
+
+| Tick box (as shown) | Flag | Old default | What it means |
 |---|---|---|---|
-| two or more bubbles marked | `multi_marked` | yes | More than one bubble is marked in a single-answer field. |
-| nothing marked | `empty` | no | Nothing is marked. Blank answers are normal, so this is off; tick it only if every field must be answered (for example a roll number). |
-| marked/unmarked split unclear | `ambiguous_threshold` | yes | The row had no clear gap between dark and light bubbles. |
-| low confidence | `low_confidence` | yes | The least certain bubble is below **Min confidence**. |
-| weak mark | `weak_mark` | yes | A marked bubble is filled less than **Weak mark below**. |
-| possible missed mark | `possible_missed_mark` | yes | An empty bubble is filled more than **Possible missed mark above**. |
-| bubble model disagrees | `model_disagrees` | yes | A learned bubble model (if you use one) reads the bubble differently. |
-| printed border not found | `rectify_failed` | no | A block set to fit its printed border could not find the border. |
-| printed border would move the block a lot | `border_slide` | yes | Fitting a block to its printed border would have moved it by almost a whole bubble; the read is kept but checked. |
-| double mark settled by darker bubble | `kept_darker_mark` | no | **Keep darker mark when ahead by** turned a double mark into one answer. Tick it to check those decisions. |
-| faint second mark | `faint_second_mark` | no | **Strict double marks from** turned a single mark into a double mark. The field is also `multi_marked`, so it already goes to review while that flag is ticked. |
+| two or more bubbles marked | `multi_marked` | ticked | More than one bubble is marked in a single-answer field. |
+| nothing marked | `empty` | not ticked | Nothing is marked. Blank answers are normal; tick it only if every field must be answered (for example a roll number). |
+| marked/unmarked split unclear | `ambiguous_threshold` | ticked | The row had no clear gap between dark and light bubbles. |
+| low confidence | `low_confidence` | ticked | The least certain bubble is below **Min confidence**. |
+| weak mark | `weak_mark` | ticked | A marked bubble is filled less than **Weak mark below**. |
+| possible missed mark | `possible_missed_mark` | ticked | An empty bubble is filled more than **Possible missed mark above**. |
+| bubble model disagrees | `model_disagrees` | ticked | A learned bubble model (if you use one) reads the bubble differently. |
+| printed border not found | `rectify_failed` | not ticked | A block set to fit its printed border could not find the border. |
+| printed border would move the block a lot | `border_slide` | ticked | Fitting a block to its printed border would have moved it by almost a whole bubble; the read is kept but checked. |
+| double mark settled by darker bubble | `kept_darker_mark` | not ticked | **Keep darker mark when ahead by** turned a double mark into one answer. Tick it to check those decisions. |
+| faint second mark | `faint_second_mark` | not ticked | **Strict double marks from** turned a single mark into a double mark. The field is also `multi_marked`, so it goes to review while either is ticked. |
 
+#### Flags you cannot untick
 
-Some sheet-level problems always go to review whatever you tick here: `poor_image` (see the image-quality gate below), `too_few_marks`, and alignment problems. Zone, validation and check flags (for example `not_found`, `pattern_mismatch`, `validation_failed`, `cross_check_failed`) follow their own settings, described further down and in the zones section.
+These always send their field, zone or sheet to review when they happen. Many only happen when you turned on the setting that produces them (shown in *When*).
+
+| Flag | On | When | What it means |
+|---|---|---|---|
+| `group_issue` | grouped field | always | A column of a grouped field (roll number and similar, with group options) is unclear: blank but flagged for something other than being empty, or flagged by a ticked flag. Only that column is marked on the Results screen. |
+| `multi_marked` (group) | grouped field | `multi_marked` ticked | A column of a grouped field has two or more marks. With `multi_marked` unticked the group is not flagged for it. |
+| `not_found` | barcode / QR zone | always | No code was found in the zone. |
+| `multiple_symbols` | barcode / QR zone | always | More than one code was found in the zone. |
+| `decoded_by_fallback` | barcode / QR zone | **Review reads by fallback decoders** on | The first engine failed and another one read the code. |
+| `low_confidence` | OCR / ICR zone | always | The zone's text was read with less confidence than its **Min confidence**. |
+| `low_char_confidence` | OCR zone | **minCharConfidence** set | One character was read with less confidence than that. |
+| `engine_disagree` | OCR zone | two engines set | The two OCR engines read different text. |
+| `pattern_mismatch` | any zone | a pattern set | The value does not match the zone's pattern (for example 10 digits). |
+| `engine_unavailable` | OCR / ICR zone | always | The reading engine (Tesseract or PaddleOCR) is not installed or did not start. |
+| `no_icr_model` | ICR zone | always | No handwriting model is available for the zone. |
+| `read_error` | any zone | always | Reading the zone failed with an error; the rest of the sheet is kept. |
+| `validation_failed` | field or zone | a validation rule set | A validation rule (length, range, allowed values, pattern) failed. |
+| `cross_check_failed` | check | a check set | The check's sources disagree, and the check is set to review conflicts (or to error). |
+| `fallback_used` | check | a check set to review fallbacks | The first source was missing, so a later source was used. |
+| `all_sources_missing` | check | a check set to review it | None of the check's sources could be read. |
+| `too_few_marks` | sheet | **Min marked bubbles per sheet** above 0 | The whole sheet has fewer marked bubbles than that. |
+| `dropout_blank` | sheet | colour removal with **If most questions come out blank** set to *only send the sheet to review* | More than the set share of the questions came out blank with the colour removal. |
+| `dropout_fallback` | sheet | colour removal with **If most questions come out blank** set to *read again in grey and send to review* | The sheet was read again in plain grey because most questions came out blank with the colour removal. |
+| `poor_image` | sheet | an image-quality minimum set | The scan is too blurred, dark, light or low in contrast (see the image-quality gate below). |
+| `orientation_ambiguous` | sheet | timing-mark alignment | Another orientation of the sheet fits the timing marks almost as well. |
+| `registration_suspect` | sheet | timing-mark alignment, or a grid-fit minimum set | The marks fit almost as well slid by one mark, or the bubbles sit poorly on the grid. |
+| `alignment_residual` | sheet | `maxRegionResidual` set | Part of the sheet is still off the template after alignment by more than that. |
+| `alignment_unmatched` | sheet | `maxUnmatchedShare` set | More than that share of the timing marks and index points together could not be matched. |
+| `index_point_missing` | sheet | required index points | A required index point was not found. |
+| `sent_back` | field or zone | always | An administrator sent the sheet back to review and this value had been changed. |
 
 #### Image-quality gate (config.json only)
 
@@ -2360,9 +2440,10 @@ Many answer sheets are printed in a light colour (pink, red, orange, light blue)
 | **Colour to remove** (One colour only) | #E8618C | Pick with the colour picker or type a hex code like `#E8618C`. |
 | **Tolerance** (One colour only) | 60 (5–150) | How different a colour may be from the picked one and still be removed. Higher removes more shades. |
 | **Strength** (any mode except Grey) | 1 (0–1) | Blends plain grey (0) with the full removal (1). |
+| **If most questions come out blank (ink in the removed colour)** (any mode except Grey; `colorDropoutFallback`) | off | For students who fill the bubbles in the colour that is removed (for example red ink on a red-print sheet with red removal): their marks are removed with the print and the sheet would read blank. Tick it, then set **Blank questions above (%)** (50 to start) and **Then**: *read the sheet again in plain grey* (`"action": "grey"`, the default), *read again in grey and send to review* (`grey_and_flag`, flag `dropout_fallback`), or *only send the sheet to review* (`flag`, flag `dropout_blank`). A question counts as blank when none of its bubbles is marked; text and barcode zones don't count. Only sheets over the limit are read twice. A sheet read again in grey says so in its side panel on the Results screen, and its pictures show the grey reading. In template.json: `"colorDropoutFallback": {"blankShare": 0.5, "action": "grey"}`. |
 
 **What goes wrong if set badly.**
-- Students who used a pen of the same colour as the print lose their marks with it. Use **Min marked bubbles per sheet** in Review thresholds to catch these sheets.
+- Students who used a pen of the same colour as the print lose their marks with it. Tick **If most questions come out blank** to read those sheets again in grey, or use **Min marked bubbles per sheet** in Review thresholds to catch them.
 - *Brightest channel* removes blue pen as well as print; do not use it if students may answer in blue pen.
 - *One colour* with a tolerance that is too high starts removing pen and pencil; too low leaves part of the print, which can then read as marks.
 - Removing the print also removes printed timing marks or borders in that colour, which can break alignment. Check the **After** view.

@@ -62,6 +62,9 @@ export class ColourPanel {
   constructor(editor) {
     this.editor = editor;
     this.controls = controlsFromDropout(editor.doc.colorDropout);
+    // Read again in grey (or flag) when most questions come out blank
+    const fallback = editor.doc.colorDropoutFallback;
+    this.fallback = fallback && fallback.blankShare != null ? { blankShare: fallback.blankShare, action: fallback.action || "grey" } : null;
     this.blob = null;
     this.timer = null;
     this.previewUrl = null;
@@ -158,8 +161,45 @@ export class ColourPanel {
       f.append(this.slider("Tolerance", c.tolerance, 5, 150, 1, (v) => (c.tolerance = v)));
     }
     if (c.mode !== "grey") f.append(this.slider("Strength", c.strength, 0, 1, 0.05, (v) => (c.strength = v)));
+    if (c.mode !== "grey") f.append(this.fallbackControls());
     const current = this.editor.doc.colorDropout;
     f.append(el("div", { class: "muted small" }, "Template now: ", el("code", {}, current ? JSON.stringify(current) : "grey (default)")));
+  }
+
+  fallbackControls() {
+    const box = el("div", { class: "co-fallback" });
+    const on = el("input", { type: "checkbox", checked: !!this.fallback });
+    on.addEventListener("change", () => {
+      this.fallback = on.checked ? { blankShare: 0.5, action: "grey" } : null;
+      this.renderControls();
+    });
+    box.append(
+      el(
+        "label",
+        { class: "field inline-check", title: "For students who fill the bubbles in the colour that is removed: their sheet would read blank" },
+        on,
+        " If most questions come out blank (ink in the removed colour)"
+      )
+    );
+    if (!this.fallback) return box;
+    const fb = this.fallback;
+    const percent = el("input", { type: "number", min: 1, max: 100, step: 1, value: Math.round(fb.blankShare * 100), class: "co-hex" });
+    percent.addEventListener("change", () => {
+      const v = Number(percent.value);
+      fb.blankShare = Number.isFinite(v) && percent.value !== "" ? Math.min(100, Math.max(0, v)) / 100 : 0.5;
+      percent.value = Math.round(fb.blankShare * 100);
+    });
+    const action = el(
+      "select",
+      { onchange: (e) => (fb.action = e.target.value) },
+      [
+        ["grey", "read the sheet again in plain grey"],
+        ["grey_and_flag", "read again in grey and send to review"],
+        ["flag", "only send the sheet to review"],
+      ].map(([v, t]) => el("option", { value: v, selected: v === fb.action }, t))
+    );
+    box.append(el("label", { class: "field" }, "Blank questions above (%)", percent), el("label", { class: "field" }, "Then", action));
+    return box;
   }
 
   slider(label, value, min, max, step, onchange) {
@@ -331,6 +371,8 @@ export class ColourPanel {
     this.editor.edit(() => {
       if (value) this.editor.doc.colorDropout = value;
       else delete this.editor.doc.colorDropout;
+      if (value && this.fallback) this.editor.doc.colorDropoutFallback = { ...this.fallback };
+      else delete this.editor.doc.colorDropoutFallback;
     });
     this.renderControls();
     toast(value ? `Colour removal set: ${value.mode}` : "Colour removal off (grey)", "ok");

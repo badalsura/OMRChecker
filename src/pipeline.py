@@ -33,6 +33,7 @@ from typing import Optional
 import numpy as np
 from dotmap import DotMap
 
+from src.color import GREY
 from src.defaults import CONFIG_DEFAULTS
 from src.geometry import GeometryRecorder, print_kept_image
 from src.evaluation import (
@@ -98,6 +99,9 @@ class ScanResult:
     # Test mode (speed_params.fast_pass): "fast" when the half-size read was
     # kept, "full" when it was re-read the normal way; None when off
     read_pass: Optional[str] = None
+    # Colour dropout fallback: {"read": "grey", blank_questions, questions,
+    # blank_share} when the sheet was read again in plain grey
+    dropout_fallback: Optional[dict] = None
 
     def to_dict(self):
         out = {
@@ -122,7 +126,22 @@ class ScanResult:
             out["quality"] = self.quality
         if self.read_pass is not None:
             out["read_pass"] = self.read_pass
+        if self.dropout_fallback is not None:
+            out["dropout_fallback"] = self.dropout_fallback
         return out
+
+
+def blank_questions(fields):
+    """(bubble questions with no marked bubble, bubble questions)."""
+    total = blank = 0
+    for details in (fields or {}).values():
+        bubbles = details.get("bubbles") if isinstance(details, dict) else None
+        if not bubbles:
+            continue
+        total += 1
+        if not any(bubble.get("marked") for bubble in bubbles):
+            blank += 1
+    return blank, total
 
 
 def resolve_path(base_dir, path):
@@ -223,6 +242,45 @@ class OMREngine:
 
     def scan(self, image, file_id="image", keep_images=True):
         """Read one sheet image: BGR (colour dropout applies) or grayscale."""
+        result = self._scan_once(image, file_id, keep_images)
+        fallback = self.template.dropout_fallback
+        if (
+            fallback is None
+            or image is None
+            or image.ndim != 3
+            or self.template.color_dropout.mode == "grey"
+            or result.status == STATUS_ERROR
+        ):
+            return result
+        blank, total = blank_questions(result.fields)
+        if not total or blank <= fallback["blank_share"] * total:
+            return result
+        facts = {
+            "blank_questions": blank,
+            "questions": total,
+            "blank_share": fallback["blank_share"],
+        }
+        if fallback["action"] == "flag":
+            result.review.append(
+                {"kind": "sheet", "name": "dropout_blank", "flags": ["dropout_blank"], **facts}
+            )
+            result.status = STATUS_NEEDS_REVIEW
+            return result
+        grey = self._scan_once(image, file_id, keep_images, page_dropout=GREY)
+        if grey.status == STATUS_ERROR:
+            return result
+        grey.dropout_fallback = {"read": "grey", **facts}
+        if fallback["action"] == "grey_and_flag":
+            grey.review.append(
+                {"kind": "sheet", "name": "dropout_fallback", "flags": ["dropout_fallback"], **facts}
+            )
+            grey.status = STATUS_NEEDS_REVIEW
+        logger.info(
+            f"{file_id}: {blank}/{total} questions blank with colour dropout; read again in grey"
+        )
+        return grey
+
+    def _scan_once(self, image, file_id="image", keep_images=True, page_dropout=None):
         timings = {}
         started = time.perf_counter()
         if image is None:
@@ -239,7 +297,7 @@ class OMREngine:
                         self.template, "rectify_print_image", "auto"
                     ),
                 )
-            image, variants = self.template.prepare_image(image)
+            image, variants = self.template.prepare_image(image, page_dropout)
             timings["dropout"] = _elapsed_ms(started)
         else:
             variants = {}

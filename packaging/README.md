@@ -56,6 +56,31 @@ Current `cloudflared` builds need **Windows 10 or newer** (Go dropped Windows
 from a newer PC on the same network, or replace `cloudflared\cloudflared.exe`
 with an older release (Cloudflare may refuse releases older than a year).
 
+### App window
+
+`packaging/omr_app.py` opens our screens in their own window instead of a
+browser: no launcher dialog, no address bar, no reload, back, zoom or page
+menus. The engine runs on 127.0.0.1:8766 inside the app (local only) and stops
+when the window closes; starting the app again brings the open window to the
+front. Help, API docs and other pages of ours open in a second app window,
+other websites in the browser. Window size and place are kept in the data
+folder (`app_window.json`).
+
+The window is Microsoft WebView2 (pywebview 4.4.1, `requirements-app.txt`;
+needs .NET Framework 4.7.2+; the app says so, with the download page, when it
+or WebView2 is missing). The app build comes in two zips:
+
+| | Modern (Windows 10/11) | Legacy (Windows 7/8.1) |
+|---|---|---|
+| WebView2 runtime | the one Windows installs and keeps up to date | Fixed Version 109 in `webview2\` |
+| Chromium | current | 109 |
+
+Both run the same screens, so the screens must keep working on Chromium 109.
+Microsoft's page lists only the newest two Fixed Version runtimes, so the
+build takes runtime 109 from an archive copy and refuses it unless every .exe
+and .dll in it carries a valid Microsoft signature (Google for
+widevinecdm.dll, the video DRM module Edge ships).
+
 ### Browser requirements
 
 The GUI uses ES modules plus optional chaining (`?.`), nullish coalescing (`??`)
@@ -238,14 +263,28 @@ and the newest Python that runs on Windows 7). An exe built with Python 3.9+
 will not start on Windows 7.
 
 ```
-packaging\build_windows.bat            :: onedir + onefile, then --version / --selftest
-packaging\build_windows.bat onedir     :: only the portable folder
+packaging\build_windows.bat                 :: the server build, onedir + onefile
+packaging\build_windows.bat server onedir   :: the server build, only the portable folder
+packaging\build_windows.bat app             :: the app (modern and legacy zips)
+packaging\build_windows.bat all             :: both
 ```
+
+| Build | Output |
+|---|---|
+| `server` (mode `onedir`, `onefile` or `both`, default both) | `dist\server\OMRChecker\`, `dist\server\OMRChecker-portable-win64.zip`, `dist\server\OMRChecker-onefile.exe` |
+| `app` (always onedir) | `dist\app\OMRChecker\`, `dist\app\OMRChecker-app-modern-win64.zip`, `dist\app\OMRChecker-app-legacy-win64.zip`, `dist\app\OMRChecker-webview2-109.zip` |
+
+The old form `build_windows.bat onedir|onefile|both` still builds the server.
 
 The script creates `build\venv38`, installs `packaging\requirements-win7.txt`
 (every package pinned to its newest release with a CPython 3.8 Windows wheel;
-check with `python packaging\verify_wheels.py`), runs PyInstaller 5.13.2 on
-`packaging\omr.spec`, smoke-tests the result and zips the folder.
+check with `python packaging\verify_wheels.py`), plus `requirements-app.txt` for
+the app, runs PyInstaller 5.13.2 on `packaging\omr.spec` and smoke-tests the
+result (`--version`, `--selftest`, Tesseract and, in the server, cloudflared in
+place). For the app, `packaging\pack_app.ps1` then fetches the WebView2 109
+runtime once into `build\webview2` (refusing any file without Microsoft's
+signature) and makes the zips, with 7-Zip when it is installed. The installers
+are only made by the GitHub workflow (Inno Setup).
 
 Manual equivalent:
 
@@ -261,45 +300,58 @@ dist\OMRChecker\OMRChecker.exe --selftest
 Optional: put an icon at `packaging\omr.ico`, and Tesseract at `packaging\tesseract\`.
 
 GitHub Actions (`.github/workflows/build-windows.yml`) does the same on every
-`v*` tag or manual run and uploads the zip and the onefile exe as artifacts.
+`v*` tag or manual run. Its **build** input picks what is built:
+
+| Build | For | Artifacts | Installer |
+| --- | --- | --- | --- |
+| `app` | distribution: the app window (`OMR_APP=1`, packaging/omr_app.py) | `OMRChecker-app`: `OMRChecker-app-modern-win64.zip` (Windows 10/11), `OMRChecker-app-legacy-win64.zip` (Windows 7/8.1, WebView2 109 inside) | `OMRChecker-setup-*.exe` |
+| `server` | our own use: the launcher with remote access, LAN serving, `--bulk`, `--selftest` and every later server feature | `OMRChecker-server`: portable zip and onefile exe (**mode** input) | `OMRChecker-server-setup-*.exe` |
+| `all` (default) | both | both | both |
+
 Note: GitHub's runners are Windows Server 2022, so CI proves the build and the
 self test, not Windows 7 itself; run `OMRChecker.exe --selftest` once on a real
 Windows 7 machine before rolling out.
 
-### Online installer
+### Online installers
 
 A normal installed program instead of the portable folder: Start menu entry,
 optional desktop icon, uninstaller in Windows Settings. `Setup.exe` is small;
-while installing it downloads three files from the GitHub release, checks each
-one's SHA-256 and unpacks it into the program folder:
+while installing it downloads its files from the GitHub release, checks each
+one's SHA-256 and unpacks it into the program folder. The app's files are
+`OMRChecker-*`, the server's `OMRChecker-server-*`:
 
 | Download | Contents |
 | --- | --- |
-| `OMRChecker-app.zip` | the program itself (Python runtime, engine, web GUI) |
-| `OMRChecker-ocr-models.zip` | Tesseract and PaddleOCR models, `ocr_build.json` |
-| `OMRChecker-tools.zip` | `tesseract\`, `cloudflared\` |
+| `*-program.zip` | the program itself (Python runtime, engine, screens) |
+| `*-ocr-models.zip` | Tesseract and PaddleOCR models, `ocr_build.json` |
+| `*-tools.zip` | `tesseract\` (server: and `cloudflared\`) |
+| `OMRChecker-webview2-109.zip` | app only, when needed: Windows 7/8.1, and Windows 10/11 without WebView2 |
+| `ndp48-x86-x64-allos-enu.exe` | app only, when needed: Microsoft's .NET Framework 4.8, where .NET is older than 4.7.2 (Windows 7/8.1) |
 
-* Installs to `C:\Program Files\OMRChecker` for all users (admin), or, if
-  the user chooses "only for me", to their own programs folder.
+* The app installs to `C:\Program Files\OMRChecker`, the server to
+  `C:\Program Files\OMRChecker Server` (its own entry, so both can be
+  installed); "only for me" installs into the user's own programs folder.
+* .NET Framework 4.8 needs an admin install: with "only for me" on a PC that
+  needs it, Setup stops and says so. After installing it Setup asks to restart.
 * Data always goes to `%LOCALAPPDATA%\OMRChecker\omr_data` (the installer
   writes `installed.ini` next to the exe to say so), so upgrading or
   uninstalling never touches scans, templates or settings.
-* Without internet, put the three zips next to `Setup.exe`; they are used
-  instead of the downloads.
+* Offline installer: put the release's other files next to `Setup.exe`; they
+  are used instead of the downloads.
 * Running a newer `Setup.exe` upgrades in place.
 * Setup refuses a folder that already holds other files, because uninstalling
   removes the whole program folder.
 
-To publish one, push a `v*` tag, or run the workflow with **installer_release**
-set to a tag such as `v1.0.0`. The `installer` job splits the tested onedir
-build into the three zips, builds `Setup.exe` with Inno Setup 6.7.1
-(`packaging/installer/OMRChecker.iss`), publishes all four files as that
-**public** GitHub release, then installs from the release on the runner,
-runs `--selftest` and uninstalls again.
+To publish, push a `v*` tag, or run the workflow with **installer_release**
+set to a tag such as `v1.0.0`. The `installer` job (once per build) splits the
+tested onedir build into the zips, builds `Setup.exe` with Inno Setup 6.7.1
+(`packaging/installer/OMRChecker.iss`, `/DServer=1` for the server), publishes
+the files as that **public** GitHub release, then installs from the release on
+the runner, runs `--selftest` and uninstalls again.
 
 Windows 7: GitHub only accepts TLS 1.2. Windows 7 SP1 has TLS 1.2 but older,
 unpatched systems may not use it for downloads, so the download may fail there
-(not tested). Use the three zips next to `Setup.exe` on such PCs.
+(not tested). Use the offline installer on such PCs.
 
 ### Linux / source
 

@@ -608,11 +608,16 @@ function move(delta, skip = false) {
 // Columns of a grouped value, coloured by what each column read as
 function groupColumns(item) {
   const states = {};
-  for (const column of (item.group && item.group.columns) || []) if (column && column.name) states[column.name] = column.state;
   const flagged = new Set(Object.keys(item.field_flags || {}));
+  for (const column of (item.group && item.group.columns) || []) {
+    if (!column || !column.name) continue;
+    states[column.name] = column.state;
+    // A multi-mark the template does not flag is not marked as bad
+    if (column.flagged === undefined ? column.state === "multi" || column.state === "issue" : column.flagged) flagged.add(column.name);
+  }
   return item.fields.map((name, index) => {
     const state = states[name] || (flagged.has(name) ? "issue" : "");
-    const bad = state === "multi" || state === "issue" || flagged.has(name);
+    const bad = flagged.has(name);
     return el(
       "span",
       {},

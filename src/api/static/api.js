@@ -52,7 +52,8 @@ export async function api(path, { method = "GET", json, form, raw = false, retry
   if (response.status === 401 && retry && state.onUnauthorized && state.onUnauthorized()) {
     throw new ApiError("401: Sign in to continue", 401);
   }
-  if (response.status === 401 && retry) {
+  // The app window is local and never has an API key (a 401 there means sign in)
+  if (response.status === 401 && retry && !(state.auth && state.auth.desktop)) {
     const key = prompt("This server requires an API key:", state.apiKey);
     if (key !== null) {
       setApiKey(key.trim());
@@ -193,15 +194,104 @@ export function chunk(list, size) {
   return out;
 }
 
-export function download(filename, text, type = "text/csv") {
-  const blob = new Blob([text], { type });
-  const a = el("a", { href: URL.createObjectURL(blob), download: filename });
+// ---- Save As ---------------------------------------------------------------
+// Every download asks where to save it (Chrome and Edge, and the app window):
+// the Save As box opens first, then the file streams from the server straight
+// into the chosen file, so even a large export never sits in memory. Browsers
+// without a Save As box (Firefox, Safari) fall back to their own download.
+const FILE_TYPES = {
+  csv: ["CSV file", "text/csv"],
+  xlsx: ["Excel workbook", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  pdf: ["PDF document", "application/pdf"],
+  sqlite: ["SQLite database", "application/vnd.sqlite3"],
+  zip: ["ZIP archive", "application/zip"],
+  json: ["JSON file", "application/json"],
+  txt: ["Text file", "text/plain"],
+};
+
+async function pickTarget(name) {
+  if (typeof window.showSaveFilePicker !== "function") return null;
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  const known = FILE_TYPES[ext];
+  const options = { suggestedName: name };
+  if (known) options.types = [{ description: known[0], accept: { [known[1]]: [`.${ext}`] } }];
+  try {
+    return await window.showSaveFilePicker(options);
+  } catch (error) {
+    // Closing the box is a choice, not an error
+    if (error && error.name === "AbortError") return false;
+    return null;
+  }
+}
+
+function clickDownload(href, name) {
+  const a = el("a", { href, download: name || "" });
   document.body.append(a);
   a.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(a.href);
-    a.remove();
-  }, 1000);
+  setTimeout(() => a.remove(), 1000);
+}
+
+// Save a server file (path on this server) under a name the user picks.
+// Returns true when saved, false when the Save As box was closed.
+export async function saveAs(path, name) {
+  const target = await pickTarget(name);
+  if (target === false) return false;
+  if (!target) {
+    clickDownload(url(path), name);
+    return true;
+  }
+  let writable;
+  try {
+    const response = await api(path, { raw: true });
+    writable = await target.createWritable();
+    await response.body.pipeTo(writable);
+    toast(`Saved ${target.name}`, "ok");
+    return true;
+  } catch (error) {
+    if (writable) {
+      try {
+        await writable.abort();
+      } catch (e) {
+        /* already closed */
+      }
+    }
+    toast(`Could not save ${target.name}: ${error.message}`, "error", 6000);
+    return false;
+  }
+}
+
+// A name safe to suggest for a file: letters, digits, spaces, - _ . ( )
+export function fileStem(name, fallback = "file") {
+  const stem = String(name || "").replace(/[^\w\s.()-]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 80);
+  return stem || fallback;
+}
+
+// A link-like button that saves a server file with Save As
+export function saveButton(path, name, label, attrs = {}) {
+  return el("button", { ...attrs, onclick: () => saveAs(path, name) }, label);
+}
+
+// Save text made in the page (a CSV of scan results, a JSON file)
+export async function download(filename, text, type = "text/csv") {
+  const blob = new Blob([text], { type });
+  const target = await pickTarget(filename);
+  if (target === false) return false;
+  if (target) {
+    try {
+      const writable = await target.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      toast(`Saved ${target.name}`, "ok");
+      return true;
+    } catch (error) {
+      toast(`Could not save ${target.name}: ${error.message}`, "error", 6000);
+      return false;
+    }
+  }
+  const href = URL.createObjectURL(blob);
+  clickDownload(href, filename);
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+  return true;
 }
 
 export function csvCell(value) {

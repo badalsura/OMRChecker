@@ -242,7 +242,7 @@ def scan_and_store(engine, file_path, meta, scans_root, save_images, copy_input)
             data["file_id"] = f"{data['file_name']}#page{page + 1}"
         else:
             data["file_id"] = data["file_name"]
-        write_json_atomic(scan_dir / "result.json", data)
+        write_json_atomic(scan_dir / "result.json", data, compact=True)
         stored.append(data)
     return stored
 
@@ -344,6 +344,7 @@ def summarize(record):
         "created_at",
         "template_version",
         "primary_key",
+        "read_pass",
     )
     summary = {key: record.get(key) for key in keys}
     if record.get("key_fields"):

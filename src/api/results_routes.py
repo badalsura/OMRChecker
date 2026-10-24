@@ -12,7 +12,7 @@ from src.api.results import DEFAULT_USER, ResultsError, clean_rules
 from src.api.storage import UNASSIGNED
 
 VIEW_PATTERN = (
-    "^(all|flagged|unflagged|reviewed|not_reviewed|verified|corrected|errors"
+    "^(all|flagged|unflagged|reviewed|not_reviewed|verified|approved|corrected|errors"
     "|duplicates|duplicates_template)$"
 )
 
@@ -89,14 +89,29 @@ class ReturnBody(BaseModel):
     note: Optional[str] = Field(None, max_length=500)
 
 
+class SheetRange(BaseModel):
+    user: str = Field(..., min_length=1)
+    first_sheet: Optional[int] = Field(
+        None, ge=1, description="1 = the first of the job's sheets the view picks"
+    )
+    last_sheet: Optional[int] = Field(None, ge=1, description="Included; empty = the last")
+
+
 class AssignBody(BaseModel):
-    users: List[str] = Field(..., min_length=1, max_length=100)
+    users: Optional[List[str]] = Field(None, max_length=100)
+    ranges: Optional[List[SheetRange]] = Field(
+        None,
+        max_length=100,
+        description="Instead of users: each person's sheet numbers (one job)",
+    )
     scan_ids: Optional[List[str]] = Field(None, max_length=100000)
     template_id: Optional[str] = None
     job_id: Optional[str] = None
     view: str = Field("flagged", pattern=VIEW_PATTERN)
     flag: Optional[str] = None
     name: Optional[str] = None
+    first_sheet: Optional[int] = Field(None, ge=1)
+    last_sheet: Optional[int] = Field(None, ge=1)
     only_unassigned: bool = True
     limit: Optional[int] = Field(None, ge=1)
 
@@ -106,6 +121,19 @@ class UnassignBody(BaseModel):
     user: Optional[str] = None
     template_id: Optional[str] = None
     job_id: Optional[str] = None
+    first_sheet: Optional[int] = Field(None, ge=1)
+    last_sheet: Optional[int] = Field(None, ge=1)
+    only_open: bool = Field(False, description="Only sheets the person has not finished")
+
+
+class MoveBody(BaseModel):
+    user: str = Field(..., min_length=1, description="Who has the sheets now")
+    to: str = Field(..., min_length=1)
+    template_id: Optional[str] = None
+    job_id: Optional[str] = None
+    first_sheet: Optional[int] = Field(None, ge=1)
+    last_sheet: Optional[int] = Field(None, ge=1)
+    only_open: bool = Field(False, description="Only sheets the person has not finished")
 
 
 class BulkVerifyBody(BaseModel):
@@ -114,6 +142,8 @@ class BulkVerifyBody(BaseModel):
 
 # Activity that changes a sheet after scanning (what an administrator checks)
 CHANGE_ACTIONS = ("corrected", "reviewed", "regraded", "aligned", "typed")
+# ...and what else puts a sheet in front of the administrator for approval
+APPROVAL_ACTIONS = CHANGE_ACTIONS + ("verified", "unverified", "undone", "redone")
 
 
 class RemapBody(BaseModel):
@@ -513,16 +543,17 @@ def register(app, ctx, secured):
         job_id: Optional[str] = None,
         user: Optional[str] = None,
         include_checked: bool = Query(
-            False, description="Also sheets verified after their last change"
+            False, description="Also sheets approved after their last change"
         ),
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ):
         """Sheets people changed after scanning (corrected, reviewed, regraded,
-        aligned or typed by hand), each with its changed settings and values,
-        for an administrator to check and verify."""
+        aligned or typed by hand) or verified, each with its changed settings
+        and values, for an administrator to check and approve. Listed until
+        approved; a later change lists the sheet again."""
         rows, total = ctx.index.changed_sheets(
-            CHANGE_ACTIONS,
+            APPROVAL_ACTIONS,
             template_id=template_id,
             job_id=job_id,
             user=user,
@@ -540,6 +571,9 @@ def register(app, ctx, secured):
                 continue
             row.update(sheet_changes(record))
             row["responses"] = record.get("responses") or {}
+            row["approved"] = record.get("approved")
+            row.pop("approved_id", None)
+            row.pop("last_change", None)
             row["assigned_to"] = ctx.index.assignee(row["scan_id"])
             items.append(row)
         return {"items": items, "total": total}
@@ -561,6 +595,25 @@ def register(app, ctx, secured):
                 failed.append({"scan_id": scan_id, "error": str(error)})
         return {"verified": done, "failed": failed}
 
+    @app.post("/activity/approve", tags=["results"], dependencies=secured)
+    def approve_sheets(body: BulkVerifyBody, request: Request):
+        """The administrator's second check: approve sheets reviewers verified
+        or changed (a sheet nobody verified is verified too). Administrators
+        only, when sign-in is on."""
+        require_admin(request, "approve sheets")
+        user = user_of(request)
+        done, failed = [], []
+        for scan_id in dict.fromkeys(body.scan_ids):
+            try:
+                record = service.load(scan_id)
+                if record.get("status") == "error" and not record.get("manual_values"):
+                    raise ResultsError("The sheet has no values to approve", 422)
+                service.approve(scan_id, user)
+                done.append(scan_id)
+            except ResultsError as error:
+                failed.append({"scan_id": scan_id, "error": str(error)})
+        return {"approved": done, "failed": failed}
+
     @app.post("/activity/return", tags=["results"], dependencies=secured)
     def return_sheets(body: ReturnBody, request: Request):
         """Send sheets back to review (administrators): the verification is
@@ -575,9 +628,32 @@ def register(app, ctx, secured):
                 done.append(scan_id)
             except ResultsError as error:
                 failed.append({"scan_id": scan_id, "error": str(error)})
+        if body.assign_to:
+            check_people([body.assign_to])
         if body.assign_to and done:
             assign_sheets({body.assign_to: done}, user)
         return {"returned": done, "failed": failed}
+
+    def check_people(names):
+        """With sign-in on, work goes to active accounts only."""
+        if not ctx.accounts.enabled():
+            return
+        unknown = []
+        for name in names:
+            row = ctx.accounts.get(name)
+            if row is None or not row["active"]:
+                unknown.append(name)
+        if unknown:
+            raise HTTPException(
+                422, f"No active account named {', '.join(sorted(set(unknown)))}"
+            )
+
+    def sheet_range(first, last, job_id):
+        if (first or last) and not job_id:
+            raise HTTPException(422, "Pick one job to give sheet numbers")
+        if first and last and last < first:
+            raise HTTPException(422, f"Sheet {last} comes before sheet {first}")
+        return (first, last) if first or last else None
 
     def assign_sheets(by_user, by):
         ctx.index.assign(by_user, by)
@@ -601,14 +677,17 @@ def register(app, ctx, secured):
         """Hand sheets to people for review (administrators). Either the given
         scan_ids, or every sheet matching the filters (by default flagged and
         not verified, not yet assigned), split into equal consecutive runs
-        between the users in the order given."""
+        between the users in the order given; or, with ranges, each person's
+        own sheet numbers of one job (the filters apply inside each range)."""
         require_admin(request, "assign sheets")
-        users = [u.strip() for u in body.users if u and u.strip()]
-        if not users:
-            raise HTTPException(422, "Name at least one person")
-        if body.scan_ids:
-            scan_ids = list(dict.fromkeys(body.scan_ids))
-        else:
+
+        def matching(sheets, limit=None):
+            """Scan ids the view picks, in sheet order. sheets: (first, last),
+            1-based places among the sheets the view picks (with Flagged,
+            1 to 500 is the first 500 flagged sheets), already assigned
+            sheets included in the count so the numbers stay put."""
+            first, last = sheets or (None, None)
+            taken = ctx.index.assigned_scan_ids(body.job_id) if body.only_unassigned else ()
             try:
                 rows = ctx.index.iter_results(
                     template_id=body.template_id,
@@ -616,15 +695,53 @@ def register(app, ctx, secured):
                     view=body.view,
                     flag=body.flag,
                     name=body.name,
-                    assigned=UNASSIGNED if body.only_unassigned else None,
+                    assigned=UNASSIGNED if body.only_unassigned and not sheets else None,
                 )
-                scan_ids = []
-                for row in rows:
-                    scan_ids.append(row["id"])
-                    if body.limit and len(scan_ids) >= body.limit:
+                ids = []
+                for place, row in enumerate(rows, 1):
+                    if first and place < first:
+                        continue
+                    if last and place > last:
                         break
+                    if sheets and row["id"] in taken:
+                        continue
+                    ids.append(row["id"])
+                    if limit and len(ids) >= limit:
+                        break
+                return ids
             except ValueError as error:
                 raise HTTPException(422, str(error)) from None
+
+        if body.ranges:
+            names = [r.user.strip() for r in body.ranges]
+            if not all(names):
+                raise HTTPException(422, "Name a person for every range")
+            check_people(names)
+            spans = [sheet_range(r.first_sheet, r.last_sheet, body.job_id) for r in body.ranges]
+            ranked = sorted((s[0] or 1, s[1] or 10**9, n) for s, n in zip(spans, names))
+            for (_, end, one), (start, _, two) in zip(ranked, ranked[1:]):
+                if start <= end:
+                    raise HTTPException(422, f"The sheets of {one} and {two} overlap")
+            by_user = {}
+            for name, sheets in zip(names, spans):
+                ids = matching(sheets, body.limit)
+                if ids:
+                    by_user.setdefault(name, []).extend(ids)
+            assign_sheets(by_user, user_of(request))
+            return {
+                "assigned": {name: len(ids) for name, ids in by_user.items()},
+                "total": sum(len(ids) for ids in by_user.values()),
+            }
+        users = [u.strip() for u in body.users or [] if u and u.strip()]
+        if not users:
+            raise HTTPException(422, "Name at least one person")
+        check_people(users)
+        if body.scan_ids:
+            scan_ids = list(dict.fromkeys(body.scan_ids))
+        else:
+            scan_ids = matching(
+                sheet_range(body.first_sheet, body.last_sheet, body.job_id), body.limit
+            )
         share, extra = divmod(len(scan_ids), len(users))
         by_user, start = {}, 0
         for index, name in enumerate(users):
@@ -638,22 +755,48 @@ def register(app, ctx, secured):
     @app.post("/assignments/clear", tags=["results"], dependencies=secured)
     def unassign(body: UnassignBody, request: Request):
         """Take sheets back from whoever they were assigned to (administrators):
-        the given scan_ids, or every sheet of a user (within a template / job)."""
+        the given scan_ids, or every sheet of a user (within a template / job,
+        optionally only some sheet numbers or only those not finished)."""
         require_admin(request, "change assignments")
         if body.scan_ids:
             ctx.index.unassign(body.scan_ids)
             return {"unassigned": len(body.scan_ids)}
+        sheets = sheet_range(body.first_sheet, body.last_sheet, body.job_id)
+        if body.user and (sheets or body.only_open):
+            ids = ctx.index.assigned_ids(
+                body.user, body.template_id, body.job_id, sheets, body.only_open
+            )
+            ctx.index.unassign(ids)
+            return {"unassigned": len(ids)}
         count = ctx.index.unassign_where(
             template_id=body.template_id, job_id=body.job_id, user=body.user
         )
         return {"unassigned": count}
 
+    @app.post("/assignments/move", tags=["results"], dependencies=secured)
+    def move_assignments(body: MoveBody, request: Request):
+        """Give one person's sheets to someone else (administrators): all of
+        them, some sheet numbers, or only those not finished yet."""
+        require_admin(request, "change assignments")
+        to = body.to.strip()
+        if to == body.user:
+            raise HTTPException(422, "Pick someone else to move the sheets to")
+        check_people([to])
+        sheets = sheet_range(body.first_sheet, body.last_sheet, body.job_id)
+        ids = ctx.index.assigned_ids(
+            body.user, body.template_id, body.job_id, sheets, body.only_open
+        )
+        if ids:
+            assign_sheets({to: ids}, user_of(request))
+        return {"moved": len(ids), "to": to}
+
     @app.get("/assignments/summary", tags=["results"], dependencies=secured)
     def assignment_summary(
         template_id: Optional[str] = None, job_id: Optional[str] = None
     ):
-        """Per person: sheets assigned, still to review, reviewed, verified;
-        and flagged sheets nobody has yet."""
+        """Per person: sheets assigned, still to review, reviewed, verified,
+        approved, sent back, the sheet numbers they hold and when they last
+        worked; and flagged sheets nobody has yet."""
         return {
             "users": ctx.index.assignment_summary(template_id=template_id, job_id=job_id),
             "unassigned_flagged": ctx.index.count_results(

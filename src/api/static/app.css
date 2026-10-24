@@ -119,7 +119,7 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .chip.needs_review, .chip.draft, .chip.queued, .chip.uploading, .chip.flag { background: var(--warn-soft); color: var(--warn); }
 .chip.error, .chip.failed, .chip.cancelled, .chip.interrupted { background: var(--err-soft); color: var(--err); }
 .chip.paused { background: var(--warn-soft); color: var(--warn); }
-.chip.running, .chip.reading { background: var(--accent-soft); color: var(--accent); }
+.chip.running, .chip.reading, .chip.watching { background: var(--accent-soft); color: var(--accent); }
 
 .progress { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; min-width: 120px; }
 .progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }
@@ -408,3 +408,24 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .regrade-thumb { flex: none; text-align: center; }
 .regrade-thumb canvas { border: 1px solid var(--border); background: #fff; max-width: 220px; }
 @media (max-width: 700px) { .regrade-image { flex-direction: column; } }
+
+/* App window (packaging/omr_app.py): local only, so no API key; buttons, tabs
+   and pictures behave like an app's, not a web page's */
+body.desktop #api-key-btn { display: none; }
+body.desktop button,
+body.desktop .tabs,
+body.desktop label,
+body.desktop th,
+body.desktop h1,
+body.desktop h2,
+body.desktop h3 { user-select: none; -webkit-user-select: none; }
+body.desktop img,
+body.desktop a { -webkit-user-drag: none; }
+.chg-people { max-height: 170px; min-width: 240px; overflow: auto; border: 1px solid var(--border, #ccc); border-radius: 6px; padding: 4px 8px; margin-top: 4px; }
+.chg-people label { display: block; padding: 2px 0; }
+.chg-range-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+.chg-range-row input[type="number"] { width: 90px; }
+.chg-edit { background: var(--panel-2, rgba(127, 127, 127, 0.08)); }
+.chg-edit td { padding: 8px; }
+.res-num { margin-right: 4px; }
+#chg-split input[type="number"] { width: 110px; }
