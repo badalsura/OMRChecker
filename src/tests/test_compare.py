@@ -456,3 +456,31 @@ def test_release_matched_export_and_a_key_from_our_fields(compared):
         patched = client.patch(base, json={"key": key})
         assert patched.status_code == 200, patched.text
     assert client.app.state.ctx.compare.cached_keys("q1")
+
+
+def test_opscan_dat_layout_with_a_dos_end_of_file_mark():
+    # ScanTools Plus .dat: fixed width, no header, Ctrl-Z after the last record
+    record = (
+        "0011"
+        + "00001"
+        + "001101926001"
+        + " " * 19
+        + "N "
+        + "993100270006"
+        + "1"
+        + "2"
+        + "AB*D"
+        + " " * 196
+    )
+    content = (
+        record + "\r\n" + record.replace("00001", "00002", 1) + "\r\n\x1a"
+    ).encode()
+    spec = "SEQ 4 6\nrollno 41 12\nlang 53 1\nlevel 54 1\nq1..q200 55 1"
+    columns, rows = compare.read_table(
+        content, {"format": "fixed", "header_row": 0, "fixed": spec}
+    )
+    assert (
+        columns[:5] == ["SEQ", "rollno", "lang", "level", "q1"] and len(columns) == 204
+    )
+    assert len(rows) == 2 and rows[1][0] == "100002"
+    assert rows[0][1:8] == ["993100270006", "1", "2", "A", "B", "*", "D"]

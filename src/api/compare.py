@@ -223,7 +223,8 @@ def read_table(content, parse=None):
     fixed (fixed-width layout) and split (packed answer columns)."""
     parse = parse or {}
     text = decode_text(content) if isinstance(content, bytes) else content
-    lines = [line.rstrip("\r\n") for line in text.splitlines()]
+    # A DOS end-of-file mark (Ctrl-Z) on the last line is not a record
+    lines = [line.rstrip("\r\n").rstrip("\x1a") for line in text.splitlines()]
     fmt = parse.get("format") or "auto"
     if fmt == "auto":
         fmt = "fixed" if (parse.get("fixed") or "").strip() else "csv"
