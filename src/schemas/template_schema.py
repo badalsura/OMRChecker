@@ -278,6 +278,13 @@ ZONE_SCHEMA = {
                     "type": "string",
                     "enum": ["default", "none", "tesseract", "paddle"],
                 },
+                # ICR: handwriting reader for this zone ("default": config
+                # ocr_params.icr_engine) and the VLM it uses (src/readers/vlm.py)
+                "icrEngine": {
+                    "type": "string",
+                    "enum": ["default", "auto", "paddle", "tesseract", "vlm"],
+                },
+                "vlmModel": {"type": "string", "minLength": 1},
                 # OCR / ICR: PaddleOCR model size and recogniser for this zone
                 # ("ch" = the main multilingual recogniser, also handwriting)
                 "paddleModel": {"type": "string", "enum": ["mobile", "server"]},

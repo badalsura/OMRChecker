@@ -140,8 +140,14 @@ CONFIG_DEFAULTS = DotMap(
             # PaddleOCR reads boxed handwriting as well when its models are installed
             "icr_second_reader": "auto",
             # Handwriting reader when no ICR model is loaded: PaddleOCR when its
-            # models are installed ("auto"), or always Tesseract ("tesseract")
+            # models are installed ("auto"), or always Tesseract ("tesseract").
+            # "vlm": a vision-language model (src/readers/vlm.py), used even
+            # with an ICR model, which then gives a second opinion
             "icr_engine": "auto",
+            "icr_vlm_model": "paddleocr-vl",
+            "icr_vlm_url": "http://127.0.0.1:8765",
+            "icr_vlm_autostart": True,
+            "icr_vlm_timeout": 60,
         },
         "speed_params": {
             # Test mode (src/fast_pass.py): read at half size first and re-read

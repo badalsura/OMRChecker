@@ -51,6 +51,10 @@ OCR_DEFAULTS = {
     "min_char_confidence": 0,
     "icr_second_reader": "auto",
     "icr_engine": "auto",
+    "icr_vlm_model": "paddleocr-vl",
+    "icr_vlm_url": "http://127.0.0.1:8765",
+    "icr_vlm_autostart": True,
+    "icr_vlm_timeout": 60,
 }
 
 def ocr_settings(params=None):
@@ -365,7 +369,7 @@ def read_text_zone(zone, image, ocr_params=None):
 
 def ocr_capabilities(ocr_params=None):
     """What the GUI needs: engines, their availability and languages."""
-    from src.readers import ocr, paddle_ocr
+    from src.readers import ocr, paddle_ocr, vlm
 
     settings = ocr_settings(ocr_params)
     paddle = paddle_engine(settings)
@@ -388,6 +392,7 @@ def ocr_capabilities(ocr_params=None):
             if k[0] == "rec"
             and paddle_ocr.find_model_file(name, settings.get("paddle_model_dir"))
         ],
+        "vlm": vlm.capabilities(settings),
         "directions": list(DIRECTIONS) + ["auto"],
         "defaults": {k: settings[k] for k in OCR_DEFAULTS},
     }

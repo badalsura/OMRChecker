@@ -179,6 +179,29 @@ export function ocrZoneControls(editor, raw, opts, setOpt, zoneName) {
     );
   }
   if (raw.type === "ocr" || raw.type === "icr") nodes.push(paddleControls(raw, opts, setOpt));
+  if (raw.type === "icr") {
+    const readers = [["default", "config default"], ["auto", "PaddleOCR (or Tesseract)"], ["vlm", "Vision-language model"], ["tesseract", "Tesseract"]];
+    const models = [["", "config default"], ["paddleocr-vl", "PaddleOCR-VL 1.5 (best, 1.3 GB)"], ["qwen3-vl-2b", "Qwen3-VL 2B"], ["qwen2.5-vl-3b", "Qwen2.5-VL 3B"]];
+    const status = el("div", { class: "muted small" });
+    ocrCapabilities().then((caps) => {
+      const v = caps && caps.vlm;
+      if (!v) return;
+      status.textContent = v.running
+        ? `VLM server running at ${v.url} (${v.model}).`
+        : v.autostart
+          ? `No VLM server running at ${v.url}; it starts on the first read (Apple Silicon with mlx-vlm installed).`
+          : `No VLM server running at ${v.url}; zones set to it are read the usual way.`;
+    });
+    nodes.push(
+      el(
+        "div",
+        { class: "two" },
+        withHelp("Handwriting reader", select(opts.icrEngine || "default", readers, (v) => setOpt("icrEngine", v === "default" ? null : v)), "Engine that reads this handwriting zone. A vision-language model reads the whole zone image and is the most accurate (85% of TERI roll numbers exactly right, against 22% for PaddleOCR), but needs a Mac with Apple Silicon or a VLM server. A read with a different number of characters than inked boxes goes to review."),
+        withHelp("Vision-language model", select(opts.vlmModel || "", models, (v) => setOpt("vlmModel", v || null)), "Model the VLM reader uses for this zone. One server runs one model, so keep every zone on the same model.")
+      ),
+      status
+    );
+  }
   if (raw.type === "ocr") {
     const engines = [["default", "config default"], ["tesseract", "Tesseract"], ["paddle", "PaddleOCR"]];
     const fallbacks = [["default", "config default"], ["none", "none"], ["tesseract", "Tesseract"], ["paddle", "PaddleOCR"]];

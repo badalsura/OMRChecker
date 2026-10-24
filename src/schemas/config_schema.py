@@ -196,8 +196,15 @@ CONFIG_SCHEMA = {
                 # Reader of ICR zones without a trained ICR model
                 "icr_engine": {
                     "type": "string",
-                    "enum": ["auto", "paddle", "tesseract"],
+                    "enum": ["auto", "paddle", "tesseract", "vlm"],
                 },
+                # Vision-language model reader (icr_engine "vlm"): model name or
+                # id, server URL (".../v1" = OpenAI-compatible), start the local
+                # server when none answers, seconds to wait for one zone
+                "icr_vlm_model": {"type": "string", "minLength": 1},
+                "icr_vlm_url": {"type": "string", "pattern": "^https?://"},
+                "icr_vlm_autostart": {"type": "boolean"},
+                "icr_vlm_timeout": {"type": "number", "exclusiveMinimum": 0},
             },
         },
         "speed_params": {
