@@ -81,9 +81,31 @@ def test_vlm_reads_the_raw_zone(server):
     assert result.engine == "vlm" and result.value == "902"
     assert result.details["inked_boxes"] == 3 and not result.needs_review
     path, body = server["requests"][-1]
-    assert path == "/read" and "digits" in body["prompt"]
+    # PaddleOCR-VL's own task prompt; the whole zone, box lines included,
+    # enlarged 1.6x as measured
+    assert path == "/read" and body["prompt"] == "OCR:"
     image = cv2.imdecode(np.frombuffer(base64.b64decode(body["image"]), np.uint8), 0)
-    assert image.shape == (40, 160)  # the whole zone, box lines included
+    assert image.shape == (64, 256)
+
+
+def test_prompt_for_other_models():
+    assert vlm.prompt_for("qwen3-vl-2b", "0123456789", 12).startswith(
+        "This image shows a 12-box handwritten number, one digit per box."
+    )
+    assert "character" in vlm.prompt_for("qwen2.5-vl-3b", None, None)
+
+
+def test_centered_digit_matches_mnist_layout():
+    from src.ml.classifiers import centered_digit
+
+    box = np.full((40, 30), 255, np.uint8)
+    box[5:35, 20:24] = 0  # a "1" off to the right
+    digit = centered_digit(box)
+    assert digit.shape == (28, 28) and digit.max() <= 1.0
+    ys, xs = np.nonzero(digit > 0)
+    assert 20 <= ys.max() - ys.min() + 1 <= 21  # tall side fitted to 20 px
+    assert abs(xs.mean() - 14) < 1.5  # moved to the centre
+    assert not centered_digit(np.full((40, 30), 255, np.uint8)).any()
 
 
 def test_vlm_count_mismatch_goes_to_review(server):

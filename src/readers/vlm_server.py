@@ -9,6 +9,9 @@ copy of the model: one copy in memory (about 1.3 GB for PaddleOCR-VL 1.5 at
     pip install mlx-vlm
     python -m src.readers.vlm_server --model paddleocr-vl --port 8765
 
+Weights come from the Hugging Face cache (downloaded on first use), or from
+packaging/models/vlm/<name> when a copy is there (offline installs).
+
 The reader starts it by itself when ocr_params.icr_vlm_autostart is on (the
 default) and nothing answers on icr_vlm_url.
 
@@ -26,6 +29,7 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 # Short names for the models tested on the TERI roll numbers (whole number
 # exactly right: PaddleOCR-VL 89%, Qwen2.5-VL 3B 85.5%, Qwen3-VL 2B 84.5%)
@@ -36,8 +40,21 @@ MODELS = {
 }
 
 
+# Models copied here (packaging/models/vlm/<short name>) load without a download
+LOCAL_DIR = Path(__file__).resolve().parents[2] / "packaging" / "models" / "vlm"
+
+
 def model_id(name):
+    """The Hugging Face id of a short name (or the id / path given)."""
     return MODELS.get(name, name)
+
+
+def model_source(name):
+    """Where to load a model from: its folder under LOCAL_DIR, else its id."""
+    for folder in (name, model_id(name).split("/")[-1]):
+        if (LOCAL_DIR / folder / "config.json").is_file():
+            return str(LOCAL_DIR / folder)
+    return model_id(name)
 
 
 class Model:
@@ -45,11 +62,9 @@ class Model:
 
     def __init__(self, name):
         from mlx_vlm import load
-        from mlx_vlm.utils import load_config
 
         self.name = model_id(name)
-        self.model, self.processor = load(self.name)
-        self.config = load_config(self.name)
+        self.model, self.processor = load(model_source(name))
         self.lock = threading.Lock()
 
     def generate(self, png, prompt, max_tokens=32):
@@ -57,7 +72,7 @@ class Model:
         from mlx_vlm.prompt_utils import apply_chat_template
 
         formatted = apply_chat_template(
-            self.processor, self.config, prompt, num_images=1
+            self.processor, self.model.config, prompt, num_images=1
         )
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
             handle.write(png)
@@ -67,7 +82,7 @@ class Model:
                     self.model,
                     self.processor,
                     formatted,
-                    [handle.name],
+                    image=[handle.name],
                     max_tokens=max_tokens,
                     temperature=0.0,
                     verbose=False,

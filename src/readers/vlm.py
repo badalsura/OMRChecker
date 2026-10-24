@@ -45,18 +45,31 @@ _ENGINES = {}
 _LOCK = threading.Lock()
 
 
-def prompt_for(whitelist=None, count=None):
-    if whitelist and set(whitelist) <= set("0123456789"):
-        kind = "handwritten digits"
-    else:
-        kind = "handwritten characters"
-    prompt = f"Read the {kind} in this image. Reply with the characters only."
+# The crop is enlarged before reading; 1.6x was the setting measured on TERI
+SCALE = 1.6
+
+
+def prompt_for(model, whitelist=None, count=None):
+    """
+    PaddleOCR-VL takes its own task prompt. The others get the prompt measured
+    on 12-box roll numbers, with the zone's box count.
+    """
+    if "paddleocr-vl" in str(model).lower():
+        return "OCR:"
+    digits = bool(whitelist) and set(whitelist) <= set("0123456789")
+    kind = "digit" if digits else "character"
     if count:
-        prompt += f" There are at most {count} characters, one per box."
-    return prompt
+        return (
+            f"This image shows a {count}-box handwritten "
+            f"{'number' if digits else 'text'}, one {kind} per box. "
+            f"Reply with exactly the {kind}s written, left to right, nothing else."
+        )
+    return f"Read the handwritten {kind}s in this image. Reply with them only, nothing else."
 
 
 def encode_png(image):
+    if SCALE != 1:
+        image = cv2.resize(image, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_CUBIC)
     ok, data = cv2.imencode(".png", image)
     if not ok:
         raise ValueError("could not encode the zone crop")

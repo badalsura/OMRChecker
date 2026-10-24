@@ -1889,6 +1889,30 @@ The template-wide **Barcode advanced** section under Options sets the same **Dec
 | **Crop as read** | | | OCR, ICR | A preview of the zone turned the way the reader sees it. With a test scan as background it shows exactly what was read; with Auto it shows the direction the last test read chose. |
 | **PaddleOCR model** | `paddleModel` | config default | OCR, ICR | **mobile (fast)** or **server (most accurate, slower)**. Options the server does not have are marked "(not installed)". |
 | **PaddleOCR recogniser** | `paddleLang` | default | OCR, ICR | **English**, **Main (multilingual, handwriting)** or **Devanagari (Hindi)**. |
+| **Handwriting reader** | `icrEngine` | config default (`ocr_params.icr_engine`) | ICR | **PaddleOCR (or Tesseract)**, **Vision-language model** or **Tesseract**. See *Reading handwriting with a vision-language model* below. |
+| **Vision-language model** | `vlmModel` | config default (`ocr_params.icr_vlm_model`) | ICR | **PaddleOCR-VL 1.5**, **Qwen3-VL 2B** or **Qwen2.5-VL 3B**. One server runs one model, so keep every zone on the same one. |
+
+#### Reading handwriting with a vision-language model
+
+A vision-language model (VLM) reads the whole zone image, box lines and all, and is much more accurate on handwriting than the built-in readers. On 932 TERI roll numbers (12 boxes each), the whole number came out exactly right this often:
+
+| Reader | Exactly right | Time per zone | Memory |
+|---|---|---|---|
+| PaddleOCR-VL 1.5 | 85–89% | 0.15 s | 1.3 GB |
+| Qwen2.5-VL 3B | 85.5% | 1.0 s | 3.4 GB |
+| Qwen3-VL 2B | 84.5% | 0.8 s | 2.1 GB |
+| Digit model (fine-tuned, see Learned models) | 78% | 5 ms | – |
+| PaddleOCR (the default) | 57–64% | 47 ms | – |
+
+It needs a Mac with Apple Silicon (M1 or later):
+
+1. In the app's Python environment: `pip install -r requirements.vlm.txt`.
+2. Set **Handwriting reader** to **Vision-language model** on the ICR zones, or `"icr_engine": "vlm"` in `config.json` › `ocr_params` for every ICR zone.
+3. Scan. The first read starts a small model server in the background (one copy of the model shared by all workers) and downloads the model the first time (0.7 to 3 GB). Its log is `omr-vlm-8765.log` in the temp folder.
+
+The model gives no confidence. Instead, a zone whose read has a different number of characters than boxes with ink goes to review (`icr_alignment`). For roll numbers that are also bubbled, add a cross-field check with the bubbled field and the ICR zone as sources: on TERI, accepting only the sheets where the two agree let 85% through with no wrong number accepted. With a handwriting model also loaded, it reads the boxes as a second opinion and a disagreement goes to review (`engine_disagree`).
+
+Settings in `config.json` › `ocr_params`: `icr_vlm_model` (`paddleocr-vl`, `qwen3-vl-2b`, `qwen2.5-vl-3b`, or a Hugging Face id), `icr_vlm_url` (default `http://127.0.0.1:8765`), `icr_vlm_autostart` (default on), `icr_vlm_timeout` (seconds, default 60). A URL ending in `/v1` is an OpenAI-compatible server such as Ollama, vLLM or LM Studio, so a Windows PC can send its zones to a Mac or GPU machine on the network that runs the model. Without a server the zones are read the usual way, and the zone details say why (`vlm_unavailable`). Models copied to `packaging/models/vlm/<name>` load without a download.
 | **Language** | `lang` | config default (eng) | OCR | Tesseract language for this zone. Only languages installed on the server are listed; **eng+hin** reads English and Hindi. |
 | **OCR engine** | `engine` | config default | OCR | **Tesseract** or **PaddleOCR** for this zone. |
 | **Fallback engine** | `fallbackEngine` | config default | OCR | Second engine, tried when the first read is empty, below Min confidence or fails the pattern. The better valid read wins; if the two engines disagree the zone goes to review. **none** turns it off. |
@@ -2209,7 +2233,7 @@ A learned model is an optional extra reader trained on your own scans. Without o
 | Option | Key | Default | What it does |
 |---|---|---|---|
 | **Bubble model** | `ml_params.bubble_model_path` | none (classical reading) | A model that double-checks every bubble. The list shows the .onnx models uploaded with the template and those in the server's models folder ("(server)"). |
-| **Handwriting model** | `ml_params.icr_model_path` | none | A model that reads handwritten characters in ICR zones. Without a trained model, ICR zones fall back to the built-in text reader (see `ocr_params.icr_engine` in the zones section) or go to review. |
+| **Handwriting model** | `ml_params.icr_model_path` | none | A model that reads handwritten characters in ICR zones. Without a trained model, ICR zones fall back to the built-in text reader (see `ocr_params.icr_engine` in the zones section) or go to review. MNIST/EMNIST-style digit models set `"preprocess": "centered_digit"` in their `.json` file: each box is turned white-on-black, fitted in 20 × 20 pixels and centred in 28 × 28. |
 | *(config.json only)* Bubble model role | `ml_params.bubble_model_role` | `second_opinion` | `second_opinion`: the classical reader decides; agreement raises confidence, and a disagreement sends the field to review (`model_disagrees`). `decide`: the model decides. |
 
 If the server does not have the model runtime installed, the panel says "onnxruntime is not installed on this server: models are ignored." If no models are found it says so and tells you to upload one with the template files.

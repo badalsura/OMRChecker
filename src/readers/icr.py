@@ -311,7 +311,7 @@ def read_with_vlm(zone, crop, count, whitelist, engine, classifier=None):
     from src.readers import vlm
 
     try:
-        raw = engine.read(crop, vlm.prompt_for(whitelist, count))
+        raw = engine.read(crop, vlm.prompt_for(engine.model, whitelist, count))
     except Exception as error:
         return ZoneReadResult(
             zone.name, zone.type, "", 0.0, ["read_error"],
