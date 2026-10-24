@@ -55,6 +55,13 @@ covered by the signature.
    `.gitignore`); copy it in before building. `license-keys/`, `*.omrlic` and
    private keys are git-ignored so they can never be committed by accident.
 
+   **In CI**, store the public key as the **`LICENSE_PUBLIC_KEY`** repository
+   secret (Settings → Secrets and variables → Actions). The Nuitka workflow
+   (`.github/workflows/build-windows-nuitka.yml`) writes it to
+   `src/licensing/public_key.pem` before building. It is the *public* key, so a
+   secret is for convenience, not confidentiality — the **private** key never
+   leaves your machine and is never put in CI.
+
 ## Issuing a license to a customer
 
 1. The customer opens the app. With no license it shows the **Activation**

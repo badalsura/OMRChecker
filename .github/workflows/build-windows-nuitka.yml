@@ -1,0 +1,289 @@
+name: Build Windows exe (Nuitka)
+
+# Nuitka build of the Windows app, alongside the PyInstaller workflow
+# (build-windows.yml). Nuitka compiles the Python to C, so the exe is harder to
+# reverse-engineer. It targets modern Windows (10/11); the PyInstaller workflow
+# remains the one that reaches Windows 7/8.1.
+#
+# The license public key is written from the LICENSE_PUBLIC_KEY repository
+# secret (Settings -> Secrets and variables -> Actions). It is the PUBLIC key
+# (safe to store); the private key never leaves your machine. See
+# docs/licensing.md. Without the secret the build still runs but cannot verify
+# licenses (useful only for testing the pipeline).
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "app = the WebView2 app window (distribution); server = the console launcher; all = both"
+        default: all
+      mode:
+        description: "server build only: onedir | onefile"
+        default: onedir
+      default_engine:
+        description: "OCR engine used first: tesseract | paddle"
+        default: tesseract
+      fallback_engine:
+        description: "OCR engine tried when the first read is empty/unsure: paddle | tesseract | none"
+        default: paddle
+      paddle_models:
+        description: "PaddleOCR model sizes to bundle, space separated"
+        default: mobile server
+      paddle_langs:
+        description: "PaddleOCR recognisers, space separated"
+        default: en devanagari ch
+      tessdata:
+        description: "Tesseract model set: best | fast"
+        default: best
+      tess_langs:
+        description: "Tesseract languages, space separated"
+        default: eng hin
+      release_tag:
+        description: "Attach the built zips to this existing GitHub release tag (e.g. v1.0.0; empty = artifacts only)"
+        default: ""
+
+jobs:
+  # Same as build-windows.yml: fetch and convert the OCR models on Linux, where
+  # paddle2onnx works, and hand them to the Windows job as an artifact.
+  ocr-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEFAULT_ENGINE: ${{ github.event.inputs.default_engine || 'tesseract' }}
+      FALLBACK_ENGINE: ${{ github.event.inputs.fallback_engine || 'paddle' }}
+      PADDLE_MODELS: ${{ github.event.inputs.paddle_models || 'mobile server' }}
+      PADDLE_LANGS: ${{ github.event.inputs.paddle_langs || 'en devanagari ch' }}
+      TESSDATA: ${{ github.event.inputs.tessdata || 'best' }}
+      TESS_LANGS: ${{ github.event.inputs.tess_langs || 'eng hin' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reuse fetched models
+        id: models-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            packaging/tessdata/
+            packaging/models/
+            packaging/ocr_build.json
+          key: ocr-models-${{ hashFiles('packaging/fetch_ocr_models.py') }}-${{ env.TESSDATA }}-${{ env.TESS_LANGS }}-${{ env.PADDLE_MODELS }}-${{ env.PADDLE_LANGS }}-${{ env.DEFAULT_ENGINE }}-${{ env.FALLBACK_ENGINE }}
+      - name: Install the model converter (build machine only)
+        if: steps.models-cache.outputs.cache-hit != 'true'
+        run: python -m pip install paddlepaddle paddle2onnx packaging
+      - name: Fetch Tesseract and PaddleOCR models
+        if: steps.models-cache.outputs.cache-hit != 'true'
+        run: |
+          python packaging/fetch_ocr_models.py --tessdata $TESSDATA --langs $TESS_LANGS \
+            --paddle $PADDLE_MODELS --paddle-langs $PADDLE_LANGS \
+            --default-engine $DEFAULT_ENGINE --fallback-engine $FALLBACK_ENGINE
+          cat packaging/ocr_build.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocr-models-nuitka
+          path: |
+            packaging/tessdata/
+            packaging/models/
+            packaging/ocr_build.json
+          if-no-files-found: error
+
+  build:
+    needs: ocr-models
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: ${{ fromJSON((github.event.inputs.build || 'all') == 'all' && '["app","server"]' || format('["{0}"]', github.event.inputs.build)) }}
+    env:
+      KIND: ${{ matrix.kind }}
+      OMR_APP: ${{ matrix.kind == 'app' && '1' || '0' }}
+      PYTHONIOENCODING: utf-8
+      # Nuitka's compile cache, kept between runs to speed up builds.
+      NUITKA_CACHE_DIR: ${{ github.workspace }}\.nuitka-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ocr-models-nuitka
+          path: packaging
+
+      - name: Install dependencies and Nuitka
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip wheel
+          python -m pip install -r requirements.api.txt
+          if ($env:OMR_APP -eq "1") { python -m pip install -r packaging/requirements-app.txt }
+          python -m pip install nuitka
+
+      - name: Write the license public key
+        shell: pwsh
+        env:
+          LICENSE_PUBLIC_KEY: ${{ secrets.LICENSE_PUBLIC_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:LICENSE_PUBLIC_KEY)) {
+            Write-Warning "LICENSE_PUBLIC_KEY secret is not set: this build will NOT verify licenses. Set it under Settings > Secrets and variables > Actions (see docs/licensing.md)."
+          } else {
+            New-Item -ItemType Directory -Force src\licensing | Out-Null
+            $env:LICENSE_PUBLIC_KEY | Set-Content -NoNewline src\licensing\public_key.pem
+            if (-not (Select-String -Path src\licensing\public_key.pem -Pattern "BEGIN PUBLIC KEY" -Quiet)) {
+              Write-Error "LICENSE_PUBLIC_KEY does not look like a PEM public key"; exit 1
+            }
+            Write-Host "Public key written."
+          }
+
+      - name: Engine smoke test from source
+        run: python packaging/omr_desktop.py --selftest
+
+      - name: Reuse Tesseract
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: packaging/tesseract/
+          key: win-tesseract-${{ hashFiles('packaging/prepare_bundle.py') }}
+
+      - name: Bundle Tesseract (UB Mannheim build)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          choco install tesseract -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $src = "C:\Program Files\Tesseract-OCR"
+          if (!(Test-Path "$src\tesseract.exe")) { Write-Error "tesseract.exe not found"; exit 1 }
+          $dst = "packaging\tesseract"
+          New-Item -ItemType Directory -Force -Path "$dst\tessdata" | Out-Null
+          Copy-Item "$src\tesseract.exe" $dst
+          Copy-Item "$src\*.dll" $dst
+          foreach ($f in @("eng.traineddata", "osd.traineddata")) {
+            if (Test-Path "$src\tessdata\$f") { Copy-Item "$src\tessdata\$f" "$dst\tessdata" }
+          }
+          if (Test-Path "$src\tessdata\configs") { Copy-Item -Recurse "$src\tessdata\configs" "$dst\tessdata" }
+          & "$dst\tesseract.exe" --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "copied tesseract.exe does not start"; exit 1 }
+
+      - name: Bundle cloudflared
+        if: env.KIND == 'server'
+        shell: pwsh
+        run: python packaging/prepare_bundle.py --only cloudflared
+
+      - name: Cache Nuitka compile cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUITKA_CACHE_DIR }}
+          key: nuitka-cache-${{ matrix.kind }}-${{ hashFiles('src/**/*.py', 'packaging/build_nuitka.py') }}
+          restore-keys: |
+            nuitka-cache-${{ matrix.kind }}-
+
+      - name: Build with Nuitka
+        shell: pwsh
+        run: |
+          $mode = if ($env:KIND -eq "server") { "${{ github.event.inputs.mode || 'onedir' }}" } else { "onedir" }
+          $buildArgs = @("packaging/build_nuitka.py", "--mode", $mode, "--msvc")
+          if ($env:KIND -eq "server") { $buildArgs += "--launcher" }
+          python @buildArgs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Arrange the build folder
+        id: arrange
+        shell: pwsh
+        run: |
+          # Nuitka standalone writes <entry>.dist; normalise to dist-nuitka\OMRChecker
+          $distRoot = "dist-nuitka"
+          $onefile = "${{ github.event.inputs.mode || 'onedir' }}" -eq "onefile" -and $env:KIND -eq "server"
+          if ($onefile) {
+            "onefile=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Get-ChildItem $distRoot
+            exit 0
+          }
+          $src = Get-ChildItem $distRoot -Directory -Filter "*.dist" | Select-Object -First 1
+          if (-not $src) { Write-Error "no .dist folder produced by Nuitka"; exit 1 }
+          $out = Join-Path $distRoot "OMRChecker"
+          if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+          Rename-Item $src.FullName $out
+          if (!(Test-Path "$out\OMRChecker.exe")) { Write-Error "OMRChecker.exe missing from the build"; exit 1 }
+          "onefile=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Smoke-test the build (server onedir)
+        if: env.KIND == 'server' && steps.arrange.outputs.onefile == 'false'
+        shell: pwsh
+        run: |
+          $exe = "dist-nuitka\OMRChecker\OMRChecker.exe"
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $sample = "samples\sample1"
+          & $exe --bulk $sample --template "$sample\template.json" --out build\bulk_out --workers 2
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (!(Test-Path build\bulk_out\results.jsonl)) { Write-Error "no bulk results"; exit 1 }
+          $p = Start-Process -FilePath $exe -ArgumentList "--no-browser","--no-window","--port","8799" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 1
+            try { $r = Invoke-RestMethod http://127.0.0.1:8799/health; if ($r.status -eq "ok") { $ok = $true; break } } catch {}
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { Write-Error "server did not answer /health"; exit 1 }
+          if (!(Test-Path dist-nuitka\OMRChecker\tesseract\tesseract.exe)) { Write-Error "Tesseract missing from build"; exit 1 }
+          if (-not $r.engines.tesseract) { Write-Error "Tesseract not found by the exe"; exit 1 }
+
+      - name: Smoke-test the build (server onefile)
+        if: env.KIND == 'server' && steps.arrange.outputs.onefile == 'true'
+        shell: pwsh
+        run: |
+          dist-nuitka\OMRChecker.exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke-test the build (app window)
+        if: env.KIND == 'app'
+        shell: pwsh
+        run: |
+          $exe = "dist-nuitka\OMRChecker\OMRChecker.exe"
+          $data = "$env:RUNNER_TEMP\omr_app_data"
+          $t = Start-Process -FilePath $exe -ArgumentList "--selftest","--data-dir",$data -Wait -PassThru
+          if (Test-Path "$data\app.log") { Get-Content "$data\app.log" -Tail 30 }
+          if ($t.ExitCode -ne 0) { Write-Error "selftest failed ($($t.ExitCode))"; exit 1 }
+          if (Test-Path "dist-nuitka\OMRChecker\omr_data") { Remove-Item -Recurse -Force "dist-nuitka\OMRChecker\omr_data" }
+
+      - name: Zip the build
+        id: zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-nuitka\out | Out-Null
+          if ($env:KIND -eq "app") {
+            $zip = "dist-nuitka\out\OMRChecker-app-nuitka-win64.zip"
+            7z a -tzip -mx=7 $zip .\dist-nuitka\OMRChecker | Out-Null
+          } elseif (Test-Path "dist-nuitka\OMRChecker.exe") {
+            Copy-Item "dist-nuitka\OMRChecker.exe" "dist-nuitka\out\OMRChecker-server-nuitka-onefile.exe"
+          } else {
+            $zip = "dist-nuitka\out\OMRChecker-server-nuitka-win64.zip"
+            7z a -tzip -mx=7 $zip .\dist-nuitka\OMRChecker | Out-Null
+          }
+          Get-ChildItem dist-nuitka\out | ForEach-Object { Write-Host "$($_.Name): $($_.Length) bytes" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OMRChecker-${{ matrix.kind }}-nuitka
+          path: dist-nuitka/out/*
+          if-no-files-found: error
+
+      - name: Attach to a GitHub release
+        if: github.event.inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.event.inputs.release_tag }}" 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Error "release ${{ github.event.inputs.release_tag }} does not exist; create it first"; exit 1 }
+          gh release upload "${{ github.event.inputs.release_tag }}" (Get-ChildItem dist-nuitka\out\*).FullName --clobber
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+    permissions:
+      contents: write
