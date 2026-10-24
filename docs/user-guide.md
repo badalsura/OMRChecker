@@ -14,6 +14,7 @@ sections that contain all the words you type, for example `double mark`,
 | Read a few sheets now | 2. Scan |
 | Read thousands of sheets, pause, resume after a crash, rescan errors | 2. Jobs |
 | Check the sheets the program was unsure about | 2. Review queue (and the flag table there) |
+| Compare our answers with a physical OMR scanner's (OpScan) or another program's file and settle every difference | 2. Compare tab |
 | Get a CSV / Excel file of the answers | 2. Export |
 | Look at one sheet, correct a bubble, verify it | 3. Results screen |
 | Re-read a sheet with other settings, or a sheet read upside down, mirrored or a row off | 3. Results screen → Regrade, Place the page by hand |
@@ -384,6 +385,7 @@ The address in the browser follows the tab, for example `http://127.0.0.1:8765/#
 | --- | --- |
 | **Scan** | Quick reading of a few sheets: pick a template, drop images or PDFs, and see each sheet's answers right away. Also has **📷 Live camera** to read sheets from a camera, and **Export CSV** / **Clear list** for the sheets in this list. |
 | **Review queue** | Works through single items the engine was unsure about (a faint mark, a double mark, an unreadable code), one at a time or in a grid, with keyboard shortcuts. |
+| **Compare** | Compares our results with another reader's file (a physical OMR scanner such as Scantron OpScan 6, or any CSV or fixed-width export), shows only the mismatches on the sheet image, and records which value each reviewer kept. |
 | **Results** | Browse whole graded sheets with their overlay, correct bubbles and values, verify sheets, regrade, check accuracy and export. |
 | **Jobs** | Start and watch large batches (bulk jobs) from uploaded files or from a folder on the server; pause, resume, rescan errors. |
 | **Templates** | Create, upload, generate and edit templates: the description of where every bubble, field and zone is on your sheet, how to align the page, how to score it. |
@@ -804,6 +806,77 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `too_few_marks` | always (only when the template sets a minimum) | Fewer bubbles were marked than expected. Often a pen the same colour as the print was dropped out with it. | Are there marks the scanner did not see? Check the colour settings of the template. |
 
 Accepting a whole-sheet item only records that you checked the sheet. If answers are wrong because of the sheet problem, fix them on the Results tab.
+
+---
+
+### The Compare tab
+
+The Compare tab checks our results against another reader's results for the same sheets: a physical OMR scanner such as **Scantron OpScan 6** (its ScanTools Plus export), an older program, or a keyed-in file. It finds every field where the two disagree and shows only those, one sheet at a time, with the field highlighted on the sheet. For each mismatch a reviewer keeps either value.
+
+The choices go into a **separate reconciled layer**. The read results are never changed: the Results tab, the review queue and the normal export still show what we read. The **Reconciled CSV** export applies the choices on top. Several people can work on one comparison at once: a sheet someone has open is locked to them, and the others get the next sheet.
+
+**Starting a comparison** (**New comparison…**):
+
+1. Pick the **template** and, if you like, one **job** (otherwise every sheet of the template is in scope).
+2. Pick **their file**: a CSV (comma, semicolon, tab or pipe; found by itself) or a fixed-width text file such as a `.dat`. For fixed width, choose **Fixed width** and describe the columns, one per line, as `NAME START LENGTH` with START counting from 1. A range names consecutive one-character cells:
+
+   ```
+   SEQ 1 10
+   ROLL 11 12
+   q1..q200 41 1
+   ```
+
+   Untick **First row is a header** when the file has no header; the columns are then called C1, C2…
+3. Press **Read file**. The first rows are shown (␣ marks a single space), with the columns matched to our fields by name: `Q001`, `Q1`, `q-1` and a bare `1` all match `q1`. Clear a box to leave a column out, or type the field it belongs to.
+4. Say **how their rows find our sheets**: their column, what it matches on our side, and how to compare the two.
+
+   | Our side | Use it when |
+   |---|---|
+   | our file name | their file has the image name or the sheet number we used to name the files |
+   | an imprint zone | the scanner printed a sequence number on each sheet (see Imprint zones), e.g. their `SEQ` 0100023 against our `S0100023` |
+   | a roll number or other field | both have the same roll number on every sheet |
+   | scan order | neither has a key: their row 1 is our first sheet of the job, and so on |
+
+   **digits only** compares just the digits, without leading zeros (`S0123`, `123` and `123.jpg` match); **text** ignores case, folders and the image extension.
+5. Set the **rules** (below), give it a name and press **Compare**. The toast says how many sheets matched and how many mismatches there are.
+
+**Rules** (also under **Rules…** later; changing them compares again and keeps every choice whose two values did not change):
+
+| Rule | Choices |
+|---|---|
+| Compare | every mapped column; questions only (bubble fields with letter options: no roll digits); only the fields you list, e.g. `q1..q50, Roll` |
+| One side blank, the other marked | a mismatch (default), or ignored |
+| Multi-marks | equal any other multi-mark (default: an OpScan `*` equals our `AC`); must mark the same options (when both sides list them); ignored |
+| Their blank is written as | default `space, -` (an empty cell is always blank) |
+| Their multi-mark is written as | default `*` |
+| Upper and lower case differ | off by default |
+| Ignore spaces inside values | on by default: a roll number `12 45` with a blank digit equals `1245` |
+
+**Reviewing.** The sheet is on the left with every mismatch boxed (orange: the current one, green: decided). On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
+
+| Key | Button | What it does |
+|---|---|---|
+| `1` | External | keep their value, go to the next open mismatch |
+| `2` | Ours | keep our value, go to the next open mismatch |
+| `R` | Undo | undo the last choice on this sheet and go back to that field; with nothing to undo, go to the previous field |
+| `S` | Next mismatch | go to the next mismatch on this sheet without choosing |
+| `Tab` | Skip sheet | leave this sheet without saving; it stays open for later |
+| `Shift`+`Tab` | Previous sheet | go back a sheet (also one already reconciled, to change it) |
+| `Enter` | Save and next | save the choices and go to the next open sheet |
+
+A sheet saved with a mismatch still open stays in the queue and comes round again at the end. The top line shows the sheet number, how many sheets are open, how many mismatches are decided and how many of their rows and our sheets matched nothing.
+
+**Compare again** re-reads our current values (after corrections in the review queue or on the Results tab). A choice is kept when both values are still the same; otherwise that mismatch is open again.
+
+**Export…**
+
+| File | What is in it |
+|---|---|
+| Reconciled CSV | every sheet in scope with all our columns, the kept value wherever someone decided, the status (`clean`, `pending`, `partial`, `done`, `no_record`, `duplicate`, `not_read`), how many external values were kept, the fields still open, and who reconciled it |
+| Audit CSV | every choice and undo: when, who, the sheet, the field, both values, the kept value and its source |
+| Unmatched CSV | their rows that found no sheet (no key, duplicate key, no sheet) and our sheets that found no row |
+
+Deleting a comparison (administrators, or the person who made it) removes its choices only. Comparisons are stored in `compare.sqlite3` and the `compare` folder of the data folder.
 
 ---
 

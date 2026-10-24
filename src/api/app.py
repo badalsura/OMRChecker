@@ -52,7 +52,7 @@ from src.api.accounts import Accounts, request_user
 from src.api import align_routes
 from src.api import exports as exports_module
 from src.api import jobs as jobs_module
-from src.api import editor_routes, fs_routes, generator_routes, manage_routes, ocr_routes, results_routes, views_routes
+from src.api import editor_routes, fs_routes, generator_routes, compare_routes, manage_routes, ocr_routes, results_routes, views_routes
 from src.api import template_ops_routes
 from src.api.results import DEFAULT_USER, ResultsService, log_review
 from src.api.review import (
@@ -1253,6 +1253,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     align_routes.register(app, ctx, secured, read_upload)
     # original / full-colour views, folder picker, deletes and bulk review
     views_routes.register(app, ctx, secured)
+    compare_routes.register(app, ctx, secured)
     fs_routes.register(app, ctx, secured)
     manage_routes.register(app, ctx, secured)
     ocr_routes.register(app, ctx, secured)
