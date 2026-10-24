@@ -416,6 +416,11 @@ class ImageInstanceOps:
 
         snap_radius = config.alignment_params.block_snap_radius
         for field_block in template.field_blocks:
+            # The template is reused for every sheet a process reads: without
+            # this, a block snap that finds no better fit would keep the
+            # previous sheet's sideways shift (auto_align sets its own above)
+            if not auto_align:
+                field_block.shift = 0
             field_block.shift_y = 0
             radius = self.snap_radius_for(field_block, snap_radius)
             if radius:
@@ -455,11 +460,7 @@ class ImageInstanceOps:
                     # shifted
                     x = pt.x + field_block.shift + pt.dx
                     y = pt.y + field_block.shift_y + pt.dy
-                    rect = [y, y + box_h, x, x + box_w]
-                    q_strip_vals.append(
-                        cv2.mean(img[rect[0] : rect[1], rect[2] : rect[3]])[0]
-                        # detectCross(img, rect) ? 100 : 0
-                    )
+                    q_strip_vals.append(self.bubble_mean(img, x, y, box_w, box_h))
                 q_std_vals.append(round(np.std(q_strip_vals), 2))
                 all_q_strip_arrs.append(q_strip_vals)
                 # _, _, _ = get_global_threshold(q_strip_vals, "QStrip Plot",
@@ -662,6 +663,11 @@ class ImageInstanceOps:
                 double_mark_flags = self.resolve_double_marks(
                     field_block_bubbles, bubble_details, detected_bubbles, review_params
                 )
+                if not all(
+                    self.bubble_on_page(img, b["x"], b["y"], box_w, box_h)
+                    for b in bubble_details
+                ):
+                    double_mark_flags = double_mark_flags + ["out_of_page"]
 
                 for bubble in detected_bubbles:
                     field_label, field_value = (
@@ -974,6 +980,24 @@ class ImageInstanceOps:
         )
         return probabilities[:, self.bubble_classifier.label_index("marked")]
 
+    @staticmethod
+    def bubble_on_page(img, x, y, box_w, box_h):
+        page_h, page_w = img.shape[:2]
+        return 0 <= x and 0 <= y and x + box_w <= page_w and y + box_h <= page_h
+
+    @staticmethod
+    def bubble_mean(img, x, y, box_w, box_h):
+        """Mean intensity of a bubble's box, clipped to the page. A box off
+        the page used to give an empty (or wrapped, for negative x / y) slice
+        whose mean of 0 read as a fully marked bubble; nothing of it on the
+        page now reads as white, and the field is flagged out_of_page."""
+        page_h, page_w = img.shape[:2]
+        x0, y0 = max(int(x), 0), max(int(y), 0)
+        x1, y1 = min(int(x + box_w), page_w), min(int(y + box_h), page_h)
+        if x1 <= x0 or y1 <= y0:
+            return 255.0
+        return cv2.mean(img[y0:y1, x0:x1])[0]
+
     @classmethod
     def get_fill_ratios(cls, img, points, box_w, box_h, threshold):
         """get_fill_ratio for many same-size bubbles at once: the boxes that lie
@@ -1098,7 +1122,9 @@ class ImageInstanceOps:
             "value": value,
             "confidence": round(float(confidence), 3),
             "flags": flags,
-            "needs_review": any(flag in params.review_flags for flag in flags),
+            # A bubble partly off the page was not really read: always review
+            "needs_review": "out_of_page" in flags
+            or any(flag in params.review_flags for flag in flags),
             "bubbles": bubble_details,
         }
 

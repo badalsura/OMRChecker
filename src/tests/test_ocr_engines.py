@@ -492,10 +492,13 @@ def test_icr_without_a_model_reads_handwriting_with_paddle(paddle_models):
     assert result.engine == "paddle" and result.details["mode"] == "line"
     assert result.details["characters"] == ["1", "2", "", "3"]
     assert result.value == "123" and not result.needs_review
-    # The line gives the wrong count: each box is read on its own
+    # The line gives the wrong count: the characters it read stay with the
+    # boxes they were read over, the box left without one is read on its own,
+    # and the zone goes to review
     page, zone = boxed("1234", 4)
-    result = icr.read_icr_zone(zone, page, None, settings)
-    assert result.details["mode"] == "boxes"
+    result = finalize(icr.read_icr_zone(zone, page, None, settings), zone)
+    assert result.details["mode"] == "aligned"
+    assert "icr_alignment" in result.flags and result.needs_review
     # Tesseract only when asked
     off = icr.read_icr_zone(zone, page, None, dict(settings, icr_engine="tesseract"))
     assert "no_icr_model" in off.flags
@@ -510,3 +513,84 @@ def test_zone_picks_its_paddle_model(paddle_models):
     caps = text_reader.ocr_capabilities({"paddle_model_dir": str(paddle_models)})
     assert {"size": "mobile", "lang": "en"} in caps["paddle_models"]
     assert {"size": "server", "lang": "ch"} not in caps["paddle_models"]
+
+
+# ------------------------------------------------------------- dictionaries
+def test_dictionary_keeps_every_line_in_place(tmp_path):
+    # PP-OCRv5's first entry is U+3000; written as an empty line it used to be
+    # dropped, which shifted every character by one (600002 read as 711113)
+    path = tmp_path / "dict.txt"
+    path.write_text("\n0\n1\u2028\n2\n", encoding="utf-8")
+    table = paddle_ocr.load_dictionary(str(path))
+    assert table == ["<blank>", "\u3000", "0", "1\u2028", "2", " "]
+
+
+def test_dictionary_that_does_not_fit_the_model_disables_paddle(paddle_models):
+    # One character short: every read would be shifted, so the engine refuses
+    (paddle_models / "ppocrv5_en_dict.txt").write_text("\n".join(DIGITS[1:]) + "\n")
+    paddle_ocr.reset_cache()
+    engine = paddle_ocr.get_engine(model_dir=str(paddle_models))
+    assert not engine.available
+    assert "does not match" in engine.unavailable_reason
+
+
+def test_ctc_decode_reports_where_each_character_was_read():
+    chars = ["<blank>", "a", "b", " "]
+    probs = np.full((4, 4), 0.01, np.float32)
+    for t, index in enumerate([1, 0, 0, 2]):
+        probs[t, index] = 0.9
+    where = []
+    text, _ = paddle_ocr.ctc_decode(probs, chars, positions=where)
+    assert text == "ab" and where == [0.125, 0.875]
+
+
+def test_fetch_keeps_whitespace_entries_of_the_dictionary():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "packaging" / "fetch_ocr_models.py"
+    spec = importlib.util.spec_from_file_location("fetch_ocr_models", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    yml = "PostProcess:\n  character_dict:\n  - \u3000\n  - '0'\n  - \"1\"\n  - ' '\n  name: CTCLabelDecode\n"
+    assert module.dictionary_from_yml(yml) == ["\u3000", "0", "1", " "]
+
+
+# -------------------------------------------------------------- ICR boxes
+def boxes_image(strokes, boxes=4, size=40, shift=0):
+    """A row of printed boxes (borders `shift` px off the equal split) with a
+    vertical stroke like a "1" in the middle of the boxes listed."""
+    crop = np.full((size, boxes * size), 255, np.uint8)
+    for i in range(boxes + 1):
+        x = min(i * size + (shift if 0 < i < boxes else 0), boxes * size - 1)
+        crop[:, max(x - 1, 0) : x + 1] = 0
+    crop[:2], crop[-2:] = 0, 0
+    for i in strokes:
+        centre = i * size + size // 2 + shift
+        crop[8 : size - 8, centre - 2 : centre + 2] = 0
+    return crop
+
+
+def test_clean_box_keeps_the_stroke_of_a_one():
+    from src.readers import icr
+
+    box = icr.split_character_boxes(boxes_image([0], boxes=1), 1)[0]
+    cleaned, ratio = icr.clean_box(box)
+    assert ratio >= icr.MIN_INK_RATIO  # the "1" used to be erased as a grid line
+    h, w = cleaned.shape
+    assert cleaned[h // 2, w // 2 - 4 : w // 2 + 4].min() == 0
+    # A box with only its border is blank
+    _, empty = icr.clean_box(icr.split_character_boxes(boxes_image([], boxes=1), 1)[0])
+    assert empty < icr.MIN_INK_RATIO
+
+
+def test_split_follows_the_printed_borders():
+    from src.readers import icr
+
+    crop = boxes_image([0, 1, 2, 3], shift=6)
+    boxes = icr.split_character_boxes(crop, 4)
+    assert [b.shape[1] for b in boxes] == [46, 40, 40, 34]
+    # Every box sees its own stroke and none sees a neighbour's border inside
+    for box in boxes:
+        _, ratio = icr.clean_box(box)
+        assert ratio >= icr.MIN_INK_RATIO

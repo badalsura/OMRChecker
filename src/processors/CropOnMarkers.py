@@ -7,12 +7,10 @@ from src.constants.image_processing import (
     DEFAULT_BLACK_COLOR,
     DEFAULT_BORDER_REMOVE,
     DEFAULT_GAUSSIAN_BLUR_PARAMS_MARKER,
-    DEFAULT_LINE_WIDTH,
     DEFAULT_NORMALIZE_PARAMS,
     DEFAULT_WHITE_COLOR,
     ERODE_RECT_COLOR,
     EROSION_PARAMS,
-    MARKER_RECTANGLE_COLOR,
     NORMAL_RECT_COLOR,
     QUADRANT_DIVISION,
 )
@@ -138,14 +136,8 @@ class CropOnMarkers(ImagePreprocessor):
             pt[0] += origins[k][0]
             pt[1] += origins[k][1]
             # print(">>",pt)
-            image = cv2.rectangle(
-                image,
-                tuple(pt),
-                (pt[0] + w, pt[1] + _h),
-                MARKER_RECTANGLE_COLOR,
-                DEFAULT_LINE_WIDTH,
-            )
-            # display:
+            # display only: drawing on `image` itself would put grey boxes into
+            # the page that is warped and read (and into the caller's array)
             image_eroded_sub = cv2.rectangle(
                 image_eroded_sub,
                 tuple(pt),

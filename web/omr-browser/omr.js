@@ -2796,7 +2796,8 @@
     }
     function boxMean(img, x, y, w, h) {
       var x0 = Math.max(x, 0), y0 = Math.max(y, 0), x1 = Math.min(x + w, img.width), y1 = Math.min(y + h, img.height);
-      if (x1 <= x0 || y1 <= y0) return 0;
+      // Nothing of the box on the page reads as white (0 read as a full mark); the field is flagged out_of_page
+      if (x1 <= x0 || y1 <= y0) return 255;
       var s = 0, d = img.data, W = img.width;
       for (var yy = y0; yy < y1; yy++) {
         var b = yy * W;
@@ -2893,7 +2894,7 @@
         value: value,
         confidence: roundTo(confidence, 3),
         flags: list,
-        needs_review: list.some(function (f) {
+        needs_review: list.indexOf("out_of_page") >= 0 || list.some(function (f) {
           return params.review_flags.indexOf(f) >= 0;
         }),
         bubbles: bubbles,
@@ -3387,6 +3388,10 @@
               if (marked) detected.push(bubble);
             });
             var doubleMarkFlags = resolveDoubleMarks(field.bubbles, details, detected, rp);
+            var offPage = details.some(function (d) {
+              return d.x < 0 || d.y < 0 || d.x + bw > img.width || d.y + bh > img.height;
+            });
+            if (offPage) doubleMarkFlags = doubleMarkFlags.concat(["out_of_page"]);
             var fieldExtra = doubleMarkFlags.length ? (extra || []).concat(doubleMarkFlags) : extra;
             detected.forEach(function (b) {
               omrResponse[b.label] = b.label in omrResponse ? omrResponse[b.label] + b.value : b.value;

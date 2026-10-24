@@ -26,10 +26,53 @@ BLANK_LABEL = "<blank>"
 MIN_INK_RATIO = 0.015
 
 
+# Printed box borders: searched for within this fraction of a box width around
+# each equal-split edge; a border is a vertical run at least this fraction of
+# the zone height
+BORDER_SEARCH = 0.3
+BORDER_MIN_HEIGHT = 0.7
+# Grid lines are removed only within this outer fraction of a cleaned box
+EDGE_BAND = 0.2
+
+
 def split_character_boxes(crop, count):
+    """
+    The zone's character boxes, cut at the printed box borders found on this
+    sheet. Each inner edge starts at its equal-split position and moves to the
+    nearest printed vertical line within BORDER_SEARCH of a box width, so a
+    zone a few pixels off the grid (or per-sheet registration wobble) does not
+    put one box's border inside its neighbour. No line found: equal split.
+    """
     h, w = crop.shape[:2]
     edges = np.linspace(0, w, count + 1).astype(int)
+    if count > 1 and h >= 8:
+        edges[1:-1] = [
+            border_near(crop, int(edge), w / float(count)) for edge in edges[1:-1]
+        ]
     return [crop[:, edges[i] : edges[i + 1]] for i in range(count)]
+
+
+def border_near(crop, edge, box_width):
+    grey = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    h, w = grey.shape[:2]
+    reach = max(int(box_width * BORDER_SEARCH), 1)
+    lo, hi = max(edge - reach, 1), min(edge + reach + 1, w - 1)
+    if hi <= lo:
+        return edge
+    strip = grey[:, lo:hi]
+    ink = cv2.adaptiveThreshold(
+        strip, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 8
+    )
+    tall = max(int(h * BORDER_MIN_HEIGHT), 3)
+    lines = cv2.morphologyEx(
+        ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, tall))
+    )
+    column = lines.sum(axis=0) / 255.0
+    if column.max() < tall:
+        return edge
+    # Centre of the strongest columns: a doubled printed line counts as one
+    hot = np.flatnonzero(column >= 0.5 * column.max())
+    return int(round(lo + hot.mean()))
 
 
 def clean_box(box):
@@ -40,17 +83,37 @@ def clean_box(box):
     if inner.size == 0:
         return inner, 0.0
     _, ink = cv2.threshold(inner, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    # Remove long straight strokes left over from the printed grid
-    for kernel in ((max(inner.shape[1] // 2, 1), 1), (1, max(inner.shape[0] // 2, 1))):
-        lines = cv2.morphologyEx(
-            ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, kernel)
-        )
-        ink = cv2.subtract(ink, lines)
+    ink = cv2.subtract(ink, grid_lines(ink))
     ink_ratio = float(np.count_nonzero(ink)) / float(ink.size)
     # Otsu on a blank box splits paper noise; require real contrast as well
     if inner.max() - inner.min() < 40:
         ink_ratio = 0.0
     return 255 - ink, ink_ratio
+
+
+def grid_lines(ink):
+    """
+    Leftovers of the printed grid: straight runs over half the box long, but
+    only in the outer EDGE_BAND of the box where the borders sit. A run that
+    long in the middle is the stroke of a 1, 4, 7 or 9, or the side of a 0,
+    and removing it there erased the digit itself.
+    """
+    h, w = ink.shape[:2]
+    found = np.zeros_like(ink)
+    for horizontal in (True, False):
+        kernel = (max(w // 2, 1), 1) if horizontal else (1, max(h // 2, 1))
+        lines = cv2.morphologyEx(
+            ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, kernel)
+        )
+        band = np.zeros_like(lines)
+        if horizontal:
+            edge = max(int(h * EDGE_BAND), 2)
+            band[:edge], band[-edge:] = 255, 255
+        else:
+            edge = max(int(w * EDGE_BAND), 2)
+            band[:, :edge], band[:, -edge:] = 255, 255
+        found = cv2.bitwise_or(found, cv2.bitwise_and(lines, band))
+    return found
 
 
 def read_icr_zone(zone, image, classifier=None, ocr_params=None):
@@ -187,11 +250,12 @@ def paddle_icr_engine(settings, zone):
         return None
 
 
-def boxes_strip(boxes):
-    """Cleaned character boxes side by side on one white line."""
+def boxes_strip(boxes, spans=None):
+    """Cleaned character boxes side by side on one white line. spans: optional
+    list that receives each box's (start, end) x range on the line."""
     height = max(b.shape[0] for b in boxes)
     gap = np.full((height, max(height // 3, 4)), 255, np.uint8)
-    strip = []
+    strip, x, ranges = [], 0, []
     for b in boxes:
         strip += [
             cv2.copyMakeBorder(
@@ -199,10 +263,17 @@ def boxes_strip(boxes):
             ),
             gap,
         ]
+        ranges.append((x, x + b.shape[1]))
+        x += b.shape[1] + gap.shape[1]
+    if spans is not None:
+        spans[:] = ranges
     return np.hstack(strip[:-1])
 
 
-def pad_white(image, size=6):
+PAD = 6
+
+
+def pad_white(image, size=PAD):
     return cv2.copyMakeBorder(image, size, size, size, size, cv2.BORDER_CONSTANT, value=255)
 
 
@@ -231,15 +302,45 @@ def read_with_paddle(zone, crop, count, whitelist, engine):
             zone.name, zone.type, "", 1.0, ["empty"],
             details={"engine": "paddle"}, engine="paddle",
         )
-    text, chars = engine.recognize_line(pad_white(boxes_strip(inked)), allowed)
-    pairs = [(c, p) for c, p in zip(text, chars) if c != " "]
-    mode = "line"
-    if len(pairs) != len(inked):
-        mode, pairs = "boxes", []
-        for box in inked:
-            text, chars = engine.recognize_line(pad_white(box), allowed)
-            text = text.replace(" ", "")
-            pairs.append((text[:1], float(np.mean(chars)) if text and chars else 0.0))
+    spans, where = [], []
+    line = pad_white(boxes_strip(inked, spans))
+    text, chars = engine.recognize_line(line, allowed, positions=where)
+    # Each character goes to the box it was read over. A line that does not
+    # give exactly one character per box keeps the boxes it does fit; only the
+    # others are read on their own (a lone character is hard for a line
+    # recogniser, so throwing the whole line away lost good reads)
+    per_box = [[] for _ in inked]
+    for char, prob, at in zip(text, chars, where):
+        if char == " ":
+            continue
+        x = at * line.shape[1] - PAD
+        nearest = min(
+            range(len(spans)),
+            key=lambda i: (
+                0
+                if spans[i][0] <= x < spans[i][1]
+                else min(abs(x - spans[i][0]), abs(x - spans[i][1]))
+            ),
+        )
+        per_box[nearest].append((char, prob))
+    mode, flags, pairs = "line", [], []
+    for box, found in zip(inked, per_box):
+        if len(found) == 1:
+            pairs.append(found[0])
+            continue
+        mode = "aligned"
+        if found:  # two characters over one box: keep the surer
+            pairs.append(max(found, key=lambda pair: pair[1]))
+            continue
+        alone, probs = engine.recognize_line(pad_white(box), allowed)
+        alone = alone.replace(" ", "")
+        if alone:
+            pairs.append((alone[:1], float(np.mean(probs)) if probs else 0.0))
+        else:  # ink but no character: never drop it from the value silently
+            pairs.append(("", 0.0))
+            flags.append("unread_box")
+    if mode == "aligned":  # the line did not fit the boxes: a person checks it
+        flags.append("icr_alignment")
     found = iter(pairs)
     characters, confidences = [], []
     for box in boxes:
@@ -256,7 +357,7 @@ def read_with_paddle(zone, crop, count, whitelist, engine):
         zone.type,
         value,
         float(min(confidences)),
-        [],
+        sorted(set(flags)),
         details={
             "engine": "paddle",
             "mode": mode,

@@ -66,6 +66,7 @@ _ORT = None  # module, False when it failed to import
 _ORT_ERROR = None
 _SESSIONS = {}  # path -> InferenceSession or None (failed)
 _DICTS = {}
+_CLASSES = {}  # rec model path -> number of output classes
 _WARNED = set()
 
 
@@ -163,28 +164,35 @@ def load_dictionary(dict_path=None, session=None):
     key = str(dict_path) if dict_path else id(session)
     if key in _DICTS:
         return _DICTS[key]
-    chars = None
+    text = None
     if dict_path and Path(dict_path).is_file():
         text = Path(dict_path).read_text(encoding="utf-8")
-        chars = [line.rstrip("\r\n") for line in text.splitlines()]
     elif session is not None:
         meta = session.get_modelmeta().custom_metadata_map or {}
-        if meta.get("character"):
-            chars = meta["character"].splitlines()
-    if chars is None:
+        text = meta.get("character") or None
+    if text is None:
         return None
-    chars = [c for c in chars if c != ""]
+    # One entry per line, by position: the model's class i is line i. An entry
+    # can itself be a space (PP-OCRv5's first is U+3000), so lines are split on
+    # "\n" only (str.splitlines also breaks on U+2028, U+0085, ...) and an empty
+    # line keeps its place; dropping it would shift every later character by one
+    chars = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+    if chars and chars[-1] == "":
+        chars.pop()  # the file's final newline
+    chars = [c if c != "" else "\u3000" for c in chars]
     table = ["<blank>"] + chars + [" "]
     _DICTS[key] = table
     return table
 
 
-def ctc_decode(probs, characters, allowed=None):
+def ctc_decode(probs, characters, allowed=None, positions=None):
     """
     Best-path CTC decoding of one (T, C) probability matrix.
 
     allowed: optional set of characters; others (except the blank) are masked
     out before the argmax, like Tesseract's whitelist.
+    positions: optional list that receives, per returned character, where it
+    was read along the line (0..1, the centre of its first timestep).
     Returns (text, [per-character probability]).
     """
     probs = np.asarray(probs, dtype=np.float32)
@@ -197,19 +205,25 @@ def ctc_decode(probs, characters, allowed=None):
         probs = np.where(mask[None, :], probs, 0.0)
     best = probs.argmax(axis=1)
     scores = probs.max(axis=1)
-    text, confidences, previous = [], [], -1
-    for index, score in zip(best, scores):
+    steps = max(len(best), 1)
+    text, confidences, where, previous = [], [], [], -1
+    for step, (index, score) in enumerate(zip(best, scores)):
         if index != previous and index != 0 and index < len(characters):
             text.append(characters[index])
             confidences.append(float(score))
+            where.append((step + 0.5) / steps)
         previous = index
     # Strip edge spaces with their scores
     while text and text[0] == " ":
         text.pop(0)
         confidences.pop(0)
+        where.pop(0)
     while text and text[-1] == " ":
         text.pop()
         confidences.pop()
+        where.pop()
+    if positions is not None:
+        positions[:] = where
     return "".join(text), confidences
 
 
@@ -306,6 +320,31 @@ def crop_box(image, box):
     return crop
 
 
+def rec_class_count(path, session):
+    """Output classes of a recognition model (blank + dictionary + space), from
+    its declared shape or else one run on a blank line; None if unknown."""
+    with _LOCK:
+        if path in _CLASSES:
+            return _CLASSES[path]
+    count = None
+    try:
+        dim = session.get_outputs()[0].shape[-1]
+        if isinstance(dim, int) and dim > 0:
+            count = dim
+        else:
+            name = session.get_inputs()[0].name
+            blank = np.full((REC_HEIGHT, REC_HEIGHT * 2, 3), 255, np.uint8)
+            output = session.run(
+                None, {name: rec_preprocess(blank).astype(np.float32)}
+            )[0]
+            count = int(output.shape[-1])
+    except Exception:  # pragma: no cover - unusual model; skip the check
+        count = None
+    with _LOCK:
+        _CLASSES[path] = count
+    return count
+
+
 class PaddleOCR:
     """One detection + recognition model pair; sessions are shared per process."""
 
@@ -340,19 +379,31 @@ class PaddleOCR:
         if session is None:
             self.unavailable_reason = "PaddleOCR recognition model failed to load"
             return False
-        if load_dictionary(self.dict_path, session) is None:
+        table = load_dictionary(self.dict_path, session)
+        if table is None:
             self.unavailable_reason = "PaddleOCR character dictionary missing"
+            return False
+        classes = rec_class_count(self.rec_path, session)
+        if classes is not None and classes != len(table):
+            # A shifted dictionary reads every character as another one with
+            # full confidence: refuse the engine rather than read wrong values
+            self.unavailable_reason = (
+                f"PaddleOCR character dictionary does not match the model "
+                f"({len(table) - 2} characters for {classes - 2} model classes)"
+            )
+            _warn_once(f"{self.rec_path}#classes", self.unavailable_reason)
             return False
         return True
 
-    def recognize_line(self, image, allowed=None):
-        """(text, per-char confidences) for one text line image."""
+    def recognize_line(self, image, allowed=None, positions=None):
+        """(text, per-char confidences) for one text line image; positions as
+        in ctc_decode."""
         session = _session(self.rec_path)
         characters = load_dictionary(self.dict_path, session)
         name = session.get_inputs()[0].name
         output = session.run(None, {name: rec_preprocess(image).astype(np.float32)})[0]
         # (1, T, C) per-timestep character probabilities
-        return ctc_decode(output[0], characters, allowed)
+        return ctc_decode(output[0], characters, allowed, positions)
 
     def detect(self, image):
         if not self.det_path:
@@ -407,6 +458,7 @@ def reset_cache():
     with _LOCK:
         _SESSIONS.clear()
         _DICTS.clear()
+        _CLASSES.clear()
         _ENGINES.clear()
     if _ORT is False:
         _ORT = None

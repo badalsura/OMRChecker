@@ -35,6 +35,9 @@ ZONE_REVIEW_FLAGS = {
     # OCR: two engines read different text; one character below minCharConfidence
     "engine_disagree",
     "low_char_confidence",
+    # ICR: an inked box read as no character, or two characters over one box
+    "unread_box",
+    "icr_alignment",
 }
 
 
