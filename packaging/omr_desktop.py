@@ -31,7 +31,8 @@ APP_NAME = "OMRChecker"
 LAUNCHER_VERSION = "1.0.0"
 PREFERRED_PORT = 8765
 
-FROZEN = getattr(sys, "frozen", False)
+# PyInstaller sets sys.frozen; Nuitka marks every compiled module instead
+FROZEN = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 # Folder the user sees (portable data lives here)
 APP_DIR = (
     Path(sys.executable).resolve().parent

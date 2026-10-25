@@ -269,6 +269,25 @@ jobs:
           if ($t.ExitCode -ne 0) { Write-Error "selftest failed ($($t.ExitCode))"; exit 1 }
           # The app's selftest does not look for Tesseract: check it is bundled
           if (!(Test-Path dist-nuitka\OMRChecker\tesseract\tesseract.exe)) { Write-Error "Tesseract missing from build"; exit 1 }
+          # Mark every DLL as downloaded from the internet, as Windows' Extract All
+          # does: the app must clear the mark from its .NET parts itself
+          Get-ChildItem dist-nuitka\OMRChecker -Recurse -Filter *.dll | ForEach-Object { Set-Content -LiteralPath $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" }
+          # The window and its engine, with the default data folder (next to the exe): start, query /health, stop
+          $p = Start-Process -FilePath $exe -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 1
+            try { $r = Invoke-RestMethod http://127.0.0.1:8766/health; if ($r.status -eq "ok") { $ok = $true; break } } catch {}
+            if ($p.HasExited) { break }
+          }
+          $alive = -not $p.HasExited
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+          $log = "dist-nuitka\OMRChecker\omr_data\app.log"
+          if (Test-Path $log) { Get-Content $log -Tail 40 }
+          if (Test-Path dist-nuitka\omr_data) { Write-Error "The app put its data folder above the exe folder"; exit 1 }
+          if (-not $ok) { Write-Error "The app's engine did not answer"; exit 1 }
+          if (-not $alive) { Write-Error "The app closed by itself"; exit 1 }
+          if (-not $r.engines.tesseract) { Write-Error "Tesseract not found by the app"; exit 1 }
           if (Test-Path "dist-nuitka\OMRChecker\omr_data") { Remove-Item -Recurse -Force "dist-nuitka\OMRChecker\omr_data" }
 
       - name: Zip the build
