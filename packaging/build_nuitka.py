@@ -143,6 +143,15 @@ NOFOLLOW = [
 ]
 
 
+def installed(module):
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def build_command(args):
     app_mode = not args.launcher
     entry = ENTRY_LAUNCHER if args.launcher else ENTRY_APP
@@ -183,6 +192,10 @@ def build_command(args):
             cmd.append(f"--include-package={pkg}")
         cmd += ["--include-module=clr"]
 
+    if not app_mode:
+        # The launcher's window is Tk
+        cmd.append("--enable-plugin=tk-inter")
+
     for pkg in INCLUDE_PACKAGES:
         cmd.append(f"--include-package={pkg}")
     for pkg in PACKAGE_DATA:
@@ -190,7 +203,10 @@ def build_command(args):
     for pkg in PACKAGE_DATA_OPTIONAL:
         cmd.append(f"--include-package-data={pkg}")
     for mod in INCLUDE_MODULES:
-        cmd.append(f"--include-module={mod}")
+        # Nuitka stops on a module that is not installed (greenlet comes only
+        # with some SQLAlchemy installs)
+        if installed(mod):
+            cmd.append(f"--include-module={mod}")
     for name in NOFOLLOW:
         cmd.append(f"--nofollow-import-to={name}")
 
