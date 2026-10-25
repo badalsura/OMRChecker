@@ -267,7 +267,11 @@ jobs:
             if ($p.HasExited) { break }
           }
           $alive = -not $p.HasExited
-          if ($alive) { Stop-Process -Id $p.Id -Force }
+          # The window's WebView2 processes hold files in the data folder: stop them too
+          if ($alive) { taskkill /PID $p.Id /T /F | Out-Null }
+          Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          $global:LASTEXITCODE = 0
           $log = "dist\OMRChecker\omr_data\app.log"
           if (Test-Path $log) { Get-Content $log -Tail 40 }
           if (-not $ok) { Write-Error "The app's engine did not answer"; exit 1 }
