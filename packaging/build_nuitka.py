@@ -207,6 +207,11 @@ def build_command(args):
         # with some SQLAlchemy installs)
         if installed(mod):
             cmd.append(f"--include-module={mod}")
+    # PyMuPDF's SWIG wrapper (pymupdf.mupdf) is millions of lines of C once
+    # compiled, and MSVC runs out of heap on it: ship PyMuPDF as bytecode
+    for pkg in ("pymupdf", "fitz"):
+        if installed(pkg):
+            cmd.append(f"--noinclude-custom-mode={pkg}:bytecode")
     for name in NOFOLLOW:
         cmd.append(f"--nofollow-import-to={name}")
 
