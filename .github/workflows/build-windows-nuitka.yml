@@ -224,6 +224,8 @@ jobs:
           # An unlicensed exe refuses a bulk run (exit 3)
           & $exe --bulk $sample --template "$sample\template.json" --out build\bulk_out --workers 2
           if ($LASTEXITCODE -ne 3) { Write-Error "an unlicensed bulk run was not refused ($LASTEXITCODE)"; exit 1 }
+          # The step's result is the last exit code: the expected 3 is not a failure
+          $global:LASTEXITCODE = 0
           $p = Start-Process -FilePath $exe -ArgumentList "--no-browser","--no-window","--port","8799" -PassThru
           $ok = $false
           for ($i = 0; $i -lt 60; $i++) {
