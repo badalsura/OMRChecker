@@ -52,7 +52,10 @@ covered by the signature.
    ```
 
    `src/licensing/public_key.pem` is intentionally **not committed** (see
-   `.gitignore`); copy it in before building. `license-keys/`, `*.omrlic` and
+   `.gitignore`); copy it in before building. The build compiles it into the
+   app (`packaging/embed_public_key.py` writes `src/licensing/embedded_key.py`),
+   and a packaged app trusts only that key: a `public_key.pem` placed next to
+   the exe, `OMR_LICENSE_PUBKEY` and `OMR_LICENSE_DISABLE` are ignored there. `license-keys/`, `*.omrlic` and
    private keys are git-ignored so they can never be committed by accident.
 
    **In CI**, store the public key as the **`LICENSE_PUBLIC_KEY`** repository
@@ -90,11 +93,37 @@ covered by the signature.
    (**Choose file → Activate**). It is verified on their machine before being
    saved; an edited or copied-from-another-machine file is refused.
 
+The user sees their license under **License** in the top bar: who it is
+licensed to, edition, features, expiry with the days left, the machine it is
+bound to and its id. A renewed license is loaded there too (**Load license**),
+and **Copy request for a new license** copies this machine's request.
+
 Check any license with:
 
 ```bash
 python tools/license_tool.py inspect acme.omrlic --pubkey ./license-keys/public_key.pem
 ```
+
+## The License Issuer (Windows exe)
+
+`OMRChecker-License-Issuer.exe` is the license admin above as one program,
+built by the Windows workflow (`packaging/license_issuer.spec`). It holds **no
+private key**: start it, enter the path of your `private_key.pem` and its
+passphrase on **Setup & keys**, and issue. A `private_key.pem` next to the exe
+is filled in for you, and `--key <file>` names another. Every issued license
+is also saved under `license-issuer\issued\` next to the exe, beside the
+revocation list. Close its console window to stop it.
+
+## Windows builds and releases
+
+Run **Build Windows portable exe** (Actions → workflow_dispatch) with
+`installer_release` set to a tag, e.g. `v1.0.0-test1` (a tag with a dash is
+published as a pre-release). It builds the app (modern and legacy zips, online
+installer), the server build (portable zip, single exe, installer) and the
+License Issuer, and attaches them all to that release. Run **Build Windows exe
+(Nuitka)** with `release_tag` set to the same tag to add the Nuitka zips.
+Both need the `LICENSE_PUBLIC_KEY` secret; without it the builds accept no
+license at all.
 
 ## Where the license lives
 
@@ -126,7 +155,7 @@ refused.
 
 ## Developing without a license
 
-Set `OMR_LICENSE_DISABLE=1` for local source runs. The test suite sets this by
+Set `OMR_LICENSE_DISABLE=1` for local source runs (a packaged build ignores it). The test suite sets this by
 default (see `conftest.py`); `src/tests/test_licensing.py` re-enables the gate
 with its own throwaway key. **Never** set `OMR_LICENSE_DISABLE` in a shipped
 build.
@@ -135,10 +164,11 @@ Other overrides (mainly for testing and the vendor tool):
 
 | Variable | Meaning |
 |---|---|
-| `OMR_LICENSE_PUBKEY` | Path to the public key to verify against |
+| `OMR_LICENSE_PUBKEY` | Path to the public key to verify against (source runs only) |
 | `OMR_LICENSE_FILE`   | Path to the installed license file |
 | `OMR_LICENSE_DIR`    | Base folder for the license + state files |
-| `OMR_LICENSE_DISABLE`| `1` turns the gate off (development only) |
+| `OMR_LICENSE_DISABLE`| `1` turns the gate off (source runs only) |
+| `OMR_LICENSE_ENFORCE`| `1` turns the gate on in a source run (to test it) |
 
 ## Rotating the key
 

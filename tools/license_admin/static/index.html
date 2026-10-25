@@ -79,7 +79,7 @@
       <label>Path to private key</label>
       <input id="keyPath" placeholder="./license-keys/private_key.pem" />
       <label>Passphrase (if the key is encrypted)</label>
-      <input id="keyPass" type="password" placeholder="leave blank if none" />
+      <input id="keyPass" type="password" placeholder="leave blank if none" onkeydown="if (event.key === 'Enter') loadKey()" />
       <button class="go" onclick="loadKey()">Load key</button>
       <div class="msg" id="loadMsg"></div>
     </div>
@@ -184,6 +184,11 @@ async function refreshStatus() {
       `Private key: ${key} &nbsp;·&nbsp; App public key (${s.public_key_in_app_path}): ${pub}` +
       ` &nbsp;·&nbsp; Revoked: <b>${Object.keys(s.revoked || {}).length}</b>`;
     $("revFile").textContent = s.revocations_file;
+    if (s.offered_key && !s.key_loaded && !$("keyPath").value) {
+      $("keyPath").value = s.offered_key;
+      show("loadMsg", true, "Found a private key. Type its passphrase and click Load key.");
+      $("keyPass").focus();
+    }
   } catch (e) { $("statusBar").textContent = "status error: " + e.message; }
 }
 
@@ -213,7 +218,8 @@ async function issue() {
     const blob = new Blob([r.text], {type:"application/json"});
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
     a.download = r.filename; a.click();
-    show("issueMsg", true, `Issued and downloaded ${r.filename}. Send it to the customer.`);
+    show("issueMsg", true, `Issued and downloaded ${r.filename}` +
+      (r.saved_to ? ` (a copy is in ${r.saved_to})` : "") + ". Send it to the customer.");
   } catch (e) { show("issueMsg", false, e.message); }
 }
 async function inspect() {

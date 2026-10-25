@@ -17,10 +17,12 @@ When the gate runs
 Licensing gates the **packaged desktop app** (the thing you distribute) — not a
 plain ``python main.py`` server run, which is meant to sit behind account/API-key
 permissions you control, not a per-machine license file. So by default the gate
-is active only in a frozen build (PyInstaller / Nuitka set ``sys.frozen``). Two
+is active only in a frozen build (PyInstaller sets ``sys.frozen``, Nuitka
+``__compiled__``). Two
 env vars override that single decision in ``licensing_active()``:
 
 * ``OMR_LICENSE_DISABLE=1`` — force the gate OFF (local dev, the test suite).
+  Ignored by a packaged build.
 * ``OMR_LICENSE_ENFORCE=1`` — force the gate ON from a source run (to test the
   gate, or to run a licensed server deployment deliberately).
 """
@@ -53,7 +55,10 @@ def _env_true(name: str) -> bool:
 
 
 def _disabled() -> bool:
-    return _env_true("OMR_LICENSE_DISABLE")
+    # Never in a packaged build: an environment variable must not unlock it
+    from src.licensing import paths
+
+    return _env_true("OMR_LICENSE_DISABLE") and not paths._frozen()
 
 
 def licensing_active() -> bool:

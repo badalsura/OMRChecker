@@ -106,12 +106,26 @@ class LicenseError(Exception):
         self.status = status
 
 
-def load_public_key(path: Optional[Path] = None) -> Optional[rsa.RSAPublicKey]:
-    key_path = path or paths.public_key_path()
+def embedded_public_key() -> Optional[bytes]:
+    """The public key compiled into a packaged build, if the build has one."""
     try:
-        data = Path(key_path).read_bytes()
-    except OSError:
+        from src.licensing import embedded_key
+    except ImportError:
         return None
+    return getattr(embedded_key, "PUBLIC_KEY_PEM", None) or None
+
+
+def load_public_key(path: Optional[Path] = None) -> Optional[rsa.RSAPublicKey]:
+    if path is None and paths._frozen():
+        # A packaged build trusts only the key built into it
+        data = embedded_public_key()
+        if data is None:
+            return None
+    else:
+        try:
+            data = Path(path or paths.public_key_path()).read_bytes()
+        except OSError:
+            return None
     try:
         key = serialization.load_pem_public_key(data)
     except Exception:

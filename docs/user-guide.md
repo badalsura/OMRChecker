@@ -355,6 +355,10 @@ The change is saved as soon as you pick it.
 5. For colleagues who start jobs from folders on the station PC, click their **Server folders** button and add the scan folders.
 6. Tell each colleague their user name and starting password, and ask them to use **Change password** after their first sign-in.
 
+### License
+
+**License** in the top bar shows who this copy is licensed to, its edition and features, when it expires (with the days left), the computer it is bound to and the license id. To renew, choose the new license file there and click **Load license**; **Copy request for a new license** copies what the vendor needs to issue one for this computer. A copy without a valid license opens on the Activation screen instead of the app.
+
 ### API key
 
 The API key is for **programs** that talk to the station (scanning scripts, the Python/Java/Go client libraries, other systems), not for people. People use accounts.

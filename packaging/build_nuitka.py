@@ -82,15 +82,6 @@ def data_files():
     files = [
         (ROOT / "docs" / "user-guide.md", "docs/user-guide.md"),
     ]
-    pubkey = ROOT / "src" / "licensing" / "public_key.pem"
-    if pubkey.is_file():
-        files.append((pubkey, "license/public_key.pem"))
-    else:
-        print(
-            "WARNING: src/licensing/public_key.pem is missing; the build will "
-            "not verify licenses. See docs/licensing.md.",
-            file=sys.stderr,
-        )
     ocr_build = ROOT / "packaging" / "ocr_build.json"
     if ocr_build.is_file():
         files.append((ocr_build, "ocr_build.json"))
@@ -230,6 +221,12 @@ def main(argv=None):
         "--dry-run", action="store_true", help="Print the command and exit"
     )
     args = parser.parse_args(argv)
+
+    # The license public key is compiled in (src/licensing/embedded_key.py)
+    sys.path.insert(0, str(HERE))
+    from embed_public_key import embed
+
+    embed()
 
     if os.name != "nt":
         print(

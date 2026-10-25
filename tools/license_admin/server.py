@@ -32,7 +32,45 @@ _state: dict = {
     "private_key": None,
     "key_path": None,
     "revocations_file": str(DEFAULT_REVOCATIONS),
+    # Set by configure(): a key that comes with this copy (the issuer app),
+    # and the folder issued licenses are also saved to
+    "offered_key": None,
+    "issued_dir": None,
 }
+
+
+def configure(key=None, home=None) -> None:
+    """Point the admin at a private key to offer at start and a working folder
+    (revocation list, copies of issued licenses). An unencrypted key is loaded
+    at once; an encrypted one waits for its passphrase in the page."""
+    if home:
+        home = Path(home)
+        _state["revocations_file"] = str(home / "revocations.json")
+        _state["issued_dir"] = str(home / "issued")
+    if key and Path(key).exists():
+        _state["offered_key"] = str(key)
+        if not vl.private_key_is_encrypted(Path(key)):
+            _state["private_key"] = vl.load_private_key(Path(key))
+            _state["key_path"] = str(key)
+
+
+def _check_signature(document: dict):
+    """(payload, key_id, signature_ok, checked_against): against the loaded
+    private key's public half when there is one, else the app's public key."""
+    key = _state["private_key"]
+    if key is None:
+        payload, key_id, ok = vl.inspect_license(document)
+        return payload, key_id, ok, str(vl.PUBLIC_KEY_IN_APP)
+    import base64
+
+    from src.licensing.verify import verify_signature
+
+    payload = document.get("payload", {})
+    try:
+        ok = verify_signature(payload, base64.b64decode(document["signature"]), key.public_key())
+    except Exception:
+        ok = False
+    return payload, document.get("key_id"), ok, "the loaded private key"
 
 
 class KeygenBody(BaseModel):
@@ -89,6 +127,8 @@ def create_app() -> FastAPI:
         return {
             "key_loaded": _state["private_key"] is not None,
             "key_path": key_path,
+            "offered_key": _state["offered_key"],
+            "issued_dir": _state["issued_dir"],
             "public_key_in_app": vl.PUBLIC_KEY_IN_APP.exists(),
             "public_key_in_app_path": str(vl.PUBLIC_KEY_IN_APP),
             "revocations_file": _state["revocations_file"],
@@ -170,10 +210,20 @@ def create_app() -> FastAPI:
             )
             or "license"
         )
+        text = json.dumps(document, indent=2)
+        filename = f"{customer_slug}.omrlic"
+        saved = None
+        if _state["issued_dir"]:
+            # A copy in the working folder: the app window may not download
+            folder = Path(_state["issued_dir"])
+            folder.mkdir(parents=True, exist_ok=True)
+            saved = folder / f"{customer_slug}-{document['payload']['license_id']}.omrlic"
+            saved.write_text(text, encoding="utf-8")
         return {
             "document": document,
-            "text": json.dumps(document, indent=2),
-            "filename": f"{customer_slug}.omrlic",
+            "text": text,
+            "filename": filename,
+            "saved_to": str(saved) if saved else None,
         }
 
     @app.post("/api/inspect")
@@ -182,12 +232,12 @@ def create_app() -> FastAPI:
             document = json.loads(body.text)
         except Exception as error:
             raise HTTPException(400, f"Not a license file: {error}")
-        payload, key_id, ok = vl.inspect_license(document)
+        payload, key_id, ok, against = _check_signature(document)
         return {
             "payload": payload,
             "key_id": key_id,
             "signature_ok": ok,
-            "checked_against": str(vl.PUBLIC_KEY_IN_APP),
+            "checked_against": against,
         }
 
     @app.get("/api/revocations")
@@ -220,11 +270,13 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8777)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--key", help="Private key to offer at start")
     parser.add_argument(
         "--revocations",
         help="Revocation list JSON (default ./license-keys/revocations.json)",
     )
     args = parser.parse_args(argv)
+    configure(key=args.key)
     if args.revocations:
         _state["revocations_file"] = args.revocations
 
