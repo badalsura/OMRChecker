@@ -187,10 +187,10 @@ def build_command(args):
 
     if app_mode:
         # pywebview + WebView2 through pythonnet/WinForms.
-        # Only the Windows backends: Nuitka's pywebview plugin refuses the
-        # other platforms (cocoa, gtk, qt) if the whole package is asked for
-        for mod in ("webview", "webview.platforms.winforms", "webview.platforms.edgechromium", "clr"):
-            cmd.append(f"--include-module={mod}")
+        # Nuitka's pywebview plugin picks the Windows backends itself (the
+        # app imports winforms and edgechromium) and refuses any webview
+        # module asked for by hand
+        cmd.append("--include-module=clr")
 
     if not app_mode:
         # The launcher's window is Tk
