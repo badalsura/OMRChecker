@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OMRChecker License Admin</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel2: #1f242d; --line: #2b313c;
+    --text: #e7ebf0; --muted: #9aa4b2; --accent: #ff8a3d; --accent2: #4da3ff;
+    --ok: #3ecf8e; --bad: #ff6b6b; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  header .warn { color: var(--muted); font-size: 13px; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 22px 24px 60px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tabs button { background: var(--panel); color: var(--muted); border: 1px solid var(--line);
+                 padding: 8px 16px; border-radius: 999px; cursor: pointer; font-size: 14px; }
+  .tabs button.active { color: var(--text); border-color: var(--accent); background: var(--panel2); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+          padding: 20px; margin-bottom: 18px; }
+  .card h2 { margin: 0 0 4px; font-size: 15px; }
+  .card p.hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 5px; }
+  input, textarea, select { width: 100%; background: var(--panel2); border: 1px solid var(--line);
+          color: var(--text); border-radius: 8px; padding: 9px 11px; font: inherit; }
+  textarea { min-height: 96px; resize: vertical; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .check input { width: auto; }
+  button.go { margin-top: 18px; background: var(--accent); color: #221000; border: none;
+              padding: 10px 20px; border-radius: 8px; font-weight: 650; cursor: pointer; font-size: 14px; }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+                 padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+  pre { background: #0b0d11; border: 1px solid var(--line); border-radius: 8px; padding: 14px;
+        overflow: auto; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+  .msg { margin-top: 14px; padding: 10px 13px; border-radius: 8px; font-size: 13.5px; display: none; }
+  .msg.ok { display: block; background: rgba(62,207,142,.12); color: var(--ok); border: 1px solid rgba(62,207,142,.4); }
+  .msg.bad { display: block; background: rgba(255,107,107,.12); color: var(--bad); border: 1px solid rgba(255,107,107,.4); }
+  .status-line { font-size: 13px; color: var(--muted); }
+  .status-line b { color: var(--text); font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; }
+  .pill.on { background: rgba(62,207,142,.15); color: var(--ok); }
+  .pill.off { background: rgba(255,107,107,.15); color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  a { color: var(--accent2); }
+</style>
+</head>
+<body>
+<header>
+  <h1>OMRChecker &middot; License Admin</h1>
+  <span class="warn">vendor tool — your private key stays on this machine</span>
+</header>
+<div class="wrap">
+  <div class="status-line card" id="statusBar">loading…</div>
+
+  <div class="tabs">
+    <button data-tab="setup" class="active">Setup &amp; keys</button>
+    <button data-tab="issue">Issue a license</button>
+    <button data-tab="inspect">Inspect</button>
+    <button data-tab="revoke">Revocations</button>
+  </div>
+
+  <!-- SETUP -->
+  <section class="tab-panel active" id="tab-setup">
+    <div class="card">
+      <h2>Load your private key</h2>
+      <p class="hint">Point to your existing <code>private_key.pem</code>. It is read into memory for this session only and never written anywhere.</p>
+      <label>Path to private key</label>
+      <input id="keyPath" placeholder="./license-keys/private_key.pem" />
+      <label>Passphrase (if the key is encrypted)</label>
+      <input id="keyPass" type="password" placeholder="leave blank if none" />
+      <button class="go" onclick="loadKey()">Load key</button>
+      <div class="msg" id="loadMsg"></div>
+    </div>
+    <div class="card">
+      <h2>Generate a new key pair</h2>
+      <p class="hint">Only the first time, or when rotating keys. The public key is copied into the app at <code>src/licensing/public_key.pem</code> so builds can verify licenses. Keep the private key secret and backed up.</p>
+      <div class="row">
+        <div><label>Output folder</label><input id="genDir" value="./license-keys" /></div>
+        <div><label>Key size (bits)</label><input id="genBits" type="number" value="3072" /></div>
+      </div>
+      <label>Passphrase to encrypt the private key (recommended)</label>
+      <input id="genPass" type="password" placeholder="leave blank for no encryption" />
+      <div class="check"><input type="checkbox" id="genCopy" checked /><label for="genCopy" style="margin:0;color:var(--text)">Copy public key into the app</label></div>
+      <div class="check"><input type="checkbox" id="genForce" /><label for="genForce" style="margin:0;color:var(--text)">Overwrite an existing key</label></div>
+      <button class="go" onclick="keygen()">Generate</button>
+      <div class="msg" id="genMsg"></div>
+    </div>
+  </section>
+
+  <!-- ISSUE -->
+  <section class="tab-panel" id="tab-issue">
+    <div class="card">
+      <h2>Issue a license</h2>
+      <p class="hint">Paste the customer's activation request (from the app's Activate screen) to bind the license to their machine, or enter a fingerprint directly.</p>
+      <label>Customer activation request (JSON) — optional</label>
+      <textarea id="reqJson" placeholder='{ "fingerprint": "…", "hostname": "…" }'></textarea>
+      <div class="row">
+        <div><label>Customer name</label><input id="iCustomer" placeholder="Acme Exam Center" /></div>
+        <div><label>Machine fingerprint (if no request pasted)</label><input id="iMachine" placeholder="leave blank if using request" /></div>
+      </div>
+      <div class="row">
+        <div><label>Expires (YYYY-MM-DD, blank = never)</label><input id="iExpires" placeholder="2027-01-01" /></div>
+        <div><label>Features (comma-separated)</label><input id="iFeatures" value="core" /></div>
+      </div>
+      <div class="row">
+        <div><label>Seats</label><input id="iSeats" type="number" value="1" /></div>
+        <div><label>Edition</label><input id="iEdition" value="standard" /></div>
+      </div>
+      <label>Note (your own reference — order id, reseller…)</label>
+      <input id="iNote" />
+      <div class="check"><input type="checkbox" id="iFloating" /><label for="iFloating" style="margin:0;color:var(--text)">Floating (not bound to a machine — use sparingly)</label></div>
+      <button class="go" onclick="issue()">Issue &amp; download</button>
+      <div class="msg" id="issueMsg"></div>
+      <pre id="issueOut" style="display:none"></pre>
+    </div>
+  </section>
+
+  <!-- INSPECT -->
+  <section class="tab-panel" id="tab-inspect">
+    <div class="card">
+      <h2>Inspect a license</h2>
+      <p class="hint">Paste a <code>.omrlic</code> file to see its contents and check the signature against the app's public key.</p>
+      <textarea id="inspText" placeholder="paste license file contents"></textarea>
+      <button class="go" onclick="inspect()">Inspect</button>
+      <div class="msg" id="inspMsg"></div>
+      <pre id="inspOut" style="display:none"></pre>
+    </div>
+  </section>
+
+  <!-- REVOKE -->
+  <section class="tab-panel" id="tab-revoke">
+    <div class="card">
+      <h2>Revocation list</h2>
+      <p class="hint">Offline today: this list lives in <code id="revFile">license-keys/revocations.json</code>. When you host the licensing server, it serves exactly this list to apps that check in. Revoking here has no effect until the app is pointed at a server.</p>
+      <div class="row">
+        <div><label>License id to revoke</label><input id="revId" /></div>
+        <div><label>Reason</label><input id="revReason" placeholder="refunded, replaced…" /></div>
+      </div>
+      <button class="go" onclick="addRevoke()">Revoke</button>
+      <div class="msg" id="revMsg"></div>
+      <table id="revTable"><thead><tr><th>License id</th><th>Reason</th><th>When</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function show(id, ok, text) { const e = $(id); e.className = "msg " + (ok ? "ok" : "bad"); e.textContent = text; }
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data && (data.detail || data.message)) || ("HTTP " + r.status));
+  return data;
+}
+
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach((x) => x.classList.remove("active"));
+  document.querySelectorAll(".tab-panel").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+  $("tab-" + b.dataset.tab).classList.add("active");
+  if (b.dataset.tab === "revoke") loadRevocations();
+});
+
+async function refreshStatus() {
+  try {
+    const s = await api("/api/state");
+    const key = s.key_loaded ? `<span class="pill on">loaded</span> <b>${s.key_path}</b>`
+                             : `<span class="pill off">no key loaded</span>`;
+    const pub = s.public_key_in_app ? `<span class="pill on">present</span>`
+                                    : `<span class="pill off">missing</span>`;
+    $("statusBar").innerHTML =
+      `Private key: ${key} &nbsp;·&nbsp; App public key (${s.public_key_in_app_path}): ${pub}` +
+      ` &nbsp;·&nbsp; Revoked: <b>${Object.keys(s.revoked || {}).length}</b>`;
+    $("revFile").textContent = s.revocations_file;
+  } catch (e) { $("statusBar").textContent = "status error: " + e.message; }
+}
+
+async function loadKey() {
+  try { await api("/api/load-key", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({path: $("keyPath").value, passphrase: $("keyPass").value})});
+    show("loadMsg", true, "Key loaded for this session."); refreshStatus();
+  } catch (e) { show("loadMsg", false, e.message); }
+}
+async function keygen() {
+  try { const r = await api("/api/keygen", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({out_dir:$("genDir").value, bits:+$("genBits").value,
+          passphrase:$("genPass").value, force:$("genForce").checked, copy_to_app:$("genCopy").checked})});
+    show("genMsg", true, `Created ${r.private_key} and ${r.public_key}` +
+      (r.copied_to_app ? " (public key copied into the app)." : ".") +
+      (r.encrypted ? "" : " NOTE: private key is not encrypted."));
+    refreshStatus();
+  } catch (e) { show("genMsg", false, e.message); }
+}
+async function issue() {
+  try {
+    const r = await api("/api/issue", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({customer:$("iCustomer").value, request_json:$("reqJson").value,
+        machine:$("iMachine").value, floating:$("iFloating").checked, expires:$("iExpires").value,
+        features:$("iFeatures").value, seats:+$("iSeats").value, edition:$("iEdition").value, note:$("iNote").value})});
+    $("issueOut").style.display = "block"; $("issueOut").textContent = r.text;
+    const blob = new Blob([r.text], {type:"application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = r.filename; a.click();
+    show("issueMsg", true, `Issued and downloaded ${r.filename}. Send it to the customer.`);
+  } catch (e) { show("issueMsg", false, e.message); }
+}
+async function inspect() {
+  try { const r = await api("/api/inspect", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({text: $("inspText").value})});
+    $("inspOut").style.display = "block";
+    const sig = r.signature_ok === true ? "VALID" : r.signature_ok === false ? "INVALID" : "could not check";
+    $("inspOut").textContent = JSON.stringify(r.payload, null, 2) +
+      `\n\nkey_id: ${r.key_id}\nsignature: ${sig} (vs ${r.checked_against})`;
+    show("inspMsg", r.signature_ok === true, "Signature " + sig + ".");
+  } catch (e) { show("inspMsg", false, e.message); }
+}
+async function loadRevocations() {
+  try {
+    const revoked = await api("/api/revocations");
+    const tb = $("revTable").querySelector("tbody"); tb.innerHTML = "";
+    const ids = Object.keys(revoked);
+    if (!ids.length) { tb.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">None revoked.</td></tr>'; return; }
+    for (const id of ids) {
+      const row = revoked[id];
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${id}</td><td>${row.reason||""}</td><td>${(row.at||"").slice(0,10)}</td>` +
+        `<td><button class="ghost" onclick="removeRevoke('${id}')">Un-revoke</button></td>`;
+      tb.appendChild(tr);
+    }
+  } catch (e) { show("revMsg", false, e.message); }
+}
+async function addRevoke() {
+  try { await api("/api/revocations", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({license_id:$("revId").value, reason:$("revReason").value})});
+    $("revId").value = ""; $("revReason").value = "";
+    show("revMsg", true, "Revoked."); loadRevocations(); refreshStatus();
+  } catch (e) { show("revMsg", false, e.message); }
+}
+async function removeRevoke(id) {
+  try { await api("/api/revocations/" + encodeURIComponent(id), {method:"DELETE"});
+    loadRevocations(); refreshStatus();
+  } catch (e) { show("revMsg", false, e.message); }
+}
+refreshStatus();
+</script>
+</body>
+</html>
