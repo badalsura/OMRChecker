@@ -2,7 +2,7 @@
 // own endpoints are gated server-side (HTTP 402), so this screen is how a user
 // activates. It shows this machine's request (to send the vendor) and takes
 // the license file the vendor returns.
-import { api, el, toast, url } from "./api.js";
+import { api, el, modal, toast, url } from "./api.js";
 
 // Returns true when the station is licensed; otherwise shows the activation
 // screen and returns false (the caller then stops booting the app).
@@ -66,6 +66,42 @@ async function showActivation(status) {
     )
   );
   document.body.append(overlay);
+}
+
+// The License panel (topbar): who this copy is licensed to, until when, for
+// which features and machine, and a way to load a replacement license file.
+export async function openLicensePanel() {
+  let status = {};
+  let request = {};
+  try {
+    [status, request] = await Promise.all([api("/license/status"), api("/license/request")]);
+  } catch (error) {
+    return toast(`Could not read the license: ${error.message}`, "error", 5000);
+  }
+  const lic = status.license || {};
+  const day = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "");
+  const left = lic.expires_at ? Math.ceil((new Date(lic.expires_at) - Date.now()) / 86400000) : null;
+  const rows = [
+    ["Status", status.valid ? (status.license ? "Licensed" : status.message) : status.message],
+    ["Licensed to", lic.customer],
+    ["Edition", lic.edition],
+    ["Features", (lic.features || []).join(", ")],
+    ["Seats", lic.seats],
+    ["Issued", day(lic.issued_at)],
+    ["Expires", status.license ? (lic.expires_at ? `${day(lic.expires_at)}${left >= 0 ? ` (${left} day${left === 1 ? "" : "s"} left)` : ""}` : "Never") : ""],
+    ["Bound to", status.license ? (lic.machine_bound ? "This computer" : "Any computer (floating)") : ""],
+    ["License id", lic.license_id],
+    ["This computer", request.fingerprint ? `${request.hostname || ""} · ${request.fingerprint}` : ""],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  const fileInput = el("input", { type: "file", accept: ".omrlic,.json,.txt", class: "lic-file" });
+  const body = el(
+    "div",
+    { class: "lic-panel" },
+    el("dl", { class: "lic-facts" }, ...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", { class: k === "Status" && !status.valid ? "lic-bad" : "" }, String(v))])),
+    el("label", { class: "lic-label" }, "Replace the license"),
+    el("div", { class: "row gap wrap" }, fileInput, el("button", { class: "small", onclick: () => activate(fileInput) }, "Load license"))
+  );
+  modal("License", body, [el("button", { class: "small ghost", onclick: () => copy(JSON.stringify(request, null, 2)) }, "Copy request for a new license")]);
 }
 
 async function activate(fileInput) {

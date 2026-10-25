@@ -500,4 +500,8 @@ body.desktop a { -webkit-user-drag: none; }
 .lic-label { display: block; font-weight: 600; margin: 16px 0 6px; }
 .lic-request { width: 100%; font-family: var(--mono); font-size: 12px; resize: vertical; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg, #fff); }
 .lic-file { font-size: 14px; }
+.lic-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.lic-facts dt { color: var(--muted); }
+.lic-facts dd { margin: 0; word-break: break-all; }
+.lic-bad { color: var(--err); font-weight: 600; }
 .lic-foot { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 10px; }
