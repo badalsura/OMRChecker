@@ -3,6 +3,12 @@
 Vendor-side license tool for OMRChecker. Runs on YOUR machine only; it holds
 the RSA private key that signs licenses. Never ship it or the private key.
 
+Prefer the local web admin for day-to-day issuing (a GUI over this same logic):
+
+    python -m tools.license_admin        # opens http://127.0.0.1:8777
+
+This CLI remains the scriptable/offline equivalent:
+
     # 1. Once: make your key pair. Keep private_key.pem secret and backed up.
     python tools/license_tool.py keygen --out-dir ./license-keys
 
@@ -23,6 +29,10 @@ the RSA private key that signs licenses. Never ship it or the private key.
     # 3. Check what a license contains / that it verifies:
     python tools/license_tool.py inspect acme.omrlic --pubkey ./license-keys/public_key.pem
 
+    # 4. Revocation list (used later by the licensing server; see docs):
+    python tools/license_tool.py revoke LICENSE_ID --reason "refunded"
+    python tools/license_tool.py revocations
+
 A license can also be issued without a request file:
     --machine <fingerprint>   bind to a fingerprint you were given another way
     --floating                not bound to any machine (use sparingly)
@@ -31,52 +41,23 @@ A license can also be issued without a request file:
 from __future__ import annotations
 
 import argparse
-import base64
 import getpass
 import json
-import secrets
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-# Run from the repo root so `src` imports work.
+# Run from the repo root so `src` and `tools` imports work.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
-from cryptography.hazmat.primitives.asymmetric import padding, rsa  # noqa: E402
+from tools import vendor_lib as vl  # noqa: E402
+from tools.vendor_lib import FEATURE_CORE  # noqa: E402
 
-from src.licensing.model import (  # noqa: E402
-    FEATURE_CORE,
-    LicensePayload,
-    signing_bytes,
-)
-
-DEFAULT_BITS = 3072
-
-
-def _iso_utc(date_text: str) -> str:
-    """Accept 'YYYY-MM-DD' or a full ISO timestamp; return ISO-8601 UTC."""
-    text = date_text.strip()
-    try:
-        if len(text) == 10:
-            dt = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        else:
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            dt = datetime.fromisoformat(text)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-    except ValueError as error:
-        raise SystemExit(f"Bad date '{date_text}': {error}")
-    return dt.astimezone(timezone.utc).isoformat()
+DEFAULT_REVOCATIONS = "./license-keys/revocations.json"
 
 
 # --------------------------------------------------------------------------- keygen
 def cmd_keygen(args: argparse.Namespace) -> int:
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    private_path = out_dir / "private_key.pem"
-    public_path = out_dir / "public_key.pem"
+    private_path = Path(args.out_dir) / "private_key.pem"
     if private_path.exists() and not args.force:
         raise SystemExit(f"{private_path} already exists (use --force to overwrite)")
 
@@ -92,79 +73,38 @@ def cmd_keygen(args: argparse.Namespace) -> int:
             raise SystemExit("Passphrases did not match")
 
     print(f"Generating a {args.bits}-bit RSA key pair…")
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=args.bits)
-
-    encryption = (
-        serialization.BestAvailableEncryption(passphrase.encode("utf-8"))
-        if passphrase
-        else serialization.NoEncryption()
+    priv, pub = vl.generate_keypair(
+        Path(args.out_dir), bits=args.bits, passphrase=passphrase, force=args.force
     )
-    private_path.write_bytes(
-        private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=encryption,
-        )
-    )
-    try:
-        private_path.chmod(0o600)
-    except OSError:
-        pass
-    public_path.write_bytes(
-        private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-    )
-    print(f"  private key -> {private_path}  (KEEP SECRET, BACK UP)")
-    print(f"  public key  -> {public_path}")
+    print(f"  private key -> {priv}  (KEEP SECRET, BACK UP)")
+    print(f"  public key  -> {pub}")
     print()
     print("Next: copy the public key into the app so it can verify licenses:")
-    print(f"  cp {public_path} src/licensing/public_key.pem")
+    print(f"  cp {pub} src/licensing/public_key.pem")
     if not passphrase:
         print("\nWARNING: the private key is NOT encrypted. Store it somewhere safe.")
     return 0
 
 
 # ---------------------------------------------------------------------------- issue
-def _load_private_key(path: Path, passphrase: str | None) -> rsa.RSAPrivateKey:
-    data = Path(path).read_bytes()
+def _load_private_key(path: Path, passphrase):
     try:
-        key = serialization.load_pem_private_key(data, password=None)
-    except TypeError:
-        # Encrypted: ask for the passphrase.
-        pw = (
-            passphrase
-            if passphrase is not None
-            else getpass.getpass("Private key passphrase: ")
-        )
-        key = serialization.load_pem_private_key(data, password=pw.encode("utf-8"))
-    except ValueError as error:
+        if passphrase is None and vl.private_key_is_encrypted(path):
+            passphrase = getpass.getpass("Private key passphrase: ")
+        return vl.load_private_key(path, passphrase)
+    except Exception as error:
         raise SystemExit(f"Could not read private key: {error}")
-    if not isinstance(key, rsa.RSAPrivateKey):
-        raise SystemExit("The key is not an RSA private key")
-    return key
-
-
-def _sign(payload: dict, private_key: rsa.RSAPrivateKey) -> str:
-    signature = private_key.sign(
-        signing_bytes(payload),
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.DIGEST_LENGTH,
-        ),
-        hashes.SHA256(),
-    )
-    return base64.b64encode(signature).decode("ascii")
 
 
 def cmd_issue(args: argparse.Namespace) -> int:
     machine = None
+    floating = args.floating
     if args.request:
         request = json.loads(Path(args.request).read_text(encoding="utf-8"))
-        machine = request.get("fingerprint")
-        if not machine:
-            raise SystemExit("The request file has no 'fingerprint'")
+        try:
+            machine = vl.machine_from_request(request)
+        except ValueError as error:
+            raise SystemExit(str(error))
         if not request.get("strong", True):
             print(
                 "NOTE: the customer's machine reported only a weak fallback "
@@ -173,44 +113,39 @@ def cmd_issue(args: argparse.Namespace) -> int:
             )
     elif args.machine:
         machine = args.machine
-    elif not args.floating:
+    elif not floating:
         raise SystemExit("Pass --request FILE, --machine FP, or --floating")
 
-    features = [f.strip() for f in args.features.split(",") if f.strip()] or [
-        FEATURE_CORE
-    ]
-    if FEATURE_CORE not in features:
-        features.insert(0, FEATURE_CORE)
-
-    payload = LicensePayload(
-        license_id=args.license_id or secrets.token_hex(8),
-        customer=args.customer,
-        issued_at=datetime.now(timezone.utc).isoformat(),
-        expires_at=_iso_utc(args.expires) if args.expires else None,
-        machine=machine,
-        features=features,
-        seats=args.seats,
-        edition=args.edition,
-        note=args.note or "",
-    )
-
     private_key = _load_private_key(Path(args.key), args.passphrase)
-    document = {
-        "payload": payload.to_dict(),
-        "signature": _sign(payload.to_dict(), private_key),
-        "key_id": args.key_id,
-    }
+    try:
+        document = vl.issue_license(
+            private_key,
+            customer=args.customer,
+            machine=machine,
+            floating=floating,
+            expires=args.expires,
+            features=args.features,
+            seats=args.seats,
+            edition=args.edition,
+            note=args.note or "",
+            license_id=args.license_id,
+            key_id=args.key_id,
+        )
+    except ValueError as error:
+        raise SystemExit(str(error))
+
     text = json.dumps(document, indent=2)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
         print(f"Wrote {args.out}")
     else:
         print(text)
+    payload = document["payload"]
     print(
-        f"  customer : {payload.customer}\n"
-        f"  machine  : {machine or '(floating)'}\n"
-        f"  expires  : {payload.expires_at or 'never'}\n"
-        f"  features : {', '.join(features)}",
+        f"  customer : {payload['customer']}\n"
+        f"  machine  : {payload['machine'] or '(floating)'}\n"
+        f"  expires  : {payload['expires_at'] or 'never'}\n"
+        f"  features : {', '.join(payload['features'])}",
         file=sys.stderr,
     )
     return 0
@@ -219,26 +154,35 @@ def cmd_issue(args: argparse.Namespace) -> int:
 # -------------------------------------------------------------------------- inspect
 def cmd_inspect(args: argparse.Namespace) -> int:
     document = json.loads(Path(args.license).read_text(encoding="utf-8"))
-    payload = document.get("payload", {})
+    pubkey = Path(args.pubkey) if args.pubkey else None
+    payload, key_id, ok = vl.inspect_license(document, pubkey)
     print(json.dumps(payload, indent=2))
-    print(f"key_id    : {document.get('key_id')}")
-
-    pubkey_path = args.pubkey or "src/licensing/public_key.pem"
-    try:
-        from src.licensing.verify import load_public_key, verify_signature
-
-        key = load_public_key(Path(pubkey_path))
-        if key is None:
-            print(f"signature : CANNOT CHECK (no public key at {pubkey_path})")
-            return 1
-        ok = verify_signature(payload, base64.b64decode(document["signature"]), key)
-        print(
-            f"signature : {'VALID' if ok else 'INVALID'} (checked against {pubkey_path})"
-        )
-        return 0 if ok else 1
-    except Exception as error:
-        print(f"signature : CANNOT CHECK ({error})")
+    print(f"key_id    : {key_id}")
+    where = args.pubkey or str(vl.PUBLIC_KEY_IN_APP)
+    if ok is None:
+        print(f"signature : CANNOT CHECK (no public key at {where})")
         return 1
+    print(f"signature : {'VALID' if ok else 'INVALID'} (checked against {where})")
+    return 0 if ok else 1
+
+
+# ----------------------------------------------------------------------- revocation
+def cmd_revoke(args: argparse.Namespace) -> int:
+    vl.revoke(Path(args.file), args.license_id, args.reason or "")
+    print(f"Revoked {args.license_id} in {args.file}")
+    return 0
+
+
+def cmd_unrevoke(args: argparse.Namespace) -> int:
+    vl.unrevoke(Path(args.file), args.license_id)
+    print(f"Removed {args.license_id} from {args.file}")
+    return 0
+
+
+def cmd_revocations(args: argparse.Namespace) -> int:
+    data = vl.load_revocations(Path(args.file))
+    print(json.dumps(data.get("revoked", {}), indent=2))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -249,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     kg = sub.add_parser("keygen", help="Create an RSA key pair")
     kg.add_argument("--out-dir", default="./license-keys")
-    kg.add_argument("--bits", type=int, default=DEFAULT_BITS)
+    kg.add_argument("--bits", type=int, default=vl.DEFAULT_BITS)
     kg.add_argument(
         "--passphrase", help="Encrypt the private key with this (else prompt)"
     )
@@ -286,6 +230,21 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("license")
     ins.add_argument("--pubkey", help="Public key to verify against")
     ins.set_defaults(func=cmd_inspect)
+
+    rev = sub.add_parser("revoke", help="Add a license id to the revocation list")
+    rev.add_argument("license_id")
+    rev.add_argument("--reason", help="Why it was revoked")
+    rev.add_argument("--file", default=DEFAULT_REVOCATIONS)
+    rev.set_defaults(func=cmd_revoke)
+
+    unr = sub.add_parser("unrevoke", help="Remove a license id from the list")
+    unr.add_argument("license_id")
+    unr.add_argument("--file", default=DEFAULT_REVOCATIONS)
+    unr.set_defaults(func=cmd_unrevoke)
+
+    lst = sub.add_parser("revocations", help="Show the revocation list")
+    lst.add_argument("--file", default=DEFAULT_REVOCATIONS)
+    lst.set_defaults(func=cmd_revocations)
     return parser
 
 

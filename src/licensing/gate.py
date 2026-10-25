@@ -10,8 +10,19 @@ The one licensing layer every entry point uses.
 `require_license` is cheap to call repeatedly: the verified result is cached
 for the process and re-checked periodically, so a license that expires while a
 long-running server is up is caught without re-reading the file on every
-request. Set OMR_LICENSE_DISABLE=1 to turn the gate off for local development
-and source runs (never set in a shipped build).
+request.
+
+When the gate runs
+------------------
+Licensing gates the **packaged desktop app** (the thing you distribute) — not a
+plain ``python main.py`` server run, which is meant to sit behind account/API-key
+permissions you control, not a per-machine license file. So by default the gate
+is active only in a frozen build (PyInstaller / Nuitka set ``sys.frozen``). Two
+env vars override that single decision in ``licensing_active()``:
+
+* ``OMR_LICENSE_DISABLE=1`` — force the gate OFF (local dev, the test suite).
+* ``OMR_LICENSE_ENFORCE=1`` — force the gate ON from a source run (to test the
+  gate, or to run a licensed server deployment deliberately).
 """
 
 from __future__ import annotations
@@ -37,13 +48,30 @@ _lock = threading.Lock()
 _cache: dict = {}  # feature -> (checked_at_epoch, LicenseStatus)
 
 
+def _env_true(name: str) -> bool:
+    return os.environ.get(name, "") not in ("", "0", "false", "False")
+
+
 def _disabled() -> bool:
-    return os.environ.get("OMR_LICENSE_DISABLE", "") not in ("", "0", "false", "False")
+    return _env_true("OMR_LICENSE_DISABLE")
 
 
-def _disabled_status() -> LicenseStatus:
+def licensing_active() -> bool:
+    """Whether the license gate is enforced in this process. See the module
+    docstring: active in a packaged desktop build, or when explicitly forced
+    on; off for a plain source/server run or when explicitly disabled."""
+    if _disabled():
+        return False
+    if _env_true("OMR_LICENSE_ENFORCE"):
+        return True
+    from src.licensing import paths
+
+    return paths._frozen()
+
+
+def _inactive_status() -> LicenseStatus:
     return LicenseStatus(
-        True, Reason.VALID, None, detail="Licensing disabled for development."
+        True, Reason.VALID, None, detail="Licensing is not enforced in this mode."
     )
 
 
@@ -51,14 +79,22 @@ def current_status(
     feature: str = FEATURE_CORE, *, refresh: bool = False
 ) -> LicenseStatus:
     """The license status for a feature, cached per process. Never raises."""
-    if _disabled():
-        return _disabled_status()
+    if not licensing_active():
+        return _inactive_status()
     now = time.time()
     with _lock:
         cached = _cache.get(feature)
         if cached and not refresh and now - cached[0] < _CACHE_SECONDS:
             return cached[1]
     status = verify_license_file(feature=feature)
+    # Dormant unless a licensing server is configured: when one is, a valid
+    # license is additionally checked against remote revocation, within a grace
+    # window so a dropped connection never locks out a legitimate user.
+    if status.valid:
+        from src.licensing import online
+
+        if online.is_configured():
+            status = online.apply_revocation(status)
     with _lock:
         _cache[feature] = (now, status)
     return status

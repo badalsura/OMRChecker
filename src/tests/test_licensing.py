@@ -73,6 +73,9 @@ def keys(tmp_path):
 def licensed_env(monkeypatch, tmp_path, keys):
     private_key, pub_path = keys
     monkeypatch.setenv("OMR_LICENSE_DISABLE", "0")
+    # The gate is active only in a packaged build by default; force it on so the
+    # source test run exercises it (see gate.licensing_active).
+    monkeypatch.setenv("OMR_LICENSE_ENFORCE", "1")
     monkeypatch.setenv("OMR_LICENSE_PUBKEY", str(pub_path))
     monkeypatch.setenv("OMR_LICENSE_DIR", str(tmp_path / "licdir"))
     monkeypatch.setenv("OMR_LICENSE_FILE", str(tmp_path / "licdir" / "license.omrlic"))
@@ -215,3 +218,84 @@ def _pubkey():
     from src.licensing.verify import load_public_key
 
     return load_public_key()
+
+
+# ----------------------------------------------------------- gate activation policy
+def test_gate_is_off_by_default_in_a_source_run(monkeypatch):
+    """A plain source/server run is not license-gated: licensing protects the
+    packaged desktop build, not the bare API."""
+    monkeypatch.delenv("OMR_LICENSE_DISABLE", raising=False)
+    monkeypatch.delenv("OMR_LICENSE_ENFORCE", raising=False)
+    gate.clear_cache()
+    assert gate.licensing_active() is False
+    # With the gate inactive, status is valid even with no license installed.
+    assert gate.current_status().valid
+
+
+def test_enforce_env_turns_the_gate_on(monkeypatch):
+    monkeypatch.delenv("OMR_LICENSE_DISABLE", raising=False)
+    monkeypatch.setenv("OMR_LICENSE_ENFORCE", "1")
+    gate.clear_cache()
+    assert gate.licensing_active() is True
+
+
+def test_disable_env_wins_over_enforce(monkeypatch):
+    monkeypatch.setenv("OMR_LICENSE_ENFORCE", "1")
+    monkeypatch.setenv("OMR_LICENSE_DISABLE", "1")
+    gate.clear_cache()
+    assert gate.licensing_active() is False
+
+
+# -------------------------------------------------------- online module is dormant
+def test_online_module_is_dormant_without_a_server(monkeypatch):
+    from src.licensing import online
+
+    monkeypatch.delenv("OMR_LICENSE_SERVER", raising=False)
+    assert online.is_configured() is False
+    # apply_revocation is a no-op on a valid status when nothing is configured.
+    from src.licensing.verify import LicenseStatus, Reason
+
+    status = LicenseStatus(True, Reason.VALID, make_payload_obj())
+    assert online.apply_revocation(status) is status
+
+
+def make_payload_obj():
+    from datetime import datetime, timezone
+
+    return LicensePayload(
+        license_id="x",
+        customer="c",
+        issued_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+# ------------------------------------------------------------- vendor_lib round-trip
+def test_vendor_lib_issue_then_verify(monkeypatch, tmp_path):
+    """The vendor library the CLI and web admin share issues a license the app
+    verifies."""
+    from tools import vendor_lib as vl
+
+    priv, pub = vl.generate_keypair(tmp_path / "keys", bits=2048)
+    monkeypatch.setenv("OMR_LICENSE_PUBKEY", str(pub))
+    key = vl.load_private_key(priv)
+    doc = vl.issue_license(key, customer="Acme", floating=True, features="core,ocr")
+    status = verify_license_data(doc, _pubkey(), check_clock=False)
+    assert status.valid and "ocr" in status.payload.features
+
+    # Inspect reports a good signature, and a bad one after tampering.
+    _, _, ok = vl.inspect_license(doc, pub)
+    assert ok is True
+    doc["payload"]["features"].append("vlm")
+    _, _, ok = vl.inspect_license(doc, pub)
+    assert ok is False
+
+
+def test_revocation_list_roundtrip(tmp_path):
+    from tools import vendor_lib as vl
+
+    rev = tmp_path / "revocations.json"
+    assert vl.is_revoked(rev, "abc") is False
+    vl.revoke(rev, "abc", "refunded")
+    assert vl.is_revoked(rev, "abc") is True
+    vl.unrevoke(rev, "abc")
+    assert vl.is_revoked(rev, "abc") is False

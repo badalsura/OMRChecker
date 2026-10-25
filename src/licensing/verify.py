@@ -47,6 +47,7 @@ class Reason(str, Enum):
     WRONG_MACHINE = "wrong_machine"
     CLOCK_ROLLBACK = "clock_rollback"
     FEATURE_MISSING = "feature_missing"
+    REVOKED = "revoked"
 
 
 _MESSAGES = {
@@ -60,6 +61,7 @@ _MESSAGES = {
     Reason.WRONG_MACHINE: "The license was issued for a different machine.",
     Reason.CLOCK_ROLLBACK: "The system clock has been set back; please correct the date and time.",
     Reason.FEATURE_MISSING: "The license does not include this feature.",
+    Reason.REVOKED: "This license has been revoked. Please contact your vendor.",
 }
 
 
