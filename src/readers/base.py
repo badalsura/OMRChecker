@@ -1,5 +1,6 @@
 import re
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from src.logger import logger
@@ -38,6 +39,10 @@ ZONE_REVIEW_FLAGS = {
     # ICR: an inked box read as no character, or two characters over one box
     "unread_box",
     "icr_alignment",
+    # Imprint: no trained model, so Tesseract read the dot-matrix print
+    "no_imprint_model",
+    # matchFileName: the value does not match the sheet's file name
+    "file_name_mismatch",
 }
 
 
@@ -76,6 +81,10 @@ def read_zone(zone, image, engines=None):
             result = icr.read_icr_zone(
                 zone, image, engines.get("icr"), engines.get("ocr_params")
             )
+        elif zone.type == "imprint":
+            from src.readers import imprint
+
+            result = imprint.read_imprint_zone(zone, image, engines.get("ocr_params"))
         elif zone.type == "image":
             result = image_zone.read_image_zone(zone, image)
         else:
@@ -93,6 +102,40 @@ def read_zone(zone, image, engines=None):
         else ()
     )
     return finalize(result, zone, extra_review_flags=extra)
+
+
+def file_name_key(file_id):
+    """The sheet's file name without folder, extension or PDF page suffix."""
+    stem = Path(str(file_id)).stem
+    return re.sub(r"_p\d+$", "", stem) if str(file_id).lower().endswith(".png") else stem
+
+
+def check_file_names(results, zones, file_id):
+    """
+    Zones with options.matchFileName: compare the read value with the sheet's
+    file name after options.fileNameNormalize (default "digits", so S100001
+    matches 100001.jpg) and flag file_name_mismatch (always reviewed) when
+    they differ. An empty or malformed read is a mismatch too (it also keeps
+    not_found / pattern_mismatch), so filtering on file_name_mismatch finds
+    every sheet whose number could not be confirmed. A lazy zone that was not
+    read (not_read) is not compared.
+    """
+    from src.rules.checks import make_normalizer
+
+    for zone in zones:
+        result = results.get(zone.name)
+        if result is None or not zone.options.get("matchFileName"):
+            continue
+        if "not_read" in result.flags:
+            continue
+        normalize = make_normalizer(zone.options.get("fileNameNormalize", "digits"), zone.name)
+        value = "" if result.value in (None, zone.empty_val) else str(result.value)
+        read, expected = normalize(value), normalize(file_name_key(file_id))
+        result.details["file_name"] = {"expected": expected, "read": read}
+        if read != expected:
+            result.flags = sorted(set(result.flags) | {"file_name_mismatch"})
+            result.needs_review = True
+    return results
 
 
 def skipped_zone(zone):

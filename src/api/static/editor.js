@@ -19,7 +19,7 @@ import * as options from "./editor_options.js";
 // Track and index-point tools sit inside the Alignment options section
 options.registerAlignmentExtension((ed) => renderAlignmentPanel(ed));
 
-const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc", image: "#787878" };
+const ZONE_COLORS = { barcode: "#d9661a", qrcode: "#a03ca0", ocr: "#1e8c1e", icr: "#1478dc", imprint: "#008c8c", image: "#787878" };
 const BLOCK_COLOR = "#2f6fdf";
 const HIGHLIGHT = "#ff8a00";
 const HANDLE = 8;
@@ -114,7 +114,7 @@ export class TemplateEditor {
     this.addBlockBtn = btn("+ Block", "Draw a new bubble block (B)", () => this.setMode("add-block"));
     this.lockBtn = btn("🔓 Lock placement", "Lock or unlock the position and size of every block and zone on the page, so editing their options can't move them by accident (L)", () => this.toggleLock());
     this.addZoneBtn = btn("+ Zone", "Draw a new barcode / QR / OCR / ICR zone (Z)", () => this.setMode("add-zone"));
-    this.zoneTypeSel = el("select", { class: "small", title: "Type of new zones" }, (state.caps?.zone_types || ["barcode", "qrcode", "ocr", "icr"]).map((t) => el("option", { value: t }, t)));
+    this.zoneTypeSel = el("select", { class: "small", title: "Type of new zones" }, (state.caps?.zone_types || ["barcode", "qrcode", "ocr", "icr", "imprint"]).map((t) => el("option", { value: t }, t)));
     const gridSel = el(
       "select",
       { class: "small", title: "Snap grid", onchange: (e) => (this.grid = Number(e.target.value)) },
@@ -1320,7 +1320,7 @@ export class TemplateEditor {
           this.selected = { kind: "zone", name: v };
         });
       }),
-      this.dropdown("Type", raw.type, (state.caps?.zone_types || ["barcode", "qrcode", "ocr", "icr"]).map((t) => [t, t]), (v) => set(() => (raw.type = v))),
+      this.dropdown("Type", raw.type, (state.caps?.zone_types || ["barcode", "qrcode", "ocr", "icr", "imprint"]).map((t) => [t, t]), (v) => set(() => (raw.type = v))),
       el(
         "div",
         { class: "two" },
@@ -1362,6 +1362,9 @@ export class TemplateEditor {
           : null,
         options.renderLazyOption(this, o.name, opts, setOpt)
       );
+    }
+    if (raw.type === "imprint") {
+      add(box, this.input("Allowed characters", opts.whitelist ?? "", (v) => setOpt("whitelist", v), { placeholder: "S0123456789 (the model's)" }));
     }
     // Direction, engines, language, image zone options (editor_ocr.js)
     box.append(...ocrZoneControls(this, raw, opts, setOpt, o.name));

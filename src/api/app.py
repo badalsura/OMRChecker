@@ -47,13 +47,19 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.api import auth_routes
-from src.api.accounts import Accounts, request_user
-from src.api import align_routes
+from src.api import align_routes, auth_routes, compare_routes, editor_routes
 from src.api import exports as exports_module
+from src.api import fs_routes, generator_routes
 from src.api import jobs as jobs_module
-from src.api import editor_routes, fs_routes, generator_routes, manage_routes, ocr_routes, results_routes, views_routes
-from src.api import template_ops_routes
+from src.api import (
+    license_routes,
+    manage_routes,
+    ocr_routes,
+    results_routes,
+    template_ops_routes,
+    views_routes,
+)
+from src.api.accounts import Accounts, request_user
 from src.api.results import DEFAULT_USER, ResultsService, log_review
 from src.api.review import (
     ReviewError,
@@ -212,9 +218,17 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
             response.headers["Cache-Control"] = "no-cache"
         return response
 
-    # The API key (programs), or a signed-in user once accounts exist
-    secured = [Depends(auth_routes.make_access(settings, ctx.accounts))]
+    # The API key (programs), or a signed-in user once accounts exist. Every
+    # working endpoint also requires a valid license: this one list is the
+    # server-side choke point, so an unlicensed station cannot do real work
+    # through any call. The /license/* and /health routes below stay open so a
+    # fresh install can activate.
+    secured = [
+        Depends(auth_routes.make_access(settings, ctx.accounts)),
+        Depends(license_routes.make_license_guard()),
+    ]
     auth_routes.register(app, ctx)
+    license_routes.register(app, ctx)
 
     # ------------------------------------------------------------------
     # helpers
@@ -1253,6 +1267,7 @@ def create_app(data_dir=None, settings: Optional[Settings] = None, **overrides):
     align_routes.register(app, ctx, secured, read_upload)
     # original / full-colour views, folder picker, deletes and bulk review
     views_routes.register(app, ctx, secured)
+    compare_routes.register(app, ctx, secured)
     fs_routes.register(app, ctx, secured)
     manage_routes.register(app, ctx, secured)
     ocr_routes.register(app, ctx, secured)

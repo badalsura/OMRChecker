@@ -1113,3 +1113,31 @@ def test_read_pass_counts_per_job(tmp_path):
     assert index.read_pass_counts(job_id="j1") == {"fast": 2, "full": 1}
     assert index.read_pass_counts(job_id="other") == {}
     index.close()
+
+
+def test_review_crops_on_the_colour_and_original_views(tmp_path, spec):
+    """The review queue can cut an item's crop from the full colour page or the
+    original scan: both show the same field as the aligned crop."""
+    image, _ = sheet(spec, 41)
+
+    def picture(response):
+        assert response.status_code == 200, response.text
+        return cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_GRAYSCALE)
+
+    def gap(a, b):
+        b = cv2.resize(b, (a.shape[1], a.shape[0]))
+        return float(np.mean(np.abs(a.astype(int) - b.astype(int))))
+
+    with make_client(tmp_path) as client:
+        template_id = upload(client, template_json(spec))
+        scan_id = scan(client, template_id, cv2.rotate(image, cv2.ROTATE_180))["scan_id"]
+        aligned = picture(client.get(f"/scans/{scan_id}/crop?name=q3&pad=20"))
+        colour = picture(client.get(f"/scans/{scan_id}/views/color/crop?name=q3&pad=20"))
+        original = picture(client.get(f"/scans/{scan_id}/views/original/crop?name=q3&pad=20"))
+        assert colour.shape == aligned.shape
+        assert gap(aligned, colour) < 3
+        assert gap(aligned, original) < 25
+        outlined = picture(client.get(f"/scans/{scan_id}/views/original/crop?name=q3&pad=20&outline=true"))
+        assert outlined.shape == original.shape and gap(original, outlined) > 0
+        assert client.get(f"/scans/{scan_id}/views/color/crop?name=nope").status_code == 404
+        assert client.get(f"/scans/{scan_id}/views/dropout/crop?name=q3").status_code == 404

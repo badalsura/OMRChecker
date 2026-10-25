@@ -414,3 +414,39 @@ cannot be shown.
 * Exports stream from the index, so even millions of rows use little memory.
   XLSX starts a new sheet every 1,048,575 rows, and SQL exports upsert in
   batches of 1,000 rows.
+
+## Nuitka build (harder to reverse-engineer)
+
+Alongside the PyInstaller build, the app can be built with **Nuitka**, which
+compiles the Python to C and then to a native exe. This makes the program
+meaningfully harder to reverse-engineer than bundled bytecode. It targets
+modern Windows (10/11); the PyInstaller build stays the one that reaches
+Windows 7/8.1.
+
+```
+pip install nuitka                                  # on the Windows build machine
+python packaging/prepare_bundle.py                  # Tesseract, models, cloudflared
+copy license-keys\public_key.pem src\licensing\public_key.pem   # see docs/licensing.md
+python packaging/build_nuitka.py                    # app window (WebView2), onedir
+python packaging/build_nuitka.py --launcher         # console launcher (server features)
+python packaging/build_nuitka.py --mode onefile --launcher
+python packaging/build_nuitka.py --dry-run          # print the Nuitka command only
+```
+
+`packaging/build_nuitka.py` bundles the **same** resources as `omr.spec`
+(static GUI, schemas, defaults, branding, docs, samples, in-browser reader, the
+license public key, Tesseract, OCR models, cloudflared). Output is
+`dist-nuitka\OMRChecker.dist\OMRChecker.exe` (onedir) or
+`dist-nuitka\OMRChecker.exe` (onefile). A first build may download the MSVC
+toolchain prompt or the dependency walker; `--assume-yes-for-downloads` is set.
+
+### In CI
+
+The GitHub workflow **Build Windows exe (Nuitka)**
+(`.github/workflows/build-windows-nuitka.yml`) does all of this: it fetches the
+OCR models on Linux (same as the PyInstaller workflow), builds with Nuitka on
+`windows-latest`, smoke-tests the exe, uploads the zips as artifacts, and can
+attach them to a GitHub release (`release_tag` input). The license public key
+is written from the **`LICENSE_PUBLIC_KEY`** repository secret before building
+(Settings → Secrets and variables → Actions); it is the *public* key, safe to
+store. Without it the build runs but cannot verify licenses.

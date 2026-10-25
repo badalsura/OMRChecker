@@ -15,9 +15,12 @@ Tesseract and flags every result for review, because Tesseract is not built
 for handwriting.
 """
 
+import re
+
 import cv2
 import numpy as np
 
+from src.logger import logger
 from src.readers import ocr
 from src.readers.base import ZoneReadResult
 
@@ -146,8 +149,11 @@ def paddle_second_reader(settings, zone):
     """PaddleOCR recognition as a second reader for boxed handwriting, or None."""
     from src.readers import text_reader
 
+    # "auto" is off: PaddleOCR reading single cleaned boxes disagreed with a
+    # good box classifier on 915 of 932 TERI roll numbers, so it sent nearly
+    # every zone to review. "paddle" still turns it on.
     choice = settings.get("icr_second_reader", "auto")
-    if choice not in ("auto", "paddle"):
+    if choice != "paddle":
         return None
     try:
         engine = text_reader.paddle_engine(settings, zone=zone)
@@ -177,6 +183,15 @@ def read_icr_crop(zone, crop, classifier=None, settings=None):
     settings = settings or {}
     count = zone.options.get("characterBoxes")
     whitelist = zone.options.get("whitelist")
+
+    if icr_engine_choice(settings, zone) == "vlm":
+        engine = vlm_icr_engine(settings, zone)
+        if engine is not None:
+            return read_with_vlm(zone, crop, count, whitelist, engine, classifier)
+        # Read the usual way (PaddleOCR, the ICR model or Tesseract) instead
+        result = read_icr_crop(zone, crop, classifier, {**settings, "_no_vlm": True})
+        result.details["vlm_unavailable"] = vlm_unavailable_reason(settings, zone)
+        return result
 
     if classifier is None or not count:
         paddle = paddle_icr_engine(settings, zone)
@@ -241,13 +256,128 @@ def paddle_icr_engine(settings, zone):
     """PaddleOCR as the handwriting reader when no ICR model is loaded, or None."""
     from src.readers import text_reader
 
-    if settings.get("icr_engine", "auto") not in ("auto", "paddle"):
+    if icr_engine_choice(settings, zone) not in ("auto", "paddle"):
         return None
     try:
         engine = text_reader.paddle_engine(settings, zone=zone)
         return engine if engine.available else None
     except Exception:  # pragma: no cover - optional engine
         return None
+
+
+def icr_engine_choice(settings, zone):
+    """The zone's icrEngine option, else ocr_params.icr_engine."""
+    choice = zone.options.get("icrEngine") if zone is not None else None
+    if choice in (None, "default"):
+        choice = settings.get("icr_engine", "auto")
+    if choice == "vlm" and settings.get("_no_vlm"):
+        return "auto"
+    return choice
+
+
+def vlm_icr_engine(settings, zone):
+    """The vision-language model reader (src/readers/vlm.py), or None."""
+    from src.readers import vlm
+
+    try:
+        engine = vlm.get_engine(settings, zone)
+        return engine if engine.available else None
+    except Exception as error:  # pragma: no cover - optional engine
+        logger.warning(f"VLM reader unavailable: {error}")
+        return None
+
+
+def vlm_unavailable_reason(settings, zone):
+    from src.readers import vlm
+
+    try:
+        return vlm.get_engine(settings, zone).unavailable_reason
+    except Exception as error:  # pragma: no cover
+        return str(error)
+
+
+def inked_box_count(crop, count):
+    return sum(
+        1
+        for box in split_character_boxes(crop, count)
+        if clean_box(box)[1] >= MIN_INK_RATIO
+    )
+
+
+def read_with_vlm(zone, crop, count, whitelist, engine, classifier=None):
+    """
+    Handwriting through a vision-language model, which reads the raw zone crop
+    (box lines and all: the models read worse on cleaned boxes). A VLM gives
+    no confidence, so the box count is the check: a boxed zone whose read has
+    a different number of characters than boxes with ink goes to review
+    (icr_alignment). With an ICR model loaded, it reads the boxes as a second
+    opinion and a disagreement is flagged engine_disagree.
+    """
+    from src.readers import vlm
+
+    try:
+        raw = engine.read(crop, vlm.prompt_for(engine.model, whitelist, count))
+    except Exception as error:
+        return ZoneReadResult(
+            zone.name, zone.type, "", 0.0, ["read_error"],
+            details={"engine": "vlm", "model": engine.model, "error": str(error)},
+            engine="vlm",
+        )
+    text = "".join(ch for ch in raw if not ch.isspace())
+    if whitelist:
+        text = "".join(ch for ch in text if ch in whitelist)
+    elif zone.options.get("pattern"):
+        # No whitelist: a stray mark the model read as "a" or "." would fail
+        # a digit pattern, so keep the digits when they alone fit it
+        digits = "".join(ch for ch in text if ch.isdigit())
+        try:
+            if not re.fullmatch(zone.options["pattern"], text) and re.fullmatch(
+                zone.options["pattern"], digits
+            ):
+                text = digits
+        except re.error:
+            pass
+    flags, details = [], {"engine": "vlm", "model": engine.model, "raw": raw.strip()}
+    confidence = 1.0
+    if count:
+        inked = inked_box_count(crop, count)
+        details["inked_boxes"] = inked
+        if not inked and not text:
+            return ZoneReadResult(
+                zone.name, zone.type, "", 1.0, ["empty"], details=details, engine="vlm"
+            )
+        if len(text) != inked:
+            flags.append("icr_alignment")
+            confidence = 0.0
+        if classifier is not None and len(text) == inked:
+            second = classify_boxes(crop, count, classifier, whitelist)
+            details["second_reader"] = {"engine": "icr_model", "characters": second}
+            if "".join(second) != text:
+                flags.append("engine_disagree")
+    elif not text:
+        flags.append("empty")
+    return ZoneReadResult(
+        zone.name, zone.type, text, confidence, flags, details=details, engine="vlm"
+    )
+
+
+def classify_boxes(crop, count, classifier, whitelist):
+    """The ICR model's character for each inked box (blank boxes left out)."""
+    characters = []
+    for box in split_character_boxes(crop, count):
+        cleaned, ink_ratio = clean_box(box)
+        if ink_ratio < MIN_INK_RATIO:
+            continue
+        probs = classifier.predict_proba([cleaned])[0]
+        if whitelist:
+            mask = np.array(
+                [label in whitelist or label == BLANK_LABEL for label in classifier.labels],
+                dtype=float,
+            )
+            probs = probs * mask
+        label = classifier.labels[int(np.argmax(probs))]
+        characters.append("" if label == BLANK_LABEL else label)
+    return characters
 
 
 def boxes_strip(boxes, spans=None):

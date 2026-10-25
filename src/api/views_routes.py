@@ -26,6 +26,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from src.api.results import RenderCache, ResultsError
+from src.api.review import item_box, related_names
 from src.geometry import map_points, warp_to_aligned
 
 VIEWS = ("original", "color")
@@ -436,6 +437,87 @@ def register(app, ctx, secured):
             media_type="image/png" if format == "png" else "image/jpeg",
             headers={"Cache-Control": "private, no-cache"},
         )
+
+    @app.get(
+        "/scans/{scan_id}/views/{view}/crop", tags=["results"], dependencies=secured
+    )
+    def scan_view_crop(
+        scan_id: str,
+        view: str,
+        name: str = Query(..., description="Field, zone, check or custom label"),
+        pad: int = Query(20, ge=0, le=400),
+        outline: bool = Query(False, description="Outline the item inside the crop"),
+    ):
+        """
+        The review crop of one item on another view: view=color is the aligned
+        page in full colour (same coordinates), view=original the scan as fed
+        to the reader, with the item's outline mapped back (pad is in aligned
+        pixels and scaled with the page).
+        """
+        if view not in VIEWS:
+            raise HTTPException(404, f"Unknown view '{view}'")
+        try:
+            result = service.load(scan_id)
+            _, box = item_box(result, name)
+            if box is None:
+                raise ResultsError(f"'{name}' has no outline on this sheet", 404)
+            item = build(scan_id, view, 0)
+        except ResultsError as error:
+            fail(error)
+        image = item["image"]
+        if view == "color":
+            quad = _quad(box)
+        else:
+            quad = original_quad(result, item["meta"].get("map") or {}, name)
+            if quad is None:
+                raise HTTPException(404, f"'{name}' has no outline on the original")
+            page = (item["meta"].get("map") or {}).get("page")
+            size = (result.get("geometry") or {}).get("aligned_size")
+            if page and size:
+                # The original is usually larger than the aligned page
+                pad = int(pad * np.hypot(page[1][0] - page[0][0], page[1][1] - page[0][1]) / size[0])
+        xs, ys = [p[0] for p in quad], [p[1] for p in quad]
+        x0, y0 = max(int(min(xs)) - pad, 0), max(int(min(ys)) - pad, 0)
+        x1 = min(int(np.ceil(max(xs))) + pad, image.shape[1])
+        y1 = min(int(np.ceil(max(ys))) + pad, image.shape[0])
+        if x1 <= x0 or y1 <= y0:
+            raise HTTPException(404, "Crop is outside the image")
+        crop = image[y0:y1, x0:x1].copy()
+        if outline and pad > 0:
+            crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR) if crop.ndim == 2 else crop
+            points = np.asarray([[x - x0, y - y0] for x, y in quad], np.int32)
+            if view == "color":
+                # As on the aligned crop: 3 px outside the item
+                x, y, w, h = cv2.boundingRect(points)
+                cv2.rectangle(crop, (x - 3, y - 3), (x + w + 2, y + h + 2), (0, 140, 255), 1)
+            else:
+                cv2.polylines(crop, [points], True, (0, 140, 255), 1)
+        ok, buffer = cv2.imencode(".png", crop, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        if not ok:
+            raise HTTPException(500, "Could not encode image")
+        return Response(content=buffer.tobytes(), media_type="image/png")
+
+
+def original_quad(result, mapped, name, _depth=0):
+    """An item's outline on the original view (the union of its sources for
+    a check or custom label), from the mapped overlay."""
+    field = (mapped.get("fields") or {}).get(name)
+    if field and field.get("box"):
+        return field["box"]
+    zone = (mapped.get("zones") or {}).get(name)
+    if zone:
+        return zone
+    if _depth >= 3:
+        return None
+    points = []
+    for source in related_names(result, name):
+        quad = original_quad(result, mapped, source, _depth + 1)
+        if quad:
+            points.extend(quad)
+    if not points:
+        return None
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return _quad([min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)])
 
 
 def drop_views(ctx, scan_id):

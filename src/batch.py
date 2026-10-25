@@ -297,6 +297,17 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
+    # Licensed before any reading starts (bulk is a major operation).
+    from src.licensing import gate
+    from src.licensing.verify import LicenseError
+
+    try:
+        gate.require_license()
+    except LicenseError as error:
+        print(f"OMRChecker is not licensed on this machine: {error}", flush=True)
+        print("Activate in the app, or see docs/licensing.md.", flush=True)
+        return 3
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     files = collect_files(args.input)

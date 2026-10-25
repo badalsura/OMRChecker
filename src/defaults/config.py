@@ -90,6 +90,10 @@ CONFIG_DEFAULTS = DotMap(
                 "low_confidence",
                 "weak_mark",
                 "possible_missed_mark",
+                # Only with keep_darker_gap / strict_double_mark on: a dropped
+                # lighter mark is a real double mark more often than not
+                "kept_darker_mark",
+                "faint_second_mark",
                 "model_disagrees",
                 # A printed border would have moved the block by 0.4+ pitch
                 "border_slide",
@@ -137,11 +141,18 @@ CONFIG_DEFAULTS = DotMap(
             "user_patterns": True,
             # Review when any character is below this confidence; 0 = off
             "min_char_confidence": 0,
-            # PaddleOCR reads boxed handwriting as well when its models are installed
+            # PaddleOCR as a second opinion on an ICR model's boxes: "paddle";
+            # "auto" (off) because it reads single boxes poorly
             "icr_second_reader": "auto",
             # Handwriting reader when no ICR model is loaded: PaddleOCR when its
-            # models are installed ("auto"), or always Tesseract ("tesseract")
+            # models are installed ("auto"), or always Tesseract ("tesseract").
+            # "vlm": a vision-language model (src/readers/vlm.py), used even
+            # with an ICR model, which then gives a second opinion
             "icr_engine": "auto",
+            "icr_vlm_model": "paddleocr-vl",
+            "icr_vlm_url": "http://127.0.0.1:8765",
+            "icr_vlm_autostart": True,
+            "icr_vlm_timeout": 60,
         },
         "speed_params": {
             # Test mode (src/fast_pass.py): read at half size first and re-read

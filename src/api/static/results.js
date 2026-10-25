@@ -1,7 +1,7 @@
 // Results tab: browse every graded sheet, see the exact overlay it was graded
 // with (re-rendered by the server, drawn here), correct it by clicking bubbles
 // or typing, verify it, regrade it with overrides, and read the accuracy.
-import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, state, toast, url } from "./api.js";
+import { api, chip, confidenceColor, el, emit, modal, on, safeStorage, scrollWithin, state, toast, url } from "./api.js";
 import { scoreSummary } from "./score_view.js";
 import { historyBox, isAdmin } from "./activity.js";
 
@@ -44,13 +44,13 @@ export function initResults() {
   for (const id of ["res-template", "res-view", "res-name", "res-flag", "res-job", "res-assigned"]) {
     $(id).addEventListener("change", () => {
       if (id === "res-template" || id === "res-job") refreshFacets();
-      load(0);
+      reload();
     });
   }
   let searchTimer;
   $("res-file").addEventListener("input", () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => load(0), 300);
+    searchTimer = setTimeout(() => reload(), 300);
   });
   $("res-prev-page").addEventListener("click", () => load(Math.max(0, r.offset - PAGE)));
   $("res-next-page").addEventListener("click", () => load(r.offset + PAGE));
@@ -72,7 +72,7 @@ export function initResults() {
       $("res-view").value = "all";
       document.querySelector('.tabs button[data-tab="results"]').click();
       refreshFacets();
-      load(0);
+      reload();
     });
   });
   // A correction saved on the review screen shows here at once
@@ -95,12 +95,17 @@ export function initResults() {
       $("res-view").value = "all";
       document.querySelector('.tabs button[data-tab="results"]').click();
       refreshFacets();
-      load(0);
+      reload();
     });
   });
-  on("results-scan", (scanId) => {
+  // A sheet id, or {id, field} to open with that field selected (from Compare)
+  on("results-scan", async (target) => {
+    const { id, field } = typeof target === "string" ? { id: target } : target;
+    // The list loading as the tab opens must not open its own first sheet
+    r.wanted = id;
     document.querySelector('.tabs button[data-tab="results"]').click();
-    open(scanId);
+    await open(id);
+    if (field && r.data && r.data.scan_id === id && findItem(field)) select(field);
   });
 }
 
@@ -182,6 +187,12 @@ async function refreshFacets() {
   }
 }
 
+// A filter changed: the list's first sheet opens, whatever was asked for before
+function reload() {
+  r.wanted = null;
+  return load(0);
+}
+
 async function load(offset, keepPos) {
   r.filters = currentFilters();
   const params = new URLSearchParams({ ...r.filters, limit: String(PAGE), offset: String(offset) });
@@ -197,6 +208,7 @@ async function load(offset, keepPos) {
   renderList();
   if (keepPos === "first" && r.items.length) await openAt(0);
   else if (keepPos === "last" && r.items.length) await openAt(r.items.length - 1);
+  else if (r.wanted) renderList(); // a sheet asked for from another tab stays open
   else if (!keepPos && r.items.length && (!r.data || !r.items.some((i) => i.id === r.data.scan_id))) await openAt(0);
   else if (!r.items.length) {
     r.data = null;
@@ -236,12 +248,13 @@ function renderList() {
   $("res-prev-page").disabled = r.offset === 0;
   $("res-next-page").disabled = end >= r.total;
   const selectedNode = list.querySelector("li.selected");
-  if (selectedNode && selectedNode.scrollIntoView) selectedNode.scrollIntoView({ block: "nearest" });
+  if (selectedNode) scrollWithin(list, selectedNode, { center: false });
 }
 
 async function openAt(index) {
   const item = r.items[index];
   if (!item) return;
+  r.wanted = null;
   r.pos = index;
   await open(item.id);
 }
@@ -705,7 +718,7 @@ const COLORS = {
   corrected: "#8e44ad",
   selected: "#d0342c",
   hover: "#00a3a3",
-  zone: { barcode: "#c85a14", qrcode: "#a028a0", ocr: "#1e8c1e", icr: "#1478dc" },
+  zone: { barcode: "#c85a14", qrcode: "#a028a0", ocr: "#1e8c1e", icr: "#1478dc", imprint: "#008c8c" },
   block: { found: "#1e8c1e", fitted: "#1478dc", failed: "#d0342c", skipped: "#8a909c" },
 };
 
@@ -905,7 +918,7 @@ function select(name, focusInput) {
     if (match) {
       const details = row.closest("details");
       if (details) details.open = true;
-      if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+      scrollWithin($("res-side"), row, { center: false });
       const input = row.querySelector(`input[data-name="${CSS.escape(name)}"]`);
       if (focusInput && input) {
         input.focus();

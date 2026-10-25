@@ -36,8 +36,12 @@ class CropClassifier:
     def predict_proba(self, crops: Sequence[np.ndarray]) -> np.ndarray:
         raise NotImplementedError
 
+    preprocess = "resize"
+
     def prepare(self, crops: Sequence[np.ndarray]) -> np.ndarray:
         """Resize and scale crops into an (N, 1, H, W) float32 batch in [0, 1]."""
+        if self.preprocess == "centered_digit":
+            return centered_digit_batch(crops, self.input_size)
         width, height = self.input_size
         batch = np.zeros((len(crops), 1, height, width), dtype=np.float32)
         for i, crop in enumerate(crops):
@@ -65,6 +69,8 @@ class OnnxCropClassifier(CropClassifier):
         self.labels = list(metadata["labels"])
         self.input_size = tuple(metadata.get("input_size", [32, 32]))
         self.temperature = float(metadata.get("temperature") or 1.0)
+        # "centered_digit": MNIST-style input (see centered_digit)
+        self.preprocess = metadata.get("preprocess", "resize")
         self.metadata = metadata
         options = ort.SessionOptions()
         if threads is None:
@@ -87,6 +93,54 @@ class OnnxCropClassifier(CropClassifier):
             return np.zeros((0, len(self.labels)), dtype=np.float32)
         logits = self.session.run(None, {self.input_name: self.prepare(crops)})[0]
         return softmax(logits, self.temperature)
+
+
+def centered_digit(crop, size=28):
+    """
+    A cleaned character box (black ink on white) as MNIST/EMNIST models expect
+    it: white ink on black, specks dropped, the ink fitted in the middle
+    (20 x 20 in 28 x 28) and moved so its centre of mass is the image centre,
+    scaled to [0, 1].
+    All black when the box has no ink.
+    """
+    fit = round(size * 20 / 28)
+    canvas = np.zeros((size, size), np.float32)
+    if crop is None or crop.size == 0:
+        return canvas
+    if crop.ndim == 3:
+        crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(255 - crop, 127, 255, cv2.THRESH_BINARY)
+    count, components, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if count <= 1:
+        return canvas
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    keep = [i + 1 for i, area in enumerate(areas) if area >= max(4, 0.12 * areas.max())]
+    mask = np.isin(components, keep).astype(np.uint8) * 255
+    ys, xs = np.nonzero(mask)
+    digit = mask[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+    h, w = digit.shape
+    scale = float(fit) / max(h, w)
+    nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+    digit = cv2.resize(digit, (nw, nh), interpolation=cv2.INTER_AREA)
+    y0, x0 = (size - nh) // 2, (size - nw) // 2
+    canvas[y0 : y0 + nh, x0 : x0 + nw] = digit
+    total = canvas.sum()
+    if total > 0:
+        yy, xx = np.indices(canvas.shape)
+        cy, cx = (yy * canvas).sum() / total, (xx * canvas).sum() / total
+        shift = np.float32([[1, 0, size / 2 - cx], [0, 1, size / 2 - cy]])
+        canvas = cv2.warpAffine(
+            canvas, shift, (size, size), flags=cv2.INTER_LINEAR, borderValue=0
+        )
+    return canvas / 255.0
+
+
+def centered_digit_batch(crops, input_size):
+    width, height = input_size
+    batch = np.zeros((len(crops), 1, height, width), dtype=np.float32)
+    for i, crop in enumerate(crops):
+        batch[i, 0] = centered_digit(crop, size=width)
+    return batch
 
 
 def softmax(logits, temperature=1.0):

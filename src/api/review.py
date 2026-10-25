@@ -117,7 +117,9 @@ def template_index_points(template_json):
 def sheet_overview(image, result, entry, index_points=(), max_width=1000):
     """The whole aligned sheet with every field drawn (marked bubbles filled,
     flagged fields boxed) and the index points: found in green, missing in red."""
-    canvas = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+    canvas = (
+        cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+    )
     fill = canvas.copy()
     flagged = {item.get("name") for item in result.get("review") or []}
     for name, field in (result.get("fields") or {}).items():
@@ -132,14 +134,18 @@ def sheet_overview(image, result, entry, index_points=(), max_width=1000):
         box = _field_box(field)
         if box and name in flagged:
             x, y, w, h = [int(v) for v in box]
-            cv2.rectangle(canvas, (x - 4, y - 4), (x + w + 4, y + h + 4), (0, 140, 255), 2)
+            cv2.rectangle(
+                canvas, (x - 4, y - 4), (x + w + 4, y + h + 4), (0, 140, 255), 2
+            )
     cv2.addWeighted(fill, 0.45, canvas, 0.55, 0, canvas)
     missing = set((entry or {}).get("missing") or [])
     for point in index_points:
         cx, cy = int(point["center"][0]), int(point["center"][1])
         radius = int(max(point["size"]) * 0.5 + 12)
         colour = (40, 40, 220) if point["name"] in missing else (40, 160, 40)
-        cv2.circle(canvas, (cx, cy), radius, colour, 4 if point["name"] in missing else 2)
+        cv2.circle(
+            canvas, (cx, cy), radius, colour, 4 if point["name"] in missing else 2
+        )
         text = point["name"] + (" missing" if point["name"] in missing else "")
         width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0][0]
         # Labels go towards the middle of the page so they stay on it
@@ -155,7 +161,9 @@ def sheet_overview(image, result, entry, index_points=(), max_width=1000):
         )
     if canvas.shape[1] > max_width:
         scale = max_width / canvas.shape[1]
-        canvas = cv2.resize(canvas, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        canvas = cv2.resize(
+            canvas, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA
+        )
     return canvas
 
 
@@ -493,14 +501,19 @@ def apply_review(
         else:
             predicted = responses.get(name, "")
             label = corrections[name] if corrected else predicted
-            for column, value in column_changes.get(name, {}).items():
-                field = fields[column]
+            # Every column is settled, also one whose value stays: a flagged
+            # column would otherwise keep its group's issue mark (" ") and the
+            # rebuilt label would lose the person's value
+            changed = column_changes.get(name, {})
+            for column in custom_labels[name]:
+                field = fields.get(column)
+                if field is None:
+                    continue
                 before = dict(field)
-                if value != field.get("value", ""):
-                    set_entity(field, value, empty_values.get(column, ""))
-                    settle(
-                        "field", column, before, before.get("value", ""), value, True
-                    )
+                value = changed.get(column, field.get("value", ""))
+                is_new = value != field.get("value", "")
+                set_entity(field, value, empty_values.get(column, ""))
+                settle("field", column, before, before.get("value", ""), value, is_new)
             if corrected:
                 responses[name] = label
             settle(

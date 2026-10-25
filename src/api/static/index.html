@@ -16,6 +16,7 @@
     <nav class="tabs" role="tablist">
       <button data-tab="scan" class="active">Scan</button>
       <button data-tab="review">Review queue <span id="review-badge" class="badge hidden"></span></button>
+      <button data-tab="compare" title="Compare our results with another reader's file (a physical OMR scanner such as OpScan) and settle every mismatch">Compare</button>
       <button data-tab="results">Results</button>
       <button data-tab="changes" title="Administrators: hand out review work, check what people changed, verify or send back">Check changes</button>
       <button data-tab="jobs">Jobs</button>
@@ -72,6 +73,9 @@
           <select id="rv-order"><option value="risk">Highest risk first</option><option value="oldest">Oldest first</option></select>
         </label>
         <label class="field inline"><input type="checkbox" id="rv-wide"> Wide context</label>
+        <label class="field inline" title="Aligned: the corrected page the engine read. Full colour: the same page in its original colours, to tell pencil from pen. Original: the scan as it came off the scanner. Shortcut: Alt+O">View
+          <select id="rv-view"><option value="aligned">Aligned</option><option value="color">Full colour</option><option value="original">Original scan</option></select>
+        </label>
         <label class="field inline" title="Show many crops as a grid and accept the right ones together"><input type="checkbox" id="rv-grid"> Grid</label>
         <label class="field inline" title="Grid of one field from many sheets, or of every item that has the same flag">by <select id="rv-grid-by"><option value="field">field</option><option value="flag">flag</option></select></label>
         <button id="rv-load" class="primary">Reload queue</button>
@@ -88,7 +92,40 @@
         <kbd>Tab</kbd> skip ·
         <kbd>Shift</kbd>+<kbd>Tab</kbd> previous ·
         <kbd>Esc</kbd> reset ·
-        <kbd>Alt</kbd>+<kbd>1-9</kbd> toggle option
+        <kbd>Alt</kbd>+<kbd>1-9</kbd> toggle option ·
+        <kbd>Alt</kbd>+<kbd>V</kbd> open in Results ·
+        <kbd>Alt</kbd>+<kbd>O</kbd> aligned / full colour / original crop
+      </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section id="tab-compare" class="tab">
+      <div class="panel review-filters row gap wrap">
+        <label class="field inline">Comparison <select id="cmp-session"></select></label>
+        <button id="cmp-new" class="primary" title="Read another reader's file (OpScan / ScanTools Plus export, any CSV or fixed-width file) and compare it with our results">New comparison…</button>
+        <button id="cmp-rules" class="ghost" title="Which fields are compared, how blanks and multi-marks count, and how their rows find our sheets">Rules…</button>
+        <button id="cmp-rebuild" class="ghost" title="Compare again with our current values (after corrections in the review queue). Runs in the background; choices whose two values did not change are kept.">Compare again</button>
+        <button id="cmp-export" class="ghost">Export…</button>
+        <button id="cmp-delete" class="ghost danger" title="Delete this comparison and its choices; read results are not touched">Delete</button>
+        <span class="spacer"></span>
+        <span id="cmp-progress" class="muted"></span>
+      </div>
+      <div class="panel cmp-main" id="cmp-main" tabindex="-1">
+        <div class="empty-state">Start a new comparison: pick a template and the other reader's file.</div>
+      </div>
+      <div class="keys muted">
+        <kbd>1</kbd> keep their value ·
+        <kbd>2</kbd> keep ours ·
+        <kbd>E</kbd> type a value ·
+        <kbd>R</kbd> undo / previous field ·
+        <kbd>S</kbd> next mismatch ·
+        <kbd>Tab</kbd> skip sheet ·
+        <kbd>Shift</kbd>+<kbd>Tab</kbd> previous sheet ·
+        <kbd>Enter</kbd> save and next sheet ·
+        <kbd>O</kbd> aligned / original / colour page ·
+        <kbd>V</kbd> open in Results (compared again when you come back) ·
+        <kbd>A</kbd> all fields side by side / mismatches only ·
+        choices go to a reconciled layer, or to our results when the rules say so; a sheet you have open is locked for others
       </div>
     </section>
 

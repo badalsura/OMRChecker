@@ -446,6 +446,10 @@ class JobManager:
         """Read the job's error sheets again (sheets a person already reviewed
         are kept). A paused, interrupted or failed job also reads the rest.
         Returns (job, number of files queued) or None when not allowed."""
+        with self.lock:
+            return self._rescan_errors(job_id)
+
+    def _rescan_errors(self, job_id):
         if job_id in self.live:
             return None
         job = self.get(job_id)
@@ -522,15 +526,18 @@ class JobManager:
                 job["state"] = FAILED
                 job["errors"].append(str(error))
             finally:
-                if job["state"] == RUNNING:
-                    job["state"] = INTERRUPTED if self.stopping.is_set() else COMPLETED
-                if job["state"] == COMPLETED and watching(job):
-                    job["state"] = WATCHING
-                    self.watcher.add(job_id)
-                job["finished_at"] = time.time()
-                self._refresh_counts(job)
-                self._save(job)
-                self.live.pop(job_id, None)
+                # Under the lock, so Rescan errors never sees the run finished
+                # while the job is still held as live
+                with self.lock:
+                    if job["state"] == RUNNING:
+                        job["state"] = INTERRUPTED if self.stopping.is_set() else COMPLETED
+                    if job["state"] == COMPLETED and watching(job):
+                        job["state"] = WATCHING
+                        self.watcher.add(job_id)
+                    job["finished_at"] = time.time()
+                    self._refresh_counts(job)
+                    self._save(job)
+                    self.live.pop(job_id, None)
                 self.cancelled.discard(job_id)
                 self.paused.discard(job_id)
                 if job_id in self.resume_after:

@@ -367,7 +367,10 @@ def test_icr_paddle_second_reader_flags_disagreement(paddle_models):
         cv2.putText(crop, ch, (i * 40 + 8, 32), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 0, 3)
     page = page_with(crop)
     zone = make_zone({"characterBoxes": 3}, "icr", dims=(width, 40))
-    settings = {"paddle_model_dir": str(paddle_models)}
+    settings = {"paddle_model_dir": str(paddle_models), "icr_second_reader": "paddle"}
+    assert "second_reader" not in icr.read_icr_zone(
+        zone, page, Classifier(), dict(settings, icr_second_reader="auto")
+    ).details
     result = icr.read_icr_zone(zone, page, Classifier(), settings)
     second = result.details["second_reader"]
     assert second["engine"] == "paddle"

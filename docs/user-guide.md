@@ -14,6 +14,7 @@ sections that contain all the words you type, for example `double mark`,
 | Read a few sheets now | 2. Scan |
 | Read thousands of sheets, pause, resume after a crash, rescan errors | 2. Jobs |
 | Check the sheets the program was unsure about | 2. Review queue (and the flag table there) |
+| Compare our answers with a physical OMR scanner's (OpScan) or another program's file and settle every difference | 2. Compare tab |
 | Get a CSV / Excel file of the answers | 2. Export |
 | Look at one sheet, correct a bubble, verify it | 3. Results screen |
 | Re-read a sheet with other settings, or a sheet read upside down, mirrored or a row off | 3. Results screen → Regrade, Place the page by hand |
@@ -384,6 +385,7 @@ The address in the browser follows the tab, for example `http://127.0.0.1:8765/#
 | --- | --- |
 | **Scan** | Quick reading of a few sheets: pick a template, drop images or PDFs, and see each sheet's answers right away. Also has **📷 Live camera** to read sheets from a camera, and **Export CSV** / **Clear list** for the sheets in this list. |
 | **Review queue** | Works through single items the engine was unsure about (a faint mark, a double mark, an unreadable code), one at a time or in a grid, with keyboard shortcuts. |
+| **Compare** | Compares our results with another reader's file (a physical OMR scanner such as Scantron OpScan 6, or any CSV or fixed-width export), shows only the mismatches on the sheet image, and records which value each reviewer kept. |
 | **Results** | Browse whole graded sheets with their overlay, correct bubbles and values, verify sheets, regrade, check accuracy and export. |
 | **Jobs** | Start and watch large batches (bulk jobs) from uploaded files or from a folder on the server; pause, resume, rescan errors. |
 | **Templates** | Create, upload, generate and edit templates: the description of where every bubble, field and zone is on your sheet, how to align the page, how to score it. |
@@ -656,6 +658,7 @@ The queue loads by itself when you open the tab. New items from a running job ar
 | **Scan** | *any* | Only one sheet, by its scan id. This is filled in for you when you click **Review N item(s)** on the Scan tab. |
 | **Order** | *Highest risk first* | *Highest risk first* shows whole-sheet problems first, then failed cross-field checks, then joined values (roll numbers and the like), then zones, then single bubble fields. *Oldest first* goes in reading order. |
 | **Wide context** | off | Shows a larger area around the field in the crop, so you can see neighbouring rows. Turn on when you need to judge whether the page was aligned correctly. |
+| **View** | *Aligned* | The page the crop is cut from: *Aligned* (the page the engine read), *Full colour* (the same page in its original colours, to tell pencil from pen or see a colour mark) or *Original scan* (the scan as it came off the scanner, with the item's outline mapped back). Remembered in your browser. Whole-sheet items always show the aligned overview. When the original file cannot be found, the aligned crop is shown with a note. |
 | **Grid** | off | Shows many crops at once as a grid; see below. |
 | **by** | *field* | For the grid: *field* shows the same field from many sheets; *flag* shows every item with the same flag (the one chosen in the **Flag** filter, or the current item's first flag). |
 | **Reload queue** | — | Loads the queue again with the current filters. Skipped items come back. Use it after changing **Template**, **Field / zone**, **Kind** or **Scan**, which do not reload on their own. |
@@ -669,7 +672,9 @@ For the current item the card shows:
 
 - the **crop** of the sheet (small crops are enlarged so they are easy to read), or "No image stored for this sheet";
 - the field or zone **name** and its **type**;
-- the sheet's file name and a short scan id (click it to open the raw result);
+- the sheet's **file name** in large type, and a short scan id (click it to open the raw result);
+- **Open in Results** (Alt+V): opens this sheet on the Results tab with the item selected, to look at the whole page, correct other fields or regrade. Back on the Review queue, items of a sheet changed there are loaded again;
+- the **view** button (Alt+O): cycles the crop through Aligned, Full colour and Original scan (the same as the **View** filter);
 - **conf**: the confidence from 0 to 1, shaded red (low) to green (high);
 - the **flags** the item was read with;
 - **Read as:** the value the scanner read (*(blank)* when nothing), and if you have already saved it, **you saved:**;
@@ -705,15 +710,17 @@ What **Save** does:
 | **Esc** | Reset the box to the value as read (or to what you saved). |
 | **Alt+1** … **Alt+9** | Choose option 1 to 9. Pressing the chosen option again clears it. |
 | **Alt+Shift+1** … **Alt+Shift+9** | Add or remove that option as one of several marks. |
+| **Alt+V** | Open the sheet on the Results tab with this item selected. |
+| **Alt+O** | Crop from the aligned page, the page in full colour or the original scan. |
 | **Up/Down arrows** | (On the Scan tab) move through the sheet list. |
 
 #### Grid: accept many at once
 
-Tick **Grid** to see up to 30 crops of the same field (or the same flag, with **by** *flag*) from different sheets, each with the value read underneath (∅ means blank). All crops start ticked.
+Tick **Grid** to see up to 30 crops of the same field (or the same flag, with **by** *flag*) from different sheets, each with the sheet's file name above it and the value read underneath (∅ means blank). All crops start ticked; unticked ones are greyed out. The tile of the queue's current item has an orange border. **Select all** and **Unselect all** tick or untick every crop at once (unselect all, then tick the few that read right, when most read wrong), and the count beside them shows how many are ticked.
 
 1. Look over the grid. Click a crop (or its tick box) to untick any that read wrong.
 2. Click **Accept ticked**. The ticked items are accepted as read.
-3. The unticked ones open one by one in the normal card so you can correct them. **Open** on a tile jumps straight to that item.
+3. The unticked ones open one by one in the normal card so you can correct them. **Open** on a tile jumps straight to that item; **Results** opens its sheet on the Results tab with the item selected.
 
 This is the fastest way through a common flag such as `weak_mark`, where most items are in fact right.
 
@@ -750,8 +757,8 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `weak_mark` | yes | A bubble read as marked has little ink inside its circle: a partial fill, a tick or a dot, or the bubble position is slightly off. | Is it a real answer (tick, small dot) or a stray touch? If many sheets show it in the same place, the template position may be off (see Results). |
 | `possible_missed_mark` | yes | A bubble read as unmarked has a lot of ink inside its circle. | Is there a mark the scanner missed (light pen, a colour the scanner drops out), or is it a printed letter or a smudge? |
 | `model_disagrees` | yes | The trained bubble model and the normal reader disagree (only when a bubble model is set up). | Look closely at the marked and nearly marked bubbles; one of the two readers is wrong. |
-| `kept_darker_mark` | no | Several bubbles were marked and only the clearly darkest was kept (the "keep darker mark" rule). | If added to review: check that the lighter mark really is an erasure. |
-| `faint_second_mark` | no (the field is also `multi_marked`, which is) | A second, lightly filled bubble turned the answer into a double mark (the "strict double marks" rule). | Is the lighter bubble a real second answer or a poor erasure? |
+| `kept_darker_mark` | yes | Several bubbles were marked and only the clearly darkest was kept (the "keep darker mark" rule). Measured against an OpScan export, the lighter mark was a real second answer more often than not, so these go to review. | Check that the lighter mark really is an erasure; if it is a second answer, type both letters. |
+| `faint_second_mark` | yes | A second, lightly filled bubble turned the answer into a double mark (the "strict double marks" rule). | Is the lighter bubble a real second answer or a poor erasure? |
 | `border_slide` | yes | The printed box around the block would have moved the bubbles too far (close to a whole bubble), so that correction was not used. | Is the block's bubble grid sitting correctly on the printed bubbles? Open the sheet on the Results tab with the overlay on. |
 | `rectify_failed` | no | The printed box around the block could not be fitted (not found, too distorted, or a worse fit), so the page alignment was kept for this block. | If added to review: check the answers of the block line up with the printed bubbles. |
 | `out_of_page` | always | Part of a bubble in this field lies outside the page, so it could not be read (it counts as unmarked). | Is the sheet cut off or badly aligned, or does the template place bubbles too close to the page edge? |
@@ -773,6 +780,8 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `pattern_mismatch` | always | The value does not have the expected form (for example 6 digits). | Is it a misread, or a genuine wrong code? |
 | `engine_unavailable` | always | The reading engine needed for this zone is not installed or could not start. | Type the value by hand. Tell whoever set up the app, because every sheet will show this. |
 | `no_icr_model` | always | A handwriting zone has no handwriting model set up. | Type the value by hand; ask whoever set up the template. |
+| `no_imprint_model` | always | A scanner imprint zone has no trained model, so the number was read by a general text reader. | The printed number against the value, digit by digit. |
+| `file_name_mismatch` | always | The number read from the sheet (for example the scanner imprint) differs from the sheet's file name, or nothing usable was read. The details show both. | Is the print misread, or was the file renamed, scanned twice or put in the wrong batch? Type the printed number. |
 | `read_error` | always | Reading the zone failed with an error. | Type the value by hand. If it happens on many sheets, report it. |
 | `engine_disagree` | always (when the template asks for it) | Two text-reading engines read different text. | Which reading is right. |
 | `low_char_confidence` | always | At least one character was read with low confidence. | Each character, especially look-alikes (0/O, 1/7, 5/S). |
@@ -802,6 +811,108 @@ A flag says why an item looks doubtful. Which flags send an item to the queue is
 | `too_few_marks` | always (only when the template sets a minimum) | Fewer bubbles were marked than expected. Often a pen the same colour as the print was dropped out with it. | Are there marks the scanner did not see? Check the colour settings of the template. |
 
 Accepting a whole-sheet item only records that you checked the sheet. If answers are wrong because of the sheet problem, fix them on the Results tab.
+
+---
+
+### The Compare tab
+
+The Compare tab checks our results against another reader's results for the same sheets: a physical OMR scanner such as **Scantron OpScan 6** (its ScanTools Plus export), an older program, or a keyed-in file. It finds every field where the two disagree and shows only those, one sheet at a time, with the field highlighted on the sheet. For each mismatch a reviewer keeps either value.
+
+By default the choices go into a **separate reconciled layer**: the read results are not changed, so the Results tab, the review queue and the normal export still show what we read, and the **Reconciled CSV** export applies the choices on top. With the rule **Save choices to: our results, in place**, each choice also becomes a correction of our result, exactly as if it were typed on the Results tab: it is in the audit trail (source `compare`), it can be undone on the Results tab, and every export shows it. Several people can work on one comparison at once: a sheet someone has open is locked to them, and the others get the next sheet.
+
+**Starting a comparison** (**New comparison…**):
+
+1. Pick the **template** and the **job**. The newest job of the template is picked for you. Choosing **Every job of the template** takes in every sheet ever read with it; when the same file was read in several jobs, only its newest readable scan is compared and the older ones count as `replaced` (rule **A file we read more than once**).
+2. Pick **their file**: a CSV (comma, semicolon, tab or pipe; found by itself) or a fixed-width text file such as a `.dat`. For fixed width, choose **Fixed width** and describe the columns, one per line, as `NAME START LENGTH` with START counting from 1. A range names consecutive one-character cells:
+
+   ```
+   SEQ 1 10
+   ROLL 11 12
+   q1..q200 41 1
+   ```
+
+   **Header row** is the line that holds the column names: 1 for the first line, 3 when two title lines come first, 0 when the file has no header (the columns are then called C1, C2…). **Column names** names the columns yourself, in order, replacing the header or naming a file without one: `SEQ, ROLL, q1..q200`.
+
+   **Packed answer columns**: a column that holds many answers is split into one column per field, one line per column:
+
+   ```
+   ANSWERS q1..q200          one 200-character column, one answer per character
+   A1 q1..q10                ten answers per column...
+   A2 q11..q20               ...and so on
+   RESP q1..q50 sep=,        answers separated by a comma (sep=space, sep=tab, any character)
+   CODES q1..q20 width=2     two characters per answer
+   ```
+3. Press **Read file**. The first rows are shown as read, after the split (␣ marks a single space), with the columns matched to our fields by name: `Q001`, `Q1`, `q-1` and a bare `1` all match `q1`, and `ROLL` matches `rollno` when it is the only name starting so. Type the field a column belongs to, or clear a box to leave it out. **Map from column … onwards to** fills a run of columns at once: from `Item 1` onwards to `q1..q200`. A question inside a custom label (`ans` = `q1..q200`) can be compared on its own, or the joined label as one value; when both are mapped, only the fields are compared. Change any setting and press **Read file / read again** to check it: the file is not uploaded again.
+
+   An OpScan / ScanTools Plus `.dat` is fixed width without a header. The TERI file (`E0811.dat`, 254 characters a line) reads with Header row `0` and:
+
+   ```
+   SEQ 4 6
+   rollno 41 12
+   lang 53 1
+   level 54 1
+   q1..q200 55 1
+   ```
+
+   with their `SEQ` matching our file name (digits only). A Ctrl-Z end-of-file mark after the last line is ignored.
+
+   **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again.
+4. Say **how their rows find our sheets**: their column, what it matches on our side, and how to compare the two.
+
+   | Our side | Use it when |
+   |---|---|
+   | our file name | their file has the image name or the sheet number we used to name the files |
+   | an imprint zone | the scanner printed a sequence number on each sheet (see Imprint zones), e.g. their `SEQ` 0100023 against our `S0100023` |
+   | a roll number or other field | both have the same roll number on every sheet |
+   | scan order | neither has a key: their row 1 is our first sheet of the job, and so on |
+
+   **digits only** compares just the digits, without leading zeros (`S0123`, `123` and `123.jpg` match); **text** ignores case, folders and the image extension.
+5. Set the **rules** (below), give it a name and press **Compare**. A small comparison answers at once. A large one runs in the background: the first sheets with a mismatch open straight away, and the top line counts the rest (`Comparing 3,200 of 12,000 sheets…`). Several people can start while it runs.
+
+**Rules** (also under **Rules…** later; changing them compares again and keeps every choice whose two values did not change):
+
+| Rule | Choices |
+|---|---|
+| Compare | every mapped column; questions only (bubble fields with letter options: no roll digits); only the fields you list, e.g. `q1..q50, Roll` |
+| One side blank, the other marked | a mismatch (default), or ignored |
+| Multi-marks | equal any other multi-mark (default: an OpScan `*` equals our `AC`); must mark the same options (when both sides list them); ignored |
+| Their blank is written as | default `space, -` (an empty cell is always blank) |
+| Their multi-mark is written as | default `*` |
+| Upper and lower case differ | off by default |
+| Ignore spaces inside values | on by default: a roll number `12 45` with a blank digit equals `1245` |
+| A file we read more than once | compare its newest scan (default), or none of them (they are then `duplicate`) |
+| Save choices to | a new reconciled layer (default: our results stay as read); or our results, in place (each choice is a correction of our result; undoing the choice puts the read value back). A bare `*` from their file cannot go into a bubble field: type the letters with `E` instead |
+| Only the questions of the level in field … (under *Compare only some questions per sheet*) | off by default. Give the field that holds the sheet's level (e.g. `level`), where to take it from (theirs, else ours where theirs is blank or `*` — the default; theirs only; ours; or either), and the bands: `1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200`. Each sheet's questions are then compared only inside its band. A scanner can report stray marks in other bands (show-through, erasures); on the TERI OpScan file these were 85% of all answer differences. A sheet whose level is blank or not listed is compared in full |
+
+**Reviewing.** The sheet is on the left with every mismatch boxed (red: open, green: decided, orange: the current one; the rest of the page is dimmed around it so it is easy to find). The page scrolls to the current box by itself. On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
+
+| Key | Button | What it does |
+|---|---|---|
+| `1` | External | keep their value, go to the next open mismatch |
+| `2` | Ours | keep our value, go to the next open mismatch |
+| `E` | Type value | type the right value yourself (it starts with their value); `Enter` keeps it, `Esc` cancels. The audit marks it `manual` |
+| `R` | Undo | undo the last choice on this sheet and go back to that field; with nothing to undo, go to the previous field |
+| `S` | Next mismatch | go to the next mismatch on this sheet without choosing |
+| `Tab` | Skip sheet | leave this sheet without saving; it stays open for later |
+| `Shift`+`Tab` | Previous sheet | go back a sheet (also one already reconciled, to change it) |
+| `Enter` | Save and next | save the choices and go to the next open sheet |
+| `A` | All fields | every compared field of the sheet side by side (theirs, ours, and whether they differ, agree, or the rules skip it), not just the mismatches; differing names are red, agreeing fields get a quiet dashed green box on the page. The current field is highlighted and the list scrolls to it. Type `q1..q50, roll` in the box above the list to show only those. `A` again goes back to the mismatches |
+| `O` | Aligned / Original scan / Colour | switch the page between the aligned page, the scan as it came off the scanner, and the aligned page in colour. The boxes and the close-up follow: on the original scan each box is mapped back through the page transform (a joined value such as a roll number has no box there, and its close-up stays on the aligned page). The line under the close-up says which page it is cut from |
+| `V` | Open in Results | open this sheet on the Results tab with the field selected, to correct it, regrade it or look closer. Come back to the Compare tab and the sheet is compared again with our current values, keeping the choices that still apply |
+
+A sheet saved with a mismatch still open stays in the queue and comes round again at the end. The top line shows the sheet number, how many sheets are open, how many mismatches are decided, how many sheets agree completely, how many of their rows and our sheets matched nothing, and how many older scans were left out because the file was read again.
+
+**Compare again** re-reads our current values (after corrections in the review queue or on the Results tab). A choice is kept when both values are still the same; otherwise that mismatch is open again.
+
+**Export…**
+
+| File | What is in it |
+|---|---|
+| Reconciled CSV | every sheet in scope with all our columns, the kept value wherever someone decided, the status (`clean`, `pending`, `partial`, `done`, `no_record`: no row in their file, `replaced`: an older scan of a file we read again, `duplicate`: the same file in several of our scans with the rule set to compare none, `not_read`), how many external values were kept, the fields still open, and who reconciled it |
+| Audit CSV | every choice and undo: when, who, the sheet, the field, both values, the kept value and its source (`external`, `ours` or `manual`) |
+| Unmatched CSV | their rows that found no sheet (no key, duplicate key, no sheet) and our sheets that found no row |
+
+Deleting a comparison (administrators, or the person who made it) removes its choices only. Comparisons are stored in `compare.sqlite3` and the `compare` folder of the data folder.
 
 ---
 
@@ -1320,7 +1431,7 @@ Each row shows:
 
 - the sheet's file, status, who verified and who approved it, and when it was last changed,
 - **Scanned:** who scanned it, **Assigned to:** who has it, and **Changed:** everyone who changed it, with what they did,
-- the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it,
+- the changed settings (the regrade settings, the hand alignment, typed values) and each changed value as *first read* → *now*, with who changed it and a picture of the field on the sheet (click it to open the sheet in Results with that field selected; a value with no stored image has no picture),
 - **Open** (shows the sheet on the Results screen), **Approve** and **Send back**.
 
 **Approve** is the administrator's second check, separate from **Verify ✓** on the Results screen. Approving a sheet nobody verified yet verifies it too (its values are accepted as they are now, flagged ones included), and asks first.
@@ -1840,6 +1951,7 @@ Zones are rectangles read by something other than bubble detection. Choose the t
 | **qrcode** | QR codes. |
 | **ocr** | Printed text, e.g. a serial number. |
 | **icr** | Handwritten characters written one per box. Needs a handwriting model (Learned models, next section); without one these zones always go to review. |
+| **imprint** | A number the scanner itself printed on each sheet as it fed through (an imprinter, dot-matrix print), e.g. `S100001`. Draw the zone over the whole strip where the print can land; the reader finds it. Needs an imprint model (see *Scanner imprint numbers* below). |
 | **image** | Saves a picture of the area, e.g. the candidate's photo or signature. |
 
 #### Options for every zone
@@ -1889,6 +2001,30 @@ The template-wide **Barcode advanced** section under Options sets the same **Dec
 | **Crop as read** | | | OCR, ICR | A preview of the zone turned the way the reader sees it. With a test scan as background it shows exactly what was read; with Auto it shows the direction the last test read chose. |
 | **PaddleOCR model** | `paddleModel` | config default | OCR, ICR | **mobile (fast)** or **server (most accurate, slower)**. Options the server does not have are marked "(not installed)". |
 | **PaddleOCR recogniser** | `paddleLang` | default | OCR, ICR | **English**, **Main (multilingual, handwriting)** or **Devanagari (Hindi)**. |
+| **Handwriting reader** | `icrEngine` | config default (`ocr_params.icr_engine`) | ICR | **PaddleOCR (or Tesseract)**, **Vision-language model** or **Tesseract**. See *Reading handwriting with a vision-language model* below. |
+| **Vision-language model** | `vlmModel` | config default (`ocr_params.icr_vlm_model`) | ICR | **PaddleOCR-VL 1.5**, **Qwen3-VL 2B** or **Qwen2.5-VL 3B**. One server runs one model, so keep every zone on the same one. |
+
+#### Reading handwriting with a vision-language model
+
+A vision-language model (VLM) reads the whole zone image, box lines and all, and is much more accurate on handwriting than the built-in readers. On 932 TERI roll numbers (12 boxes each), the whole number came out exactly right this often:
+
+| Reader | Exactly right | Time per zone | Memory |
+|---|---|---|---|
+| PaddleOCR-VL 1.5 | 85–89% | 0.15 s | 1.3 GB |
+| Qwen2.5-VL 3B | 85.5% | 1.0 s | 3.4 GB |
+| Qwen3-VL 2B | 84.5% | 0.8 s | 2.1 GB |
+| Digit model (fine-tuned, see Learned models) | 78% | 5 ms | – |
+| PaddleOCR (the default) | 57–64% | 47 ms | – |
+
+It needs a Mac with Apple Silicon (M1 or later):
+
+1. In the app's Python environment: `pip install -r requirements.vlm.txt`.
+2. Set **Handwriting reader** to **Vision-language model** on the ICR zones, or `"icr_engine": "vlm"` in `config.json` › `ocr_params` for every ICR zone.
+3. Scan. The first read starts a small model server in the background (one copy of the model shared by all workers) and downloads the model the first time (0.7 to 3 GB). Its log is `omr-vlm-8765.log` in the temp folder.
+
+The model gives no confidence. Instead, a zone whose read has a different number of characters than boxes with ink goes to review (`icr_alignment`). For roll numbers that are also bubbled, add a cross-field check with the bubbled field and the ICR zone as sources: on TERI, accepting only the sheets where the two agree let 85% through with no wrong number accepted. With a handwriting model also loaded, it reads the boxes as a second opinion and a disagreement goes to review (`engine_disagree`).
+
+Settings in `config.json` › `ocr_params`: `icr_vlm_model` (`paddleocr-vl`, `qwen3-vl-2b`, `qwen2.5-vl-3b`, or a Hugging Face id), `icr_vlm_url` (default `http://127.0.0.1:8765`), `icr_vlm_autostart` (default on), `icr_vlm_timeout` (seconds, default 60). A URL ending in `/v1` is an OpenAI-compatible server such as Ollama, vLLM or LM Studio, so a Windows PC can send its zones to a Mac or GPU machine on the network that runs the model. Without a server the zones are read the usual way, and the zone details say why (`vlm_unavailable`). Models copied to `packaging/models/vlm/<name>` load without a download.
 | **Language** | `lang` | config default (eng) | OCR | Tesseract language for this zone. Only languages installed on the server are listed; **eng+hin** reads English and Hindi. |
 | **OCR engine** | `engine` | config default | OCR | **Tesseract** or **PaddleOCR** for this zone. |
 | **Fallback engine** | `fallbackEngine` | config default | OCR | Second engine, tried when the first read is empty, below Min confidence or fails the pattern. The better valid read wins; if the two engines disagree the zone goes to review. **none** turns it off. |
@@ -1897,6 +2033,35 @@ The template-wide **Barcode advanced** section under Options sets the same **Dec
 | **Min character confidence** | `minCharConfidence` | off | OCR | Send the zone to review when any single character is below this confidence (0–1), so one doubtful digit is checked by hand. |
 
 If PaddleOCR is not available on the server, a note says so and zones set to it use Tesseract.
+
+#### Scanner imprint numbers
+
+Many production scanners have an imprinter that prints a running number on each sheet as it feeds, in small dot-matrix characters (for example `S` and six digits on the TERI sheets). The print lands wherever the paper was when it fired, often outside the timing marks, and can be faint or broken. An **imprint** zone reads it:
+
+1. Draw the zone over the whole strip where the number can appear, with some room on every side. On TERI that is the left margin between the page edge and the timing marks: origin `[0, 800]`, size `[60, 1000]`, character height 22. The reader finds the line of dots inside the zone on each sheet, so the number may move from sheet to sheet, and a larger zone is fine: a 45 × 1145 strip read 193 of 200 unseen TERI sheets right.
+2. Leave **Text direction** at the model's own (TERI: vertical, top to bottom). A tall narrow zone set to *horizontal* is also tried turned, and **auto** tries every turn.
+3. Set **Pattern the value must match**, e.g. `S\d{6}`, so a misread length goes to review.
+
+| Option | Template key | Default | What it does |
+|---|---|---|---|
+| **Model** | `model` | `imprint` | Name of the model in `packaging/models/imprint` (without `.onnx`), or a path to one. |
+| **Text direction** | `direction` | the model's own | Horizontal, vertical (either way), upside down or auto (every turn; the read that fits the pattern wins). |
+| **Character height (px)** | `charHeight` | the model's, else measured | Height of one printed character in template pixels. In a large zone, timing marks can throw the measurement off, so set it, or train the model with `--char-height`. |
+| **Allowed characters** | `whitelist` | the model's characters | Limits what the reader may return. |
+| **Check against the file name** | `matchFileName` | off | Sends a sheet to review (`file_name_mismatch`) when the number it carries differs from its file name. Both are reduced to their digits first, so `S100001` matches `100001.jpg`. A missing or malformed number counts as a mismatch too (it also keeps `not_found` or `pattern_mismatch`), so the `file_name_mismatch` filter finds every sheet whose number could not be confirmed. The zone details show both values. Works on any zone type. |
+| (no editor control) | `fileNameNormalize` | `digits` | How both values are reduced before comparing: `digits`, `alnum`, `upper`, `strip`, `none`, or `{"regex": "...", "group": 1}` to take one part. |
+
+The reader is an optional module. It loads only when a template has an imprint zone, and its model is a separate file of about 1 MB (`<name>.onnx` plus `<name>.json`) in `packaging/models/imprint`. Builds include the models found there; set `OMR_BUNDLE_IMPRINT=0` to leave them out. Without a model the zone is read by Tesseract and always goes to review (`no_imprint_model`).
+
+**Training a model for a scanner.** Each scanner's print looks a little different, so the model is trained on that scanner's sheets (this needs `pip install -r requirements.ml.txt`):
+
+1. Cut the imprint out of scanned sheets, the same way the reader does. When the scanner names its files after the imprint number, as on TERI (`100001.jpg` carries `S100001`), the file names are the labels:
+   `python -m src.ml.train_imprint crops --template template.json --input scans/ --label "S{stem}" --out data/imprint`.
+   Otherwise give a CSV of `file,label` with `--truth`. Each sub-folder of `scans/` (a scanning batch) becomes a group.
+2. Train, mixing the real crops with synthetic dot-matrix lines of random numbers, so the model reads any number and not only the ones it saw:
+   `python -m src.ml.train_imprint train --data data/imprint --out packaging/models/imprint/teri_imprint --direction rot90ccw --char-height 22 --pattern "S\d{6}"`. The character height and pattern become the zone defaults for this model.
+   Add `--holdout all` first to train once per batch with that batch left out and see how well it reads sheets it has never seen.
+3. Check a model on crops: `python -m src.ml.train_imprint eval --data data/imprint --model packaging/models/imprint/teri_imprint.onnx`.
 
 #### Image zone options (photo, signature)
 
@@ -2166,6 +2331,8 @@ These always send their field, zone or sheet to review when they happen. Many on
 | `pattern_mismatch` | any zone | a pattern set | The value does not match the zone's pattern (for example 10 digits). |
 | `engine_unavailable` | OCR / ICR zone | always | The reading engine (Tesseract or PaddleOCR) is not installed or did not start. |
 | `no_icr_model` | ICR zone | always | No handwriting model is available for the zone. |
+| `no_imprint_model` | Imprint zone | always | No imprint model is installed, so Tesseract read the dot-matrix print. |
+| `file_name_mismatch` | Zone with `matchFileName` | always | The value read differs from the sheet's file name (compared as digits by default). |
 | `read_error` | any zone | always | Reading the zone failed with an error; the rest of the sheet is kept. |
 | `validation_failed` | field or zone | a validation rule set | A validation rule (length, range, allowed values, pattern) failed. |
 | `cross_check_failed` | check | a check set | The check's sources disagree, and the check is set to review conflicts (or to error). |
@@ -2209,7 +2376,7 @@ A learned model is an optional extra reader trained on your own scans. Without o
 | Option | Key | Default | What it does |
 |---|---|---|---|
 | **Bubble model** | `ml_params.bubble_model_path` | none (classical reading) | A model that double-checks every bubble. The list shows the .onnx models uploaded with the template and those in the server's models folder ("(server)"). |
-| **Handwriting model** | `ml_params.icr_model_path` | none | A model that reads handwritten characters in ICR zones. Without a trained model, ICR zones fall back to the built-in text reader (see `ocr_params.icr_engine` in the zones section) or go to review. |
+| **Handwriting model** | `ml_params.icr_model_path` | none | A model that reads handwritten characters in ICR zones. Without a trained model, ICR zones fall back to the built-in text reader (see `ocr_params.icr_engine` in the zones section) or go to review. MNIST/EMNIST-style digit models set `"preprocess": "centered_digit"` in their `.json` file: each box is turned white-on-black, fitted in 20 × 20 pixels and centred in 28 × 28. |
 | *(config.json only)* Bubble model role | `ml_params.bubble_model_role` | `second_opinion` | `second_opinion`: the classical reader decides; agreement raises confidence, and a disagreement sends the field to review (`model_disagrees`). `decide`: the model decides. |
 
 If the server does not have the model runtime installed, the panel says "onnxruntime is not installed on this server: models are ignored." If no models are found it says so and tells you to upload one with the template files.
