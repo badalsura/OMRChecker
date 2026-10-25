@@ -56,6 +56,10 @@ ENTRY_APP = HERE / "omr_app.py"
 ENTRY_LAUNCHER = HERE / "omr_desktop.py"
 
 
+# Bundled folders holding executables, DLLs or model binaries
+RAW_DIRS = {"tesseract", "cloudflared", "models/paddleocr", "models/imprint"}
+
+
 def data_dirs(app_mode):
     """(source dir, bundled dest) pairs, mirroring packaging/omr.spec. Only the
     ones that exist are passed (optional bundles stay optional)."""
@@ -216,7 +220,10 @@ def build_command(args):
         cmd.append(f"--nofollow-import-to={name}")
 
     for src, dest in data_dirs(app_mode):
-        cmd.append(f"--include-data-dir={src}={dest}")
+        # --include-data-dir skips .exe/.dll/.bin, which would leave out
+        # tesseract.exe, its DLLs and cloudflared.exe: copy those folders raw
+        flag = "--include-raw-dir" if dest in RAW_DIRS else "--include-data-dir"
+        cmd.append(f"{flag}={src}={dest}")
     for src, dest in data_files():
         cmd.append(f"--include-data-files={src}={dest}")
 
