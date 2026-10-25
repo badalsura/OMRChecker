@@ -91,7 +91,7 @@ jobs:
   build:
     needs: ocr-models
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 240  # a first compile (cold cache) takes over 90 minutes
     strategy:
       fail-fast: false
       matrix:
