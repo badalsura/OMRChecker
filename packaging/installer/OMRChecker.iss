@@ -133,10 +133,10 @@ Source: "{src}\OMRChecker-webview2-109.zip"; DestDir: "{app}\webview2"; \
 ; .NET Framework 4.8 (Microsoft's offline installer), run before the program starts
 Source: "{#BaseUrl}/ndp48-x86-x64-allos-enu.exe"; DestDir: "{tmp}"; DestName: "ndp48.exe"; \
   ExternalSize: {#DotNetSize}; Hash: "{#DotNetHash}"; Check: NeedsDotNet and not LocalZip('ndp48-x86-x64-allos-enu.exe'); \
-  Flags: external download deleteafterinstall
+  Flags: external download ignoreversion deleteafterinstall
 Source: "{src}\ndp48-x86-x64-allos-enu.exe"; DestDir: "{tmp}"; DestName: "ndp48.exe"; \
   ExternalSize: {#DotNetSize}; Hash: "{#DotNetHash}"; Check: NeedsDotNet and LocalZip('ndp48-x86-x64-allos-enu.exe'); \
-  Flags: external deleteafterinstall
+  Flags: external ignoreversion deleteafterinstall
 #endif
 
 [INI]
