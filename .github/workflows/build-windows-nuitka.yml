@@ -176,8 +176,11 @@ jobs:
         shell: pwsh
         run: python packaging/prepare_bundle.py --only cloudflared
 
-      - name: Cache Nuitka compile cache
-        uses: actions/cache@v4
+      # Restored and saved as separate steps so a compile that finishes is
+      # cached even when a later step fails.
+      - name: Restore Nuitka compile cache
+        id: nuitka-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.NUITKA_CACHE_DIR }}
           key: nuitka-cache-${{ matrix.kind }}-${{ hashFiles('src/**/*.py', 'packaging/build_nuitka.py') }}
@@ -185,6 +188,7 @@ jobs:
             nuitka-cache-${{ matrix.kind }}-
 
       - name: Build with Nuitka
+        id: build
         shell: pwsh
         run: |
           $mode = if ($env:KIND -eq "server") { "${{ github.event.inputs.mode || 'onedir' }}" } else { "onedir" }
@@ -192,6 +196,13 @@ jobs:
           if ($env:KIND -eq "server") { $buildArgs += "--launcher" }
           python @buildArgs
           if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Save Nuitka compile cache
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.NUITKA_CACHE_DIR }}
+          key: ${{ steps.nuitka-cache.outputs.cache-primary-key }}
 
       - name: Arrange the build folder
         id: arrange
@@ -209,7 +220,8 @@ jobs:
           if (-not $src) { Write-Error "no .dist folder produced by Nuitka"; exit 1 }
           $out = Join-Path $distRoot "OMRChecker"
           if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-          Rename-Item $src.FullName $out
+          # Rename-Item takes a bare name, not a path
+          Rename-Item $src.FullName "OMRChecker"
           if (!(Test-Path "$out\OMRChecker.exe")) { Write-Error "OMRChecker.exe missing from the build"; exit 1 }
           "onefile=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
