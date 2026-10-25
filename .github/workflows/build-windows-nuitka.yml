@@ -267,6 +267,8 @@ jobs:
           $t = Start-Process -FilePath $exe -ArgumentList "--selftest","--data-dir",$data -Wait -PassThru
           if (Test-Path "$data\app.log") { Get-Content "$data\app.log" -Tail 30 }
           if ($t.ExitCode -ne 0) { Write-Error "selftest failed ($($t.ExitCode))"; exit 1 }
+          # The app's selftest does not look for Tesseract: check it is bundled
+          if (!(Test-Path dist-nuitka\OMRChecker\tesseract\tesseract.exe)) { Write-Error "Tesseract missing from build"; exit 1 }
           if (Test-Path "dist-nuitka\OMRChecker\omr_data") { Remove-Item -Recurse -Force "dist-nuitka\OMRChecker\omr_data" }
 
       - name: Zip the build
