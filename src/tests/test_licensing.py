@@ -194,9 +194,12 @@ def test_api_gates_then_activates(licensed_env, tmp_path):
     client = TestClient(create_app(tmp_path / "data"))
     assert client.get("/health").status_code == 200
     assert client.get("/license/status").json()["valid"] is False
-    assert "fingerprint" in client.get("/license/request").json()
-    # A real endpoint is blocked until activation.
-    assert client.get("/templates").status_code == 402
+    request = client.get("/license/request").json()
+    assert request["code"].startswith("OMR1-") and request["code"] in request["request_file"]
+    # A real endpoint is blocked until activation, saying what to do
+    blocked = client.get("/templates")
+    assert blocked.status_code == 402
+    assert blocked.json()["detail"]["action"]
 
     doc = make_license(licensed_env, machine=machine_fingerprint(), features=["core"])
     resp = client.post(
@@ -213,6 +216,46 @@ def test_api_gates_then_activates(licensed_env, tmp_path):
         files={"file": ("x", b"garbage", "text/plain")},
     )
     assert bad.status_code == 400
+    assert "ask them to send it again" in bad.json()["detail"]
+
+
+def test_every_failure_says_what_to_do_and_expiry_names_the_date(licensed_env):
+    from src.licensing.verify import LicenseStatus, _ACTIONS
+
+    for reason in Reason:
+        if reason is not Reason.VALID:
+            assert _ACTIONS.get(reason), reason
+    doc = make_license(licensed_env, expires_at="2026-01-05T00:00:00+00:00")
+    status = verify_license_data(doc, _pubkey(), check_clock=False)
+    assert status.reason is Reason.EXPIRED
+    public = status.to_public_dict()
+    assert public["message"] == "This license expired on 5 Jan 2026."
+    assert "renew" in public["action"] and public["license"]["customer"] == "Test Co"
+    # A forged payload is not shown as if it were the vendor's
+    forged = LicenseStatus(False, Reason.BAD_SIGNATURE, status.payload).to_public_dict()
+    assert "license" not in forged
+
+
+def test_request_codes_round_trip_and_catch_typos():
+    from src.licensing import request_code as rc
+
+    fp = "0123456789abcdef0123456789abcdef"
+    code = rc.encode(fp)
+    assert rc.decode(code) == fp
+    # Forgiving about case, spacing and 0/1/8 for O/I/B
+    assert rc.decode(code.lower().replace("-", " ")) == fp
+    assert rc.decode("OMR1" + code[4:].replace("O", "0").replace("I", "1")) == fp
+    # Found inside an email or a saved request file, or as an older JSON request
+    assert rc.fingerprint_from_text(f"Hello,\nRequest code: {code}\nThanks") == fp
+    assert rc.fingerprint_from_text(rc.request_file_text(code, "PC-7", "Windows 10")) == fp
+    assert rc.fingerprint_from_text(json.dumps({"fingerprint": fp})) == fp
+    assert rc.fingerprint_from_text(fp.upper()) == fp
+    # One wrong character is caught, not bound to the wrong computer
+    typo = code[:-1] + ("A" if code[-1] != "A" else "B")
+    with pytest.raises(rc.RequestCodeError):
+        rc.decode(typo)
+    with pytest.raises(rc.RequestCodeError):
+        rc.fingerprint_from_text(code[:-4])
 
 
 def _pubkey():
@@ -319,6 +362,16 @@ def test_issuer_offers_an_encrypted_key_and_keeps_issued_copies(tmp_path):
         assert client.post("/api/load-key", json={"path": str(private)}).status_code == 400
         assert client.post("/api/load-key", json={"path": str(private), "passphrase": "pw"}).status_code == 200
         issued = client.post("/api/issue", json={"customer": "Acme", "floating": True}).json()
+        # A request code pasted in the issuer binds the license to that computer
+        from src.licensing.request_code import encode
+
+        bound = client.post(
+            "/api/issue",
+            json={"customer": "Acme", "request_json": f"Code: {encode('ab' * 16)}"},
+        ).json()
+        assert json.loads(bound["text"])["payload"]["machine"] == "ab" * 16
+        mistyped = client.post("/api/issue", json={"customer": "Acme", "request_json": "OMR1-AAAAA"})
+        assert mistyped.status_code == 400
         assert Path(issued["saved_to"]).read_text(encoding="utf-8") == issued["text"]
         checked = client.post("/api/inspect", json={"text": issued["text"]}).json()
         assert checked["signature_ok"] is True

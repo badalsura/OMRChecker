@@ -68,15 +68,18 @@ covered by the signature.
 ## Issuing a license to a customer
 
 1. The customer opens the app. With no license it shows the **Activation**
-   screen, which displays a **request** (their machine fingerprint + hostname).
-   They send you that request (copy the text, or "Save request file").
+   screen, which displays a **request code** such as
+   `OMR1-AERUK-Z4JVP-G66AJ-DIVTY-TK6N5-5J5W` (their machine fingerprint with a
+   checksum, so a mistyped code is refused). They send you that code (**Copy
+   request code**), or the small text file **Save request file** writes, which
+   also names the computer.
 
 2. You issue a license bound to their machine:
 
    ```bash
    python tools/license_tool.py issue \
        --key ./license-keys/private_key.pem \
-       --request customer_request.json \
+       --request omrchecker-license-request.txt \
        --customer "Acme Exam Center" \
        --expires 2027-01-01 \
        --features core,ocr,api \
@@ -86,8 +89,12 @@ covered by the signature.
    - `--expires` is optional (omit for perpetual); `YYYY-MM-DD` or full ISO.
    - `--features` is a comma list; `core` is always included. Use feature names
      to gate editions (e.g. `ocr`, `api`, `vlm`).
-   - Instead of `--request`, you can pass `--machine <fingerprint>` directly, or
-     `--floating` for a license not tied to any machine (use sparingly).
+   - `--request` takes any text holding the code (the saved request file, a
+     pasted email) or an older JSON request. Instead, you can pass
+     `--machine <fingerprint>` directly, or `--floating` for a license not tied
+     to any machine (use sparingly).
+   - In the License Issuer, paste the code (or the whole email) into
+     **Customer's request code**, or open their request file.
 
 3. Send `acme.omrlic` back. The customer loads it on the Activation screen
    (**Choose file → Activate**). It is verified on their machine before being
@@ -95,8 +102,14 @@ covered by the signature.
 
 The user sees their license under **License** in the top bar: who it is
 licensed to, edition, features, expiry with the days left, the machine it is
-bound to and its id. A renewed license is loaded there too (**Load license**),
-and **Copy request for a new license** copies this machine's request.
+bound to and its id, plus the request code for a renewal. A renewed license is
+loaded there too (**Load license**). From 14 days before expiry the **License**
+button shows the days left.
+
+When a license is missing, expired, for another computer, edited, not yet
+valid, or the clock was set back, the Activation screen says which, with the
+date where there is one, and what to do next. A license that runs out while the
+app is open brings the Activation screen back.
 
 Check any license with:
 

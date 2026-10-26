@@ -357,7 +357,9 @@ The change is saved as soon as you pick it.
 
 ### License
 
-**License** in the top bar shows who this copy is licensed to, its edition and features, when it expires (with the days left), the computer it is bound to and the license id. To renew, choose the new license file there and click **Load license**; **Copy request for a new license** copies what the vendor needs to issue one for this computer. A copy without a valid license opens on the Activation screen instead of the app.
+**License** in the top bar shows who this copy is licensed to, its edition and features, when it expires (with the days left), the computer it is bound to and the license id. From 14 days before expiry the button itself shows the days left. To renew, send the vendor this computer's **request code** (shown there, with **Copy request code** and **Save request file**), then choose the new license file and click **Load license**.
+
+A copy without a valid license opens on the Activation screen instead of the app. It says what is wrong (no license yet, expired on a date, issued for another computer, edited, or the computer's clock set back) and what to do, and shows the request code to send.
 
 ### API key
 

@@ -16,10 +16,10 @@ This CLI remains the scriptable/offline equivalent:
     cp ./license-keys/public_key.pem src/licensing/public_key.pem
 
     # 2. A customer runs the app's "Activate" screen and sends you their
-    #    request (JSON with their machine fingerprint). Issue a license:
+    #    request code, or the request file it saves. Issue a license:
     python tools/license_tool.py issue \
         --key ./license-keys/private_key.pem \
-        --request customer_request.json \
+        --request omrchecker-license-request.txt \
         --customer "Acme Exam Center" \
         --expires 2027-01-01 --features core,ocr,api \
         --out acme.omrlic
@@ -100,12 +100,16 @@ def cmd_issue(args: argparse.Namespace) -> int:
     machine = None
     floating = args.floating
     if args.request:
-        request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+        text = Path(args.request).read_text(encoding="utf-8")
         try:
-            machine = vl.machine_from_request(request)
+            machine = vl.machine_from_text(text)
         except ValueError as error:
             raise SystemExit(str(error))
-        if not request.get("strong", True):
+        try:
+            request = json.loads(text)
+        except ValueError:
+            request = {}  # a request code or request file: no "strong" field
+        if isinstance(request, dict) and not request.get("strong", True):
             print(
                 "NOTE: the customer's machine reported only a weak fallback "
                 "fingerprint (hostname/MAC).",
@@ -208,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     iss.add_argument(
         "--passphrase", help="Private key passphrase (else prompt if needed)"
     )
-    iss.add_argument("--request", help="Customer's activation request JSON")
+    iss.add_argument("--request", help="Customer's request file (request code, or an older JSON request)")
     iss.add_argument("--machine", help="Bind to this fingerprint directly")
     iss.add_argument("--floating", action="store_true", help="Do not bind to a machine")
     iss.add_argument("--customer", required=True)

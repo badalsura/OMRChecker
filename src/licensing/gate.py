@@ -126,9 +126,16 @@ def clear_cache() -> None:
 def activation_request() -> dict:
     """What the customer sends the vendor to get a license: this machine's
     fingerprint and human-readable context."""
+    from src.licensing import request_code
+
     summary = current_machine_summary()
     summary["product"] = "OMRChecker"
-    summary["request_version"] = 1
+    summary["request_version"] = 2
+    # What the user copies or reads out: a short code, never the JSON
+    summary["code"] = request_code.encode(summary["fingerprint"])
+    summary["request_file"] = request_code.request_file_text(
+        summary["code"], summary.get("hostname", ""), summary.get("os", "")
+    )
     return summary
 
 

@@ -88,7 +88,7 @@ class LoadKeyBody(BaseModel):
 
 class IssueBody(BaseModel):
     customer: str
-    request_json: str = ""  # paste of a customer's activation request
+    request_json: str = ""  # the customer's request code (or request file text)
     machine: str = ""
     floating: bool = False
     expires: str = ""  # YYYY-MM-DD or ISO, "" = never
@@ -182,10 +182,9 @@ def create_app() -> FastAPI:
         machine = body.machine.strip() or None
         if body.request_json.strip():
             try:
-                request = json.loads(body.request_json)
-                machine = vl.machine_from_request(request)
-            except Exception as error:
-                raise HTTPException(400, f"Bad activation request: {error}")
+                machine = vl.machine_from_text(body.request_json)
+            except ValueError as error:
+                raise HTTPException(400, f"Request code: {error}")
         try:
             document = vl.issue_license(
                 _state["private_key"],

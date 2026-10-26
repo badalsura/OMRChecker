@@ -103,9 +103,10 @@
   <section class="tab-panel" id="tab-issue">
     <div class="card">
       <h2>Issue a license</h2>
-      <p class="hint">Paste the customer's activation request (from the app's Activate screen) to bind the license to their machine, or enter a fingerprint directly.</p>
-      <label>Customer activation request (JSON) — optional</label>
-      <textarea id="reqJson" placeholder='{ "fingerprint": "…", "hostname": "…" }'></textarea>
+      <p class="hint">Paste the customer's request code (from the app's Activation screen or License panel) to bind the license to their computer. You can paste their whole email or open the request file they saved; the code is found in it.</p>
+      <label>Customer's request code — optional</label>
+      <textarea id="reqJson" rows="3" placeholder="OMR1-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXX"></textarea>
+      <div class="row"><div><label>…or open their request file</label><input type="file" id="reqFile" accept=".txt,.json" /></div></div>
       <div class="row">
         <div><label>Customer name</label><input id="iCustomer" placeholder="Acme Exam Center" /></div>
         <div><label>Machine fingerprint (if no request pasted)</label><input id="iMachine" placeholder="leave blank if using request" /></div>
@@ -157,6 +158,10 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+$("reqFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (file) $("reqJson").value = await file.text();
+});
 function show(id, ok, text) { const e = $(id); e.className = "msg " + (ok ? "ok" : "bad"); e.textContent = text; }
 async function api(path, opts) {
   const r = await fetch(path, opts);
