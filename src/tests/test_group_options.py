@@ -111,6 +111,21 @@ def test_custom_multi_and_issue_characters(tmp_path):
     assert get_concatenated_response(omr, engine.template, fields)["Roll"] == "00M?56"
 
 
+def test_issue_null_keeps_the_value_read(tmp_path):
+    omr, fields = read(COLUMNS)
+    engine = make_engine(tmp_path, groupOptions={"Roll": {"issue": None}})
+    # The doubtful 4 is exported as read, and the group still goes to review
+    assert get_concatenated_response(omr, engine.template, fields)["Roll"] == "0 *456"
+    assert describe_groups(omr, engine.template, fields)["Roll"]["flagged"] is True
+    # A doubtful column with nothing read falls back to the empty placeholder
+    blank = col("", ["empty", "possible_missed_mark"], review=True)
+    omr, fields = read([col("1"), blank, col("3")])
+    value, states = join_group(
+        ["roll1", "roll2", "roll3"], omr, {"empty": "_", "multi": "*", "issue": None}, fields
+    )
+    assert (value, states) == ("1_3", ["ok", "issue", "ok"])
+
+
 def test_without_details_only_blanks_are_replaced(tmp_path):
     engine = make_engine(tmp_path, groupOptions={"Roll": {}})
     omr, _ = read(COLUMNS)

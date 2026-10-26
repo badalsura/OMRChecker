@@ -350,7 +350,8 @@ TEMPLATE_SCHEMA = {
                         # Placeholder for an unmarked column; null skips the column
                         "empty": {"type": ["string", "null"]},
                         "multi": {"type": "string"},
-                        "issue": {"type": "string"},
+                        # Placeholder for a doubtful column; null keeps the value read
+                        "issue": {"type": ["string", "null"]},
                     },
                 }
             },

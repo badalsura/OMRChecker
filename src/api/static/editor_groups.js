@@ -208,9 +208,10 @@ const PLACEHOLDERS = [
   ["", "nothing"],
 ];
 
-function charPicker(value, onchange, { allowSkip = false } = {}) {
+function charPicker(value, onchange, { allowSkip = false, allowKeep = false } = {}) {
   const known = PLACEHOLDERS.some(([v]) => v === value);
-  const options = [...(allowSkip ? [["__skip", "skip the column (join the next one)"]] : []), ...PLACEHOLDERS.map(([v, t]) => [v, `keep ${t === "nothing" ? "nothing" : `"${t}"`}`]), ["__other", "other character…"]];
+  // null means "skip" for an empty column and "keep the value read" for a doubtful one
+  const options = [...(allowSkip ? [["__skip", "skip the column (join the next one)"]] : []), ...(allowKeep ? [["__skip", "keep the value read"]] : []), ...PLACEHOLDERS.map(([v, t]) => [v, `keep ${t === "nothing" ? "nothing" : `"${t}"`}`]), ["__other", "other character…"]];
   const current = value === null ? "__skip" : known ? value : "__other";
   const sel = el("select", {}, options.map(([v, t]) => el("option", { value: v, selected: v === current }, t)));
   const other = el("input", { value: known || value === null ? "" : value, maxlength: "3", size: "3", class: current === "__other" ? "" : "hidden", placeholder: "char" });
@@ -246,7 +247,7 @@ export function renderGroupOptions(ed, name) {
   add(box, 
     row("Empty column (no bubble marked)", "empty", charPicker(opts.empty === undefined ? " " : opts.empty, (v) => set("empty", v), { allowSkip: true })),
     row("Multi-marked column", "multi", charPicker(opts.multi ?? "*", (v) => set("multi", v))),
-    row("Column with an issue", "issue", charPicker(opts.issue ?? "-", (v) => set("issue", v))),
+    row("Column with an issue", "issue", charPicker(opts.issue === undefined ? "-" : opts.issue, (v) => set("issue", v), { allowKeep: true })),
     el("div", { class: "muted small" }, `Example: ${exampleValue(opts)} (a 6-digit number with one empty, one multi-marked and one doubtful column). Flagged groups go to review and are highlighted in Results.`),
     el("button", { class: "small ghost", onclick: () => ed.edit(() => { delete doc.groupOptions[name]; pruneEmpty(doc); }) }, "Back to plain join")
   );
@@ -255,7 +256,8 @@ export function renderGroupOptions(ed, name) {
 
 function exampleValue(opts) {
   const empty = opts.empty === null ? "" : opts.empty ?? " ";
-  return `"12${empty}4${opts.multi ?? "*"}${opts.issue ?? "-"}"`.replace(/ /g, "␣");
+  const issue = opts.issue === null ? "7" : opts.issue ?? "-";
+  return `"12${empty}4${opts.multi ?? "*"}${issue}"`.replace(/ /g, "␣");
 }
 
 // Validation offered when a group is created: required, length = columns
@@ -451,7 +453,7 @@ export function renderGroupList(ed) {
         el("div", { class: "row gap" }, el("strong", { class: "mono" }, name), el("span", { class: "muted small" }, `${cols.length} col · ${compress(cols).join(", ")}`)),
         missing ? el("div", { class: "small err" }, `Missing column(s): ${missing.join(", ")}`) : null,
         primaryKeyTick(ed, name),
-        el("div", { class: "muted small" }, opts ? `empty ${show(opts.empty === undefined ? " " : opts.empty)} · multi ${show(opts.multi ?? "*")} · issue ${show(opts.issue ?? "-")}` : "plain join"),
+        el("div", { class: "muted small" }, opts ? `empty ${show(opts.empty === undefined ? " " : opts.empty)} · multi ${show(opts.multi ?? "*")} · issue ${opts.issue === null ? "as read" : show(opts.issue ?? "-")}` : "plain join"),
         el(
           "div",
           { class: "row gap" },

@@ -1916,7 +1916,7 @@ A **group** joins several bubble columns into one output column, e.g. a roll num
 |---|---|---|---|
 | **Empty column (no bubble marked)** | `groupOptions.<name>.empty` | space | What an unmarked column becomes. Keep a placeholder so later digits do not shift, or choose **skip the column (join the next one)**. Other choices: `_`, `-`, `*`, `?`, `0`, nothing, or **other character…**. |
 | **Multi-marked column** | `groupOptions.<name>.multi` | `*` | Character used for a column with two or more marked bubbles. |
-| **Column with an issue** | `groupOptions.<name>.issue` | `-` | Character used for a column with low confidence, a doubtful mark or a failed check. The value is still exported and the group goes to review. |
+| **Column with an issue** | `groupOptions.<name>.issue` | `-` | Character used for a column with low confidence, a doubtful mark or a failed check. Choose **keep the value read** (`null`) to export what was read there instead (a doubtful column with nothing read then counts as empty). Either way the group goes to review. |
 
 An example value is shown, e.g. `"12␣4*-"`. Templates made before placeholders existed use a **plain join**: an empty column simply disappears and a multi-marked column puts all its values in, so later digits shift. Click **Use one character per column** to switch; **Back to plain join** switches back.
 
