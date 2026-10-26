@@ -164,6 +164,9 @@ class ExportManager:
     def save_profile(self, name, profile):
         ExportProfile.from_dict(profile)
         profile = {**profile, "name": name}
+        # A database URL can hold a password: it is typed for each export
+        if isinstance(profile.get("sql"), dict) and profile["sql"].get("url"):
+            profile["sql"] = {k: v for k, v in profile["sql"].items() if k != "url"}
         write_json_atomic(self.profile_path(name), profile)
         return profile
 

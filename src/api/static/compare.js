@@ -10,6 +10,7 @@
 // results" they also become corrections of our results. A comparison runs in
 // the background: review starts on the first sheets while a counter shows the rest.
 import { api, chip, confidenceColor, displayName, el, emit, modal, on, safeStorage, saveAs, scrollWithin, state, toast, url } from "./api.js";
+import { pickProfileFiles, saveProfileFile } from "./profile_files.js";
 
 const VIEWS = ["aligned", "original", "color"];
 const VIEW_NAMES = { aligned: "Aligned", original: "Original scan", color: "Colour" };
@@ -946,6 +947,48 @@ async function newComparison() {
     profile.value = keep;
   };
   loadProfiles();
+  const chosenProfile = () => profiles.find((p) => p.name === profile.value);
+  const downloadProfile = () => {
+    const chosen = chosenProfile();
+    if (!chosen) return toast("Choose a saved layout first");
+    saveProfileFile("compare", { name: chosen.name, template_id: chosen.template_id || null, settings: chosen.settings });
+  };
+  const uploadProfiles = async () => {
+    const found = await pickProfileFiles("compare");
+    if (!found.length) return;
+    const clashes = found.filter((p) => profiles.some((q) => q.name === p.name)).map((p) => p.name);
+    if (clashes.length && !confirm(`Replace the saved layout${clashes.length > 1 ? "s" : ""} ${clashes.join(", ")}?`)) return;
+    let saved = 0;
+    for (const item of found) {
+      const settings = item.settings || {};
+      try {
+        await api("/compare/profiles", { method: "POST", json: { name: item.name, template_id: item.template_id, parse: settings.parse || {}, mapping: settings.mapping || {}, key: settings.key || {}, rules: settings.rules || {} } });
+        saved += 1;
+      } catch (error) {
+        toast(`${item.name}: ${error.message}`, "error", 7000);
+      }
+    }
+    await loadProfiles();
+    if (!saved) return;
+    profile.value = found[found.length - 1].name;
+    profile.dispatchEvent(new Event("change"));
+    const missing = found.filter((p) => p.template_id && !state.templates.some((t) => t.id === p.template_id));
+    toast(saved === 1 ? `Added layout "${profile.value}"` : `Added ${saved} layouts`, "ok");
+    if (missing.length) toast(`Made for template ${missing[0].template_id}, which is not on this computer: pick the template yourself`, "", 7000);
+  };
+  const deleteProfile = async () => {
+    const chosen = chosenProfile();
+    if (!chosen) return toast("Choose a saved layout first");
+    if (!confirm(`Delete the saved layout "${chosen.name}"?`)) return;
+    try {
+      await api(`/compare/profiles/${encodeURIComponent(chosen.name)}`, { method: "DELETE" });
+      profile.value = "";
+      await loadProfiles();
+      toast("Layout deleted", "ok");
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  };
 
   const file = el("input", { type: "file", accept: ".csv,.txt,.dat,.tsv,.prn" });
   const format = el("select", {}, el("option", { value: "auto" }, "Auto"), el("option", { value: "csv" }, "CSV / delimited"), el("option", { value: "fixed" }, "Fixed width"));
@@ -1063,7 +1106,7 @@ async function newComparison() {
   const body = el(
     "div",
     { class: "cmp-form" },
-    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Template ", template), el("label", { class: "field inline" }, "Our sheets ", job), el("label", { class: "field inline", title: "A layout saved earlier: how a file is read, mapped and compared" }, "Saved layout ", profile)),
+    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Template ", template), el("label", { class: "field inline" }, "Our sheets ", job), el("label", { class: "field inline", title: "A layout saved earlier: how a file is read, mapped and compared" }, "Saved layout ", profile), el("button", { class: "small", title: "Save the chosen layout as a file, to use it on another computer", onclick: downloadProfile }, "Download"), el("button", { class: "small", title: "Add layouts from files downloaded on another computer", onclick: uploadProfiles }, "Upload…"), el("button", { class: "small danger ghost", title: "Delete the chosen saved layout", onclick: deleteProfile }, "Delete")),
     el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Their file ", file), el("label", { class: "field inline" }, "Format ", format), el("label", { class: "field inline" }, "Delimiter ", delimiter), el("label", { class: "field inline" }, "Header row ", header)),
     el("label", { class: "field inline", title: "Name the columns yourself: replaces the header, or names a file without one (ranges like q1..q200 allowed)" }, "Column names ", names),
     fixedRow,

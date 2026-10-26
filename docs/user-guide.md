@@ -862,7 +862,7 @@ By default the choices go into a **separate reconciled layer**: the read results
 
    with their `SEQ` matching our file name (digits only). A Ctrl-Z end-of-file mark after the last line is ignored.
 
-   **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again.
+   **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again. **Download** saves the chosen layout as a `.compare-profile.json` file and **Upload…** adds layouts from such files, so a layout made on one computer can be used on another. **Delete** removes the chosen layout. A layout remembers its template; if that template is not on the other computer, pick the template yourself.
 4. Say **how their rows find our sheets**: their column, what it matches on our side, and how to compare the two.
 
    | Our side | Use it when |
@@ -1004,13 +1004,16 @@ Type notes:
 
 #### Export profiles
 
-A profile saves your choices (which fields, column names, order, types, sheet columns, per-field options and format settings) under a name, on the server, so everyone can reuse it.
+A profile saves every choice in the Export window under a name, on the server, so everyone can reuse it: the format (CSV, Excel, PDF, SQLite or database), the format's settings, the **Save to folder** folder, which fields, column names, order, types, sheet columns and per-field options.
 
 - **Save profile…** asks for a name and saves the current settings (an existing name is overwritten).
-- **— saved profiles —** loads a saved profile into the dialog.
-- **Profile JSON** (fold-out) shows the profile as text. **Show current** fills it in, and **Apply JSON** loads text you pasted or edited. It also allows a few settings not shown in the dialog, such as a date output format (`outputFormat`), custom true/false values for *bool* fields, or `strictCast` (fail the export instead of leaving unconvertible values empty).
+- **— saved profiles —** loads a saved profile into the dialog, format and folder included.
+- **Download** saves the current settings as a small `.export-profile.json` file, to use on another computer.
+- **Upload…** adds profiles from such files (you can pick several). A profile with a name that is already saved is replaced after you confirm.
+- **Delete** removes the chosen saved profile. The settings on screen stay.
+- **Profile JSON** (fold-out) shows the profile as text. **Show current** fills it in, and **Apply JSON** loads text you pasted or edited. It also allows a few settings not shown in the dialog, such as a date output format (`outputFormat`) or custom true/false values for *bool* fields. These are kept when you save the profile again.
 
-The database URL is not saved in the profile, only the table name.
+The database URL is never saved in a profile, because it can hold a password; only the table name is.
 
 #### How to export a finished job to Excel
 

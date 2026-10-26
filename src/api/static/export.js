@@ -1,7 +1,10 @@
 // Export dialog: pick a format, build an export profile (columns, names, order,
 // types), preview it and run the export on the server (CSV, XLSX, PDF, SQL).
+// A saved profile keeps every setting of this screen (format and folder too)
+// except a database URL, which can hold a password.
 import { api, chip, el, emit, fmtDuration, fmtTime, modal, on, safeStorage, saveButton, toast } from "./api.js";
 import { openBrowser } from "./folders.js";
+import { pickProfileFiles, saveProfileFile } from "./profile_files.js";
 
 const TYPES = ["text", "int", "decimal", "date", "bool"];
 const META = ["file_name", "file_id", "page", "scan_id", "job_id", "template_id", "status", "score", "source_path", "verified_by", "error", "created_at"];
@@ -117,9 +120,9 @@ function scopeText(filters) {
 async function openExport(filters) {
   const s = {
     format: safeStorage("get", "omr_export_format") || "xlsx",
-    fields: [], // {field, header, type, format, outputFormat, include}
+    fields: [], // {field, header, type, format, outputFormat, include, extra}
     meta: DEFAULT_META.slice(),
-    opts: { includeConfidence: false, includeFlags: false, includeReviewStatus: true, includeCorrected: true, includeFieldCorrected: false, allowLossyCast: false },
+    opts: { includeConfidence: false, includeFlags: false, includeReviewStatus: true, includeCorrected: true, includeFieldCorrected: false, allowLossyCast: false, strictCast: false },
     csv: { leadingZeros: "formula", delimiter: "," },
     xlsx: { highlight: true },
     pdf: { mode: "table" },
@@ -145,8 +148,11 @@ async function openExport(filters) {
   const jsonBox = el("textarea", { rows: 8, spellcheck: "false" });
 
   const profile = () => ({
+    format: formatSelect.value,
+    folder: folderInput.value.trim() || undefined,
     fields: s.fields.map((f) => {
-      const spec = { field: f.field };
+      // Options set in the profile JSON only (yes/no values, decimal comma) are kept
+      const spec = { field: f.field, ...(f.extra || {}) };
       if (f.header && f.header !== f.field) spec.header = f.header;
       if (f.type !== "text") spec.type = f.type;
       if (f.type === "date") {
@@ -172,8 +178,11 @@ async function openExport(filters) {
     const order = [...listed, ...known.filter((n) => !listed.includes(n))];
     s.fields = order.map((name) => {
       const spec = byName[name] || {};
-      return { field: name, header: spec.header || spec.rename || name, type: spec.type || "text", format: spec.format || "", outputFormat: spec.outputFormat || "", include: byName[name] ? spec.include !== false : data.includeOtherFields !== false && !listed.length };
+      const { field, header, rename, type, format, outputFormat, include, ...extra } = spec;
+      return { field: name, header: header || rename || name, type: type || "text", format: format || "", outputFormat: outputFormat || "", include: byName[name] ? include !== false : data.includeOtherFields !== false && !listed.length, extra };
     });
+    if (data.format && [...formatSelect.options].some((o) => o.value === data.format)) formatSelect.value = data.format;
+    if (data.folder) folderInput.value = data.folder;
     if (data.meta) s.meta = data.meta.slice();
     for (const key of Object.keys(s.opts)) if (key in data) s.opts[key] = !!data[key];
     Object.assign(s.csv, data.csv || {});
@@ -266,7 +275,7 @@ async function openExport(filters) {
       metaBox.append(el("label", { class: "small" }, box, ` ${name}`));
     }
     optionBox.innerHTML = "";
-    const labels = { includeReviewStatus: "review status", includeCorrected: "corrected (sheet)", includeFieldCorrected: "corrected (per field)", includeConfidence: "confidence", includeFlags: "flags", allowLossyCast: "allow lossy number casts (drops leading zeros)" };
+    const labels = { includeReviewStatus: "review status", includeCorrected: "corrected (sheet)", includeFieldCorrected: "corrected (per field)", includeConfidence: "confidence", includeFlags: "flags", allowLossyCast: "allow lossy number casts (drops leading zeros)", strictCast: "stop on a value that is not a number or date (instead of leaving it empty)" };
     for (const [key, text] of Object.entries(labels)) {
       const box = el("input", { type: "checkbox", checked: s.opts[key] });
       box.addEventListener("change", () => (s.opts[key] = box.checked));
@@ -397,6 +406,44 @@ async function openExport(filters) {
     }
   };
 
+  const chosenName = () => profileSelect.value || "";
+  const downloadProfile = () => saveProfileFile("export", { name: chosenName() || "Export profile", profile: { ...profile(), name: chosenName() || undefined } });
+  const uploadProfiles = async () => {
+    const found = await pickProfileFiles("export");
+    if (!found.length) return;
+    const existing = new Set((profileSelect.profiles || []).map((p) => p.name));
+    const clashes = found.filter((p) => existing.has(p.name)).map((p) => p.name);
+    if (clashes.length && !confirm(`Replace the saved profile${clashes.length > 1 ? "s" : ""} ${clashes.join(", ")}?`)) return;
+    let saved = 0;
+    for (const item of found) {
+      try {
+        await api(`/export-profiles/${encodeURIComponent(item.name)}`, { method: "PUT", json: item.profile });
+        saved += 1;
+      } catch (error) {
+        toast(`${item.name}: ${error.message}`, "error", 7000);
+      }
+    }
+    await refreshProfiles();
+    if (!saved) return;
+    const last = found[found.length - 1].name;
+    profileSelect.value = last;
+    const loaded = (profileSelect.profiles || []).find((p) => p.name === last);
+    if (loaded) loadProfile(loaded.profile);
+    toast(saved === 1 ? `Added profile "${last}"` : `Added ${saved} profiles`, "ok");
+  };
+  const deleteProfile = async () => {
+    const name = chosenName();
+    if (!name) return toast("Choose a saved profile first");
+    if (!confirm(`Delete the saved profile "${name}"? The current settings on this screen stay.`)) return;
+    try {
+      await api(`/export-profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
+      await refreshProfiles();
+      toast("Profile deleted", "ok");
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  };
+
   const jsonDetails = el(
     "details",
     {},
@@ -431,7 +478,7 @@ async function openExport(filters) {
     el(
       "div",
       { class: "exp" },
-      el("div", { class: "row gap wrap" }, el("span", { class: "muted" }, "Sheets: "), chip(scopeText(filters), "ok"), el("span", { class: "spacer" }), profileSelect, el("button", { class: "small", onclick: saveProfile }, "Save profile…")),
+      el("div", { class: "row gap wrap" }, el("span", { class: "muted" }, "Sheets: "), chip(scopeText(filters), "ok"), el("span", { class: "spacer" }), profileSelect, el("button", { class: "small", onclick: saveProfile }, "Save profile…"), el("button", { class: "small", title: "Save these settings as a file, to use them on another computer", onclick: downloadProfile }, "Download"), el("button", { class: "small", title: "Add profiles from files downloaded on another computer", onclick: uploadProfiles }, "Upload…"), el("button", { class: "small danger ghost", title: "Delete the chosen saved profile", onclick: deleteProfile }, "Delete")),
       el("div", { class: "row gap wrap exp-format" }, el("label", { class: "field inline" }, "Format ", formatSelect), formatOptions),
       folderRow,
       el("div", { class: "exp-cols" }, el("div", {}, el("h3", {}, "Fields"), el("div", { class: "exp-table-wrap" }, el("table", { class: "table" }, el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", {}, "Field"), el("th", {}, "Column name"), el("th", {}, "Type"), el("th", {}, ""))), fieldTable))), el("div", {}, el("h3", {}, "Sheet columns"), metaBox, el("h3", {}, "Per field"), optionBox, jsonDetails)),
@@ -446,7 +493,7 @@ async function openExport(filters) {
   try {
     const data = await api("/exports/preview", { method: "POST", json: { format: "csv", filters, profile: {} } });
     s.total = data.total;
-    s.fields = data.columns.filter((c) => c.source === "field").map((c) => ({ field: c.field, header: c.field, type: "text", format: "", outputFormat: "", include: true }));
+    s.fields = data.columns.filter((c) => c.source === "field").map((c) => ({ field: c.field, header: c.field, type: "text", format: "", outputFormat: "", include: true, extra: {} }));
   } catch (error) {
     toast(error.message, "error");
   }
