@@ -455,6 +455,27 @@ def test_api_exports_job_with_corrections(tmp_path):
         assert (
             client.get("/export-profiles").json()["profiles"][0]["name"] == "My profile"
         )
+        # A profile keeps the screen's format and folder, never a database URL
+        full = {
+            "fields": [{"field": "q1", "type": "bool", "true": ["A"], "false": ["B"]}],
+            "format": "csv",
+            "folder": "D:/Results",
+            "strictCast": True,
+            "csv": {"leadingZeros": "apostrophe", "delimiter": ";"},
+            "sql": {"table": "t", "url": "postgresql://u:secret@h/db"},
+        }
+        assert client.put("/export-profiles/Full", json=full).status_code == 200
+        saved = next(
+            p["profile"]
+            for p in client.get("/export-profiles").json()["profiles"]
+            if p["name"] == "Full"
+        )
+        assert saved["format"] == "csv" and saved["folder"] == "D:/Results"
+        assert saved["fields"][0]["true"] == ["A"] and saved["strictCast"] is True
+        assert saved["sql"] == {"table": "t"}
+        bad = client.put("/export-profiles/Bad", json={"format": "docx"})
+        assert bad.status_code == 422 and "format" in bad.text
+        assert client.delete("/export-profiles/Full").status_code == 200
         record = client.post(
             "/exports",
             json={

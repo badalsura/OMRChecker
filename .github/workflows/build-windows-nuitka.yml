@@ -91,7 +91,7 @@ jobs:
   build:
     needs: ocr-models
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 240  # a first compile (cold cache) takes over 90 minutes
     strategy:
       fail-fast: false
       matrix:
@@ -121,6 +121,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel
           python -m pip install -r requirements.api.txt
+          # Optional ZBar barcode engine, bundled like the PyInstaller build
+          python -m pip install pyzbar==0.1.9
           if ($env:OMR_APP -eq "1") { python -m pip install -r packaging/requirements-app.txt }
           python -m pip install nuitka
 
@@ -174,8 +176,11 @@ jobs:
         shell: pwsh
         run: python packaging/prepare_bundle.py --only cloudflared
 
-      - name: Cache Nuitka compile cache
-        uses: actions/cache@v4
+      # Restored and saved as separate steps so a compile that finishes is
+      # cached even when a later step fails.
+      - name: Restore Nuitka compile cache
+        id: nuitka-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.NUITKA_CACHE_DIR }}
           key: nuitka-cache-${{ matrix.kind }}-${{ hashFiles('src/**/*.py', 'packaging/build_nuitka.py') }}
@@ -183,6 +188,7 @@ jobs:
             nuitka-cache-${{ matrix.kind }}-
 
       - name: Build with Nuitka
+        id: build
         shell: pwsh
         run: |
           $mode = if ($env:KIND -eq "server") { "${{ github.event.inputs.mode || 'onedir' }}" } else { "onedir" }
@@ -190,6 +196,13 @@ jobs:
           if ($env:KIND -eq "server") { $buildArgs += "--launcher" }
           python @buildArgs
           if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Save Nuitka compile cache
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.NUITKA_CACHE_DIR }}
+          key: ${{ steps.nuitka-cache.outputs.cache-primary-key }}
 
       - name: Arrange the build folder
         id: arrange
@@ -207,7 +220,8 @@ jobs:
           if (-not $src) { Write-Error "no .dist folder produced by Nuitka"; exit 1 }
           $out = Join-Path $distRoot "OMRChecker"
           if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-          Rename-Item $src.FullName $out
+          # Rename-Item takes a bare name, not a path
+          Rename-Item $src.FullName "OMRChecker"
           if (!(Test-Path "$out\OMRChecker.exe")) { Write-Error "OMRChecker.exe missing from the build"; exit 1 }
           "onefile=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -221,9 +235,11 @@ jobs:
           & $exe --selftest
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $sample = "samples\sample1"
+          # An unlicensed exe refuses a bulk run (exit 3)
           & $exe --bulk $sample --template "$sample\template.json" --out build\bulk_out --workers 2
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          if (!(Test-Path build\bulk_out\results.jsonl)) { Write-Error "no bulk results"; exit 1 }
+          if ($LASTEXITCODE -ne 3) { Write-Error "an unlicensed bulk run was not refused ($LASTEXITCODE)"; exit 1 }
+          # The step's result is the last exit code: the expected 3 is not a failure
+          $global:LASTEXITCODE = 0
           $p = Start-Process -FilePath $exe -ArgumentList "--no-browser","--no-window","--port","8799" -PassThru
           $ok = $false
           for ($i = 0; $i -lt 60; $i++) {
@@ -251,6 +267,31 @@ jobs:
           $t = Start-Process -FilePath $exe -ArgumentList "--selftest","--data-dir",$data -Wait -PassThru
           if (Test-Path "$data\app.log") { Get-Content "$data\app.log" -Tail 30 }
           if ($t.ExitCode -ne 0) { Write-Error "selftest failed ($($t.ExitCode))"; exit 1 }
+          # The app's selftest does not look for Tesseract: check it is bundled
+          if (!(Test-Path dist-nuitka\OMRChecker\tesseract\tesseract.exe)) { Write-Error "Tesseract missing from build"; exit 1 }
+          # Mark every DLL as downloaded from the internet, as Windows' Extract All
+          # does: the app must clear the mark from its .NET parts itself
+          Get-ChildItem dist-nuitka\OMRChecker -Recurse -Filter *.dll | ForEach-Object { Set-Content -LiteralPath $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" }
+          # The window and its engine, with the default data folder (next to the exe): start, query /health, stop
+          $p = Start-Process -FilePath $exe -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 1
+            try { $r = Invoke-RestMethod http://127.0.0.1:8766/health; if ($r.status -eq "ok") { $ok = $true; break } } catch {}
+            if ($p.HasExited) { break }
+          }
+          $alive = -not $p.HasExited
+          # The window's WebView2 processes hold files in the data folder: stop them too
+          if ($alive) { taskkill /PID $p.Id /T /F | Out-Null }
+          Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          $global:LASTEXITCODE = 0
+          $log = "dist-nuitka\OMRChecker\omr_data\app.log"
+          if (Test-Path $log) { Get-Content $log -Tail 40 }
+          if (Test-Path dist-nuitka\omr_data) { Write-Error "The app put its data folder above the exe folder"; exit 1 }
+          if (-not $ok) { Write-Error "The app's engine did not answer"; exit 1 }
+          if (-not $alive) { Write-Error "The app closed by itself"; exit 1 }
+          if (-not $r.engines.tesseract) { Write-Error "Tesseract not found by the app"; exit 1 }
           if (Test-Path "dist-nuitka\OMRChecker\omr_data") { Remove-Item -Recurse -Force "dist-nuitka\OMRChecker\omr_data" }
 
       - name: Zip the build

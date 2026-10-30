@@ -52,7 +52,7 @@ class Reason(str, Enum):
 
 _MESSAGES = {
     Reason.VALID: "License is valid.",
-    Reason.NO_LICENSE: "No license is installed on this machine.",
+    Reason.NO_LICENSE: "This computer has no license yet.",
     Reason.NO_PUBLIC_KEY: "The application is missing its license public key.",
     Reason.MALFORMED: "The license file is not readable.",
     Reason.BAD_SIGNATURE: "The license signature is invalid (file edited or not issued for this product).",
@@ -65,6 +65,27 @@ _MESSAGES = {
 }
 
 
+# What the user should do next, shown under the message
+_ACTIONS = {
+    Reason.NO_LICENSE: "Send the request code below to your vendor, then load the license file they send back.",
+    Reason.NO_PUBLIC_KEY: "This copy of the app is incomplete. Download it again from your vendor.",
+    Reason.MALFORMED: "Choose the .omrlic file exactly as your vendor sent it. If it still fails, ask them to send it again.",
+    Reason.BAD_SIGNATURE: "The file was changed after it was issued, or is for another product. Ask your vendor to send it again, and do not edit it.",
+    Reason.EXPIRED: "To renew, send the request code below to your vendor, then load the new license file.",
+    Reason.NOT_YET_VALID: "Check this computer's date and time. If they are right, ask your vendor when the license starts.",
+    Reason.WRONG_MACHINE: "Each license works on one computer. Send this computer's request code to your vendor for a license of its own.",
+    Reason.CLOCK_ROLLBACK: "Set this computer's date and time correctly, then start the app again.",
+    Reason.FEATURE_MISSING: "Ask your vendor to add this feature to your license.",
+    Reason.REVOKED: "Contact your vendor.",
+}
+
+
+def _day(iso: Optional[str]) -> str:
+    """'28 Oct 2026' for an ISO timestamp ('' if unreadable)."""
+    moment = _safe_parse(iso) if iso else None
+    return f"{moment.day} {moment:%b %Y}" if moment else ""
+
+
 @dataclass
 class LicenseStatus:
     valid: bool
@@ -74,7 +95,17 @@ class LicenseStatus:
 
     @property
     def message(self) -> str:
-        return self.detail or _MESSAGES.get(self.reason, "License error.")
+        if self.detail:
+            return self.detail
+        if self.reason == Reason.EXPIRED and self.payload and _day(self.payload.expires_at):
+            return f"This license expired on {_day(self.payload.expires_at)}."
+        if self.reason == Reason.NOT_YET_VALID and self.payload and _day(self.payload.issued_at):
+            return f"This license starts on {_day(self.payload.issued_at)}."
+        return _MESSAGES.get(self.reason, "License error.")
+
+    @property
+    def action(self) -> str:
+        return _ACTIONS.get(self.reason, "")
 
     def to_public_dict(self) -> dict:
         """Safe to show the user / return from the API (no signature bytes)."""
@@ -82,8 +113,10 @@ class LicenseStatus:
             "valid": self.valid,
             "reason": self.reason.value,
             "message": self.message,
+            "action": self.action,
         }
-        if self.payload is not None:
+        # A payload whose signature failed is not the vendor's: show none of it
+        if self.payload is not None and self.reason != Reason.BAD_SIGNATURE:
             p = self.payload
             data["license"] = {
                 "license_id": p.license_id,
@@ -106,12 +139,26 @@ class LicenseError(Exception):
         self.status = status
 
 
-def load_public_key(path: Optional[Path] = None) -> Optional[rsa.RSAPublicKey]:
-    key_path = path or paths.public_key_path()
+def embedded_public_key() -> Optional[bytes]:
+    """The public key compiled into a packaged build, if the build has one."""
     try:
-        data = Path(key_path).read_bytes()
-    except OSError:
+        from src.licensing import embedded_key
+    except ImportError:
         return None
+    return getattr(embedded_key, "PUBLIC_KEY_PEM", None) or None
+
+
+def load_public_key(path: Optional[Path] = None) -> Optional[rsa.RSAPublicKey]:
+    if path is None and paths._frozen():
+        # A packaged build trusts only the key built into it
+        data = embedded_public_key()
+        if data is None:
+            return None
+    else:
+        try:
+            data = Path(path or paths.public_key_path()).read_bytes()
+        except OSError:
+            return None
     try:
         key = serialization.load_pem_public_key(data)
     except Exception:

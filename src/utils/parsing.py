@@ -112,9 +112,15 @@ def join_group(columns, omr_response, options, field_details=None, empty_value="
         states.append(state)
         if options is None or state == "ok":
             pieces.append("" if value is None else str(value))
-        elif state == "empty":
+        elif state == "empty" or (
+            state == "issue" and options.get("issue") is None and not str(value or "").strip()
+        ):
+            # An issue column with nothing read, kept as read, is just empty
             if options.get("empty") is not None:
                 pieces.append(str(options["empty"]))
+        elif state == "issue" and options.get("issue") is None:
+            # issue: null keeps the value read (the group still goes to review)
+            pieces.append(str(value))
         else:
             pieces.append(str(options.get(state) or ""))
     return "".join(pieces), states

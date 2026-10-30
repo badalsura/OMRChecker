@@ -6,7 +6,7 @@ import { initCompare, onShowCompare } from "./compare.js";
 import { initDesktop, isDesktop } from "./desktop.js";
 import { initExport, refreshExports } from "./export.js";
 import { initJobs, onShowJobs } from "./jobs.js";
-import { ensureLicensed } from "./license.js";
+import { ensureLicensed, openLicensePanel } from "./license.js";
 import { bindToolbar, initResults, onShowResults } from "./results.js";
 import { initReview, refreshBadge } from "./review.js";
 import { initScan } from "./scan.js";
@@ -72,6 +72,7 @@ async function init() {
       boot();
     }
   });
+  document.getElementById("license-btn").addEventListener("click", openLicensePanel);
   document.getElementById("user-btn").addEventListener("click", () =>
     openAccountMenu((name) => {
       setUser(name);

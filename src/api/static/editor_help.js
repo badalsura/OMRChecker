@@ -60,7 +60,7 @@ export const HELP = {
   groupName: "Name of the joined output column, e.g. rollno.",
   groupEmpty: "What an unmarked column becomes. Keep a placeholder so later digits don't shift, or skip it and join the next column.",
   groupMulti: "Character put in place of a column with two or more marked bubbles.",
-  groupIssue: "Character put in place of a column with low confidence, a doubtful mark or a failed check. The value is still exported, and the field is flagged for review.",
+  groupIssue: "Character put in place of a column with low confidence, a doubtful mark or a failed check, or \"keep the value read\" to export what was read there. Either way the field is flagged for review.",
   // validation
   "validation:Required": "The value must not be blank.",
   "validation:Length": "Exact length, or a minimum and maximum, in characters.",

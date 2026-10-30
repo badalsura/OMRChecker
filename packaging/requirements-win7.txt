@@ -32,6 +32,10 @@ starlette==0.41.3
 pydantic==2.10.6                 # last pydantic for 3.8
 pydantic-core==2.27.2            # cp38-win_amd64
 uvicorn==0.33.0                  # last uvicorn for 3.8
+# --- Licensing (src/licensing: RSA signature check) ---------------------------
+cryptography==44.0.3             # cp37-abi3-win_amd64
+cffi==1.17.1                     # cp38-win_amd64
+pycparser==2.22
 h11==0.14.0
 python-multipart==0.0.20
 typing-extensions==4.12.2

@@ -355,6 +355,12 @@ The change is saved as soon as you pick it.
 5. For colleagues who start jobs from folders on the station PC, click their **Server folders** button and add the scan folders.
 6. Tell each colleague their user name and starting password, and ask them to use **Change password** after their first sign-in.
 
+### License
+
+**License** in the top bar shows who this copy is licensed to, its edition and features, when it expires (with the days left), the computer it is bound to and the license id. From 14 days before expiry the button itself shows the days left. To renew, send the vendor this computer's **request code** (shown there, with **Copy request code** and **Save request file**), then choose the new license file and click **Load license**.
+
+A copy without a valid license opens on the Activation screen instead of the app. It says what is wrong (no license yet, expired on a date, issued for another computer, edited, or the computer's clock set back) and what to do, and shows the request code to send.
+
 ### API key
 
 The API key is for **programs** that talk to the station (scanning scripts, the Python/Java/Go client libraries, other systems), not for people. People use accounts.
@@ -856,7 +862,7 @@ By default the choices go into a **separate reconciled layer**: the read results
 
    with their `SEQ` matching our file name (digits only). A Ctrl-Z end-of-file mark after the last line is ignored.
 
-   **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again.
+   **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again. **Download** saves the chosen layout as a `.compare-profile.json` file and **Upload…** adds layouts from such files, so a layout made on one computer can be used on another. **Delete** removes the chosen layout. A layout remembers its template; if that template is not on the other computer, pick the template yourself.
 4. Say **how their rows find our sheets**: their column, what it matches on our side, and how to compare the two.
 
    | Our side | Use it when |
@@ -998,13 +1004,16 @@ Type notes:
 
 #### Export profiles
 
-A profile saves your choices (which fields, column names, order, types, sheet columns, per-field options and format settings) under a name, on the server, so everyone can reuse it.
+A profile saves every choice in the Export window under a name, on the server, so everyone can reuse it: the format (CSV, Excel, PDF, SQLite or database), the format's settings, the **Save to folder** folder, which fields, column names, order, types, sheet columns and per-field options.
 
 - **Save profile…** asks for a name and saves the current settings (an existing name is overwritten).
-- **— saved profiles —** loads a saved profile into the dialog.
-- **Profile JSON** (fold-out) shows the profile as text. **Show current** fills it in, and **Apply JSON** loads text you pasted or edited. It also allows a few settings not shown in the dialog, such as a date output format (`outputFormat`), custom true/false values for *bool* fields, or `strictCast` (fail the export instead of leaving unconvertible values empty).
+- **— saved profiles —** loads a saved profile into the dialog, format and folder included.
+- **Download** saves the current settings as a small `.export-profile.json` file, to use on another computer.
+- **Upload…** adds profiles from such files (you can pick several). A profile with a name that is already saved is replaced after you confirm.
+- **Delete** removes the chosen saved profile. The settings on screen stay.
+- **Profile JSON** (fold-out) shows the profile as text. **Show current** fills it in, and **Apply JSON** loads text you pasted or edited. It also allows a few settings not shown in the dialog, such as a date output format (`outputFormat`) or custom true/false values for *bool* fields. These are kept when you save the profile again.
 
-The database URL is not saved in the profile, only the table name.
+The database URL is never saved in a profile, because it can hold a password; only the table name is.
 
 #### How to export a finished job to Excel
 
@@ -1912,7 +1921,7 @@ A **group** joins several bubble columns into one output column, e.g. a roll num
 |---|---|---|---|
 | **Empty column (no bubble marked)** | `groupOptions.<name>.empty` | space | What an unmarked column becomes. Keep a placeholder so later digits do not shift, or choose **skip the column (join the next one)**. Other choices: `_`, `-`, `*`, `?`, `0`, nothing, or **other character…**. |
 | **Multi-marked column** | `groupOptions.<name>.multi` | `*` | Character used for a column with two or more marked bubbles. |
-| **Column with an issue** | `groupOptions.<name>.issue` | `-` | Character used for a column with low confidence, a doubtful mark or a failed check. The value is still exported and the group goes to review. |
+| **Column with an issue** | `groupOptions.<name>.issue` | `-` | Character used for a column with low confidence, a doubtful mark or a failed check. Choose **keep the value read** (`null`) to export what was read there instead (a doubtful column with nothing read then counts as empty). Either way the group goes to review. |
 
 An example value is shown, e.g. `"12␣4*-"`. Templates made before placeholders existed use a **plain join**: an empty column simply disappears and a multi-marked column puts all its values in, so later digits shift. Click **Use one character per column** to switch; **Back to plain join** switches back.
 

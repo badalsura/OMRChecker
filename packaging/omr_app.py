@@ -331,6 +331,33 @@ def tell_user(message, url=None):
         open_outside(url)
 
 
+DOTNET_PACKAGES = ("pythonnet", "clr_loader", "webview")
+
+
+def unblock_dotnet_parts():
+    """A zip extracted with Windows' Extract All passes its "downloaded from the
+    internet" mark (a Zone.Identifier stream) on to every file, and .NET
+    Framework refuses to load a marked assembly: pywebview's bridge then fails
+    with "Failed to resolve Python.Runtime.Loader.Initialize". Drop the mark
+    from the .NET parts before they load."""
+    if sys.platform != "win32":
+        return
+    for root in {base.APP_DIR, base.RESOURCE_DIR}:
+        for name in DOTNET_PACKAGES:
+            folder = root / name
+            if not folder.is_dir():
+                continue
+            for dll in folder.rglob("*.dll"):
+                try:
+                    os.remove(f"{dll}:Zone.Identifier")
+                except OSError:
+                    pass  # not marked, or a read-only install
+
+
+def blocked_by_windows(error):
+    return "Python.Runtime" in str(error)
+
+
 def run_webview2(engine, state, instance):
     runtime = webview2_runtime()
     check_windows_parts(runtime)
@@ -338,6 +365,7 @@ def run_webview2(engine, state, instance):
         allow_sandbox(runtime)
         os.environ["WEBVIEW2_BROWSER_EXECUTABLE_FOLDER"] = str(runtime)
     print(f"WebView2 runtime: {runtime or 'installed (Evergreen)'}")
+    unblock_dotnet_parts()
     import webview
 
     if runtime:
@@ -440,6 +468,13 @@ def log_path():
     return Path(os.environ.get("OMR_APP_LOG") or base.default_data_dir() / "app.log")
 
 
+def no_console(stream):
+    """PyInstaller leaves a windowed exe without streams; Nuitka points them at NUL."""
+    if stream is None:
+        return True
+    return str(getattr(stream, "name", "")).rstrip(":").lower() in ("nul", os.devnull.lower())
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=f"{base.DISPLAY_NAME} app window")
     parser.add_argument("--data-dir", help="data folder (default: as the launcher)")
@@ -459,11 +494,13 @@ def main(argv=None):
     data_dir = Path(args.data_dir) if args.data_dir else base.default_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("OMR_APP_LOG", str(data_dir / "app.log"))
-    if sys.stdout is None or sys.stderr is None:
+    if no_console(sys.stdout) or no_console(sys.stderr):
         # A windowed exe has no console: keep messages in the data folder
         stream = open(log_path(), "a", encoding="utf-8", buffering=1)
-        sys.stdout = sys.stdout or stream
-        sys.stderr = sys.stderr or stream
+        if no_console(sys.stdout):
+            sys.stdout = stream
+        if no_console(sys.stderr):
+            sys.stderr = stream
 
     if args.selftest:
         base.configure_environment()
@@ -484,8 +521,15 @@ def main(argv=None):
     except MissingPart as missing:
         tell_user(str(missing), missing.url)
         return 3
-    except Exception:
+    except Exception as error:
         traceback.print_exc()
+        if blocked_by_windows(error):
+            tell_user(
+                f"Windows blocked part of {base.DISPLAY_NAME} because it was downloaded from the internet.\n\n"
+                "Delete this folder, right-click the downloaded zip, choose Properties, tick Unblock, "
+                f"then extract it again.\n\nDetails are in {log_path()}"
+            )
+            return 1
         tell_user(f"{base.DISPLAY_NAME} could not open its window.\n\nDetails are in {log_path()}")
         return 1
     finally:

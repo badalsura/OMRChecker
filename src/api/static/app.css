@@ -498,6 +498,14 @@ body.desktop a { -webkit-user-drag: none; }
 .lic-why { color: var(--err); font-weight: 600; margin: 0 0 14px; }
 .lic-steps { color: var(--muted); margin: 0 0 18px; padding-left: 20px; line-height: 1.6; }
 .lic-label { display: block; font-weight: 600; margin: 16px 0 6px; }
-.lic-request { width: 100%; font-family: var(--mono); font-size: 12px; resize: vertical; border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg, #fff); }
+.lic-request-box { display: grid; gap: 8px; }
+.lic-code { font-family: var(--mono); font-size: 18px; letter-spacing: 0.04em; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg, #fff); user-select: all; word-break: break-all; cursor: text; }
+.lic-first { color: inherit; }
+.lic-action { margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--warn-soft); }
+.lic-soon { color: var(--warn); font-weight: 600; }
 .lic-file { font-size: 14px; }
+.lic-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.lic-facts dt { color: var(--muted); }
+.lic-facts dd { margin: 0; word-break: break-all; }
+.lic-bad { color: var(--err); font-weight: 600; }
 .lic-foot { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 10px; }

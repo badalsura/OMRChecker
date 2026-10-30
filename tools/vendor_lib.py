@@ -190,10 +190,23 @@ def issue_license(
 
 def machine_from_request(request: dict) -> str:
     """Pull the machine fingerprint out of a customer's activation request."""
+    from src.licensing.request_code import decode
+
+    if request.get("code"):
+        return decode(str(request["code"]))
     machine = request.get("fingerprint")
     if not machine:
         raise ValueError("The request has no 'fingerprint'")
     return machine
+
+
+def machine_from_text(text: str) -> str:
+    """The machine fingerprint in whatever the customer sent: their request
+    code (anywhere in the text, e.g. a whole email or the saved request file),
+    an older JSON request, or a bare fingerprint. ValueError if none."""
+    from src.licensing.request_code import fingerprint_from_text
+
+    return fingerprint_from_text(text)
 
 
 # -------------------------------------------------------------------------- inspect

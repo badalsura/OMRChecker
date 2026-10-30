@@ -65,7 +65,13 @@ export async function api(path, { method = "GET", json, form, raw = false, retry
     let errors = [];
     try {
       const data = await response.json();
-      detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+      if (response.status === 402 && data.detail && data.detail.error === "unlicensed") {
+        // The license ran out (or was replaced) while the app was open
+        if (state.onUnlicensed) state.onUnlicensed(data.detail);
+        detail = data.detail.message;
+      } else {
+        detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+      }
       errors = data.errors || [];
     } catch (e) {
       /* not JSON */

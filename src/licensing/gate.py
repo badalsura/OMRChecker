@@ -17,10 +17,12 @@ When the gate runs
 Licensing gates the **packaged desktop app** (the thing you distribute) — not a
 plain ``python main.py`` server run, which is meant to sit behind account/API-key
 permissions you control, not a per-machine license file. So by default the gate
-is active only in a frozen build (PyInstaller / Nuitka set ``sys.frozen``). Two
+is active only in a frozen build (PyInstaller sets ``sys.frozen``, Nuitka
+``__compiled__``). Two
 env vars override that single decision in ``licensing_active()``:
 
 * ``OMR_LICENSE_DISABLE=1`` — force the gate OFF (local dev, the test suite).
+  Ignored by a packaged build.
 * ``OMR_LICENSE_ENFORCE=1`` — force the gate ON from a source run (to test the
   gate, or to run a licensed server deployment deliberately).
 """
@@ -53,7 +55,10 @@ def _env_true(name: str) -> bool:
 
 
 def _disabled() -> bool:
-    return _env_true("OMR_LICENSE_DISABLE")
+    # Never in a packaged build: an environment variable must not unlock it
+    from src.licensing import paths
+
+    return _env_true("OMR_LICENSE_DISABLE") and not paths._frozen()
 
 
 def licensing_active() -> bool:
@@ -121,9 +126,16 @@ def clear_cache() -> None:
 def activation_request() -> dict:
     """What the customer sends the vendor to get a license: this machine's
     fingerprint and human-readable context."""
+    from src.licensing import request_code
+
     summary = current_machine_summary()
     summary["product"] = "OMRChecker"
-    summary["request_version"] = 1
+    summary["request_version"] = 2
+    # What the user copies or reads out: a short code, never the JSON
+    summary["code"] = request_code.encode(summary["fingerprint"])
+    summary["request_file"] = request_code.request_file_text(
+        summary["code"], summary.get("hostname", ""), summary.get("os", "")
+    )
     return summary
 
 

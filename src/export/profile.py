@@ -23,8 +23,13 @@ with which types.
       "csv": {"leadingZeros": "none" | "formula" | "apostrophe", "delimiter": ",", "bom": true},
       "xlsx": {"maxRowsPerSheet": 1048575, "highlight": true, "sheetName": "Results"},
       "pdf": {"mode": "table" | "sheets" | "both", "maxSheets": 500, "maxRows": 100000},
-      "sql": {"table": "omr_results", "url": null, "batchSize": 1000}
+      "sql": {"table": "omr_results", "url": null, "batchSize": 1000},
+      "format": "xlsx",               # the format the export screen picks (csv, xlsx, pdf, sqlite, sql)
+      "folder": "D:/Results"          # the export screen's Save to folder
     }
+
+A saved profile keeps everything the export screen sets except the database
+URL of format sql, which can hold a password.
 """
 
 import re
@@ -34,6 +39,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 FIELD_TYPES = ("text", "int", "decimal", "date", "bool")
+FORMATS = ("csv", "xlsx", "pdf", "sqlite", "sql")
 META_COLUMNS = (
     "file_name",
     "file_id",
@@ -99,6 +105,8 @@ class ExportProfile:
     pdf: Dict[str, Any] = field(default_factory=dict)
     sql: Dict[str, Any] = field(default_factory=dict)
     name: str = ""
+    format: Optional[str] = None
+    folder: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data):
@@ -123,6 +131,8 @@ class ExportProfile:
             pdf=dict(data.get("pdf") or {}),
             sql=dict(data.get("sql") or {}),
             name=str(data.get("name") or ""),
+            format=data.get("format") or None,
+            folder=str(data["folder"]) if data.get("folder") else None,
         )
         profile.validate()
         return profile
@@ -154,6 +164,8 @@ class ExportProfile:
         leading = self.csv.get("leadingZeros", "none")
         if leading not in ("none", "formula", "apostrophe"):
             raise ExportError("csv.leadingZeros must be none, formula or apostrophe")
+        if self.format is not None and self.format not in FORMATS:
+            raise ExportError(f"format must be one of {list(FORMATS)}")
         mode = self.pdf.get("mode", "table")
         if mode not in ("table", "sheets", "both"):
             raise ExportError("pdf.mode must be table, sheets or both")

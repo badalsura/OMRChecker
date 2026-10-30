@@ -689,7 +689,12 @@ python -m src.export --data-dir omr_data --template-id exam --view verified --fo
 
 A profile says which columns to write, under which names, in which order and
 with which types. Profiles can be saved by name (`PUT /export-profiles/{name}`,
-or **Save profile** in the GUI).
+or **Save profile** in the GUI). A saved profile may also carry `format` (csv,
+xlsx, pdf, sqlite or sql) and `folder`, which the Export window fills in when it
+loads the profile; `sql.url` is dropped when a profile is saved. In the GUI,
+**Download** and **Upload…** move profiles between computers as
+`{"kind": "omr-export-profile", "version": 1, "name": ..., "profile": {...}}`
+files.
 
 ```json
 {

@@ -36,3 +36,4 @@ license-keys/
 private_key.pem
 src/licensing/public_key.pem
 .license_state
+src/licensing/embedded_key.py

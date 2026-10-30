@@ -39,6 +39,7 @@ def make_license_guard(feature: str = FEATURE_CORE):
                     "error": "unlicensed",
                     "reason": status.reason.value,
                     "message": status.message,
+                    "action": status.action,
                 },
             )
 
@@ -68,5 +69,5 @@ def register(app, ctx):
         status = gate.install_license_bytes(data)
         if not status.valid:
             # A plain-string detail so the UI shows a clean message.
-            raise HTTPException(400, detail=status.message)
+            raise HTTPException(400, detail=f"{status.message} {status.action}".strip())
         return {"ok": True, **status.to_public_dict()}

@@ -56,6 +56,10 @@ ENTRY_APP = HERE / "omr_app.py"
 ENTRY_LAUNCHER = HERE / "omr_desktop.py"
 
 
+# Bundled folders holding executables, DLLs or model binaries
+RAW_DIRS = {"tesseract", "cloudflared", "models/paddleocr", "models/imprint"}
+
+
 def data_dirs(app_mode):
     """(source dir, bundled dest) pairs, mirroring packaging/omr.spec. Only the
     ones that exist are passed (optional bundles stay optional)."""
@@ -82,15 +86,6 @@ def data_files():
     files = [
         (ROOT / "docs" / "user-guide.md", "docs/user-guide.md"),
     ]
-    pubkey = ROOT / "src" / "licensing" / "public_key.pem"
-    if pubkey.is_file():
-        files.append((pubkey, "license/public_key.pem"))
-    else:
-        print(
-            "WARNING: src/licensing/public_key.pem is missing; the build will "
-            "not verify licenses. See docs/licensing.md.",
-            file=sys.stderr,
-        )
     ocr_build = ROOT / "packaging" / "ocr_build.json"
     if ocr_build.is_file():
         files.append((ocr_build, "ocr_build.json"))
@@ -152,6 +147,15 @@ NOFOLLOW = [
 ]
 
 
+def installed(module):
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def build_command(args):
     app_mode = not args.launcher
     entry = ENTRY_LAUNCHER if args.launcher else ENTRY_APP
@@ -187,10 +191,14 @@ def build_command(args):
 
     if app_mode:
         # pywebview + WebView2 through pythonnet/WinForms.
-        INCLUDE_PACKAGES_EXTRA = ["webview", "webview.platforms"]
-        for pkg in INCLUDE_PACKAGES_EXTRA:
-            cmd.append(f"--include-package={pkg}")
-        cmd += ["--include-module=clr"]
+        # Nuitka's pywebview plugin picks the Windows backends itself (the
+        # app imports winforms and edgechromium) and refuses any webview
+        # module asked for by hand
+        cmd.append("--include-module=clr")
+
+    if not app_mode:
+        # The launcher's window is Tk
+        cmd.append("--enable-plugin=tk-inter")
 
     for pkg in INCLUDE_PACKAGES:
         cmd.append(f"--include-package={pkg}")
@@ -199,12 +207,23 @@ def build_command(args):
     for pkg in PACKAGE_DATA_OPTIONAL:
         cmd.append(f"--include-package-data={pkg}")
     for mod in INCLUDE_MODULES:
-        cmd.append(f"--include-module={mod}")
+        # Nuitka stops on a module that is not installed (greenlet comes only
+        # with some SQLAlchemy installs)
+        if installed(mod):
+            cmd.append(f"--include-module={mod}")
+    # PyMuPDF's SWIG wrapper (pymupdf.mupdf) is millions of lines of C once
+    # compiled, and MSVC runs out of heap on it: ship PyMuPDF as bytecode
+    for pkg in ("pymupdf", "fitz"):
+        if installed(pkg):
+            cmd.append(f"--noinclude-custom-mode={pkg}:bytecode")
     for name in NOFOLLOW:
         cmd.append(f"--nofollow-import-to={name}")
 
     for src, dest in data_dirs(app_mode):
-        cmd.append(f"--include-data-dir={src}={dest}")
+        # --include-data-dir skips .exe/.dll/.bin, which would leave out
+        # tesseract.exe, its DLLs and cloudflared.exe: copy those folders raw
+        flag = "--include-raw-dir" if dest in RAW_DIRS else "--include-data-dir"
+        cmd.append(f"{flag}={src}={dest}")
     for src, dest in data_files():
         cmd.append(f"--include-data-files={src}={dest}")
 
@@ -230,6 +249,12 @@ def main(argv=None):
         "--dry-run", action="store_true", help="Print the command and exit"
     )
     args = parser.parse_args(argv)
+
+    # The license public key is compiled in (src/licensing/embedded_key.py)
+    sys.path.insert(0, str(HERE))
+    from embed_public_key import embed
+
+    embed()
 
     if os.name != "nt":
         print(

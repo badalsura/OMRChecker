@@ -13,9 +13,14 @@ Packaged (frozen) layout, portable next to the exe::
 If the exe folder is read-only the writable files fall back to
 %LOCALAPPDATA%\\OMRChecker\\license (same fallback the data dir uses).
 
+A packaged build verifies with the key compiled into it
+(src/licensing/embedded_key.py, written at build time from public_key.pem);
+OMR_LICENSE_PUBKEY and key files on disk count only in a source run, so a
+user cannot swap in a key of their own.
+
 Overrides, mainly for tests and for the vendor tool:
 
-    OMR_LICENSE_PUBKEY   path to the public key to verify against
+    OMR_LICENSE_PUBKEY   path to the public key to verify against (source runs)
     OMR_LICENSE_FILE     path to the installed license file
     OMR_LICENSE_DIR      base dir for the writable license/state files
 """
@@ -33,7 +38,8 @@ STATE_FILENAME = ".license_state"
 
 
 def _frozen() -> bool:
-    return getattr(sys, "frozen", False)
+    # PyInstaller sets sys.frozen; Nuitka marks every compiled module instead
+    return bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 
 
 def _app_dir() -> Path:
