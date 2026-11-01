@@ -37,7 +37,7 @@ This fork adds a production pipeline on top of the classic CLI:
 - automatic template generation from sample sheets
 - model training scaffolding and an accuracy benchmark
 
-See **[docs/engine-guide.md](docs/engine-guide.md)**.
+See **[docs/engine-guide.md](docs/engine-guide.md)**. A full reference of every feature, review flag and setting is in **[docs/reference/features-and-flags.md](docs/reference/features-and-flags.md)**, and of everything the program stores in **[docs/reference/storage-and-db.md](docs/reference/storage-and-db.md)**.
 
 ## 🎯 Features
 
