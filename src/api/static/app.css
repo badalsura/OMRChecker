@@ -178,8 +178,11 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 
 /* compare tab */
 .cmp-main { min-height: 380px; outline: none; }
-.cmp-review { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 18px; align-items: start; }
-.cmp-page { max-height: calc(100vh - 230px); overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+/* page | divider | panel | ribbon; the divider and the grip below set the panel's width and the height of both */
+.cmp-review { --cmp-h: calc(100vh - 250px); --cmp-side-w: 440px; display: grid; grid-template-columns: minmax(360px, 1fr) 10px var(--cmp-side-w) auto; grid-template-rows: minmax(0, 1fr); gap: 0 6px; align-items: stretch; height: var(--cmp-h); min-height: 300px; }
+.cmp-page-wrap { height: 100%; min-height: 0; }
+.cmp-review > * { min-height: 0; }
+.cmp-page { height: 100%; box-sizing: border-box; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 .cmp-page-inner { position: relative; }
 .cmp-img { display: block; width: 100%; }
 .cmp-img[hidden], .cmp-box[hidden] { display: none; }
@@ -189,14 +192,24 @@ textarea { width: 100%; font-family: var(--mono); font-size: 12px; }
 .cmp-box.decided { border-color: #1f9d55; background: rgba(31, 157, 85, 0.14); }
 .cmp-box.current { border: 3px solid #ff8c00; background: rgba(255, 140, 0, 0.12); box-shadow: 0 0 0 2px #fff, 0 0 0 9999px rgba(0, 0, 0, 0.28); z-index: 2; animation: cmp-pulse 1.4s ease-in-out 2; }
 @keyframes cmp-pulse { 50% { border-color: #d0342c; } }
-/* The right side is never taller than the page view: it scrolls inside, the action buttons stay in sight */
-.cmp-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; max-height: calc(100vh - 230px); overflow-y: auto; padding-right: 4px; }
+.cmp-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; height: 100%; overflow-y: auto; padding-right: 4px; }
 .cmp-side > * { flex-shrink: 0; }
-.cmp-side .cmp-actions { position: sticky; bottom: 0; background: var(--panel); padding-top: 6px; box-shadow: 0 -6px 8px -6px rgba(0, 0, 0, 0.12); }
+.cmp-split { cursor: col-resize; border-radius: 4px; position: relative; touch-action: none; }
+.cmp-split::after { content: ""; position: absolute; left: 3px; top: 50%; width: 4px; height: 44px; margin-top: -22px; border-radius: 2px; background: var(--border); }
+.cmp-split:hover, .cmp-split.on, .cmp-grip:hover, .cmp-grip.on { background: var(--accent-soft); }
+.cmp-split:hover::after, .cmp-split.on::after { background: var(--accent); }
+.cmp-grip { height: 10px; margin-top: 4px; cursor: row-resize; border-radius: 4px; position: relative; touch-action: none; }
+.cmp-grip::after { content: ""; position: absolute; top: 3px; left: 50%; width: 44px; height: 4px; margin-left: -22px; border-radius: 2px; background: var(--border); }
+.cmp-grip:hover::after, .cmp-grip.on::after { background: var(--accent); }
+.cmp-ribbon { display: flex; flex-direction: column; gap: 4px; width: 92px; height: 100%; overflow-y: auto; padding-left: 6px; border-left: 1px solid var(--border); }
+.cmp-ribbon button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 5px 4px; font-size: 12px; line-height: 1.2; text-align: center; white-space: normal; }
+.cmp-ribbon kbd { font-size: 10px; }
+.cmp-ribbon .primary kbd { background: rgba(255, 255, 255, 0.2); color: #fff; border-color: rgba(255, 255, 255, 0.5); }
+.cmp-ribbon hr { width: 100%; border: 0; border-top: 1px solid var(--border); margin: 3px 0; }
 .cmp-side h3 { margin: 0; font-size: 20px; font-family: var(--mono); }
 .cmp-file { word-break: break-all; font-size: 15px; }
 .cmp-file strong { font-size: 20px; }
-.cmp-zoom { width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.cmp-zoom { width: 100%; height: auto; display: block; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 .cmp-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .cmp-value { flex-direction: column; align-items: flex-start; padding: 8px 10px; }
 div.cmp-value { display: flex; border: 1px solid var(--border); border-radius: 6px; }
@@ -231,7 +244,7 @@ div.cmp-value { display: flex; border: 1px solid var(--border); border-radius: 6
 .cmp-sample td, .cmp-sample th { white-space: pre; font-family: var(--mono); font-size: 12px; }
 .cmp-mapping { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px; max-height: 260px; overflow: auto; }
 .cmp-mapping label { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
-@media (max-width: 900px) { .cmp-review { grid-template-columns: 1fr; } .cmp-side { max-height: none; overflow: visible; } }
+@media (max-width: 900px) { .cmp-review { grid-template-columns: 1fr; height: auto; } .cmp-page { height: 60vh; } .cmp-split, .cmp-grip { display: none; } .cmp-side, .cmp-ribbon { height: auto; overflow: visible; } .cmp-ribbon { flex-direction: row; flex-wrap: wrap; width: auto; border: 0; padding: 0; } }
 
 /* jobs */
 .source-row { margin: 8px 0 14px; align-items: stretch; }

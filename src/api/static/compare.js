@@ -283,45 +283,48 @@ function showSheet(sheet) {
     const box = boxStyle(item.box);
     if (box) inner.append(el("div", { class: "cmp-box", "data-i": i, "data-name": item.name, style: box, title: `${item.name}: theirs ${item.external || "(blank)"} · ours ${item.ours || "(blank)"}`, onclick: () => go(i) }));
   }
+  const rb = (key, label, onclick, title, extra = {}) => el("button", { onclick, title, ...extra }, el("kbd", {}, key), el("span", {}, label));
   main.append(
     el(
       "div",
-      { class: "cmp-review" },
+      { class: "cmp-review", id: "cmp-review" },
       el("div", { class: "cmp-page-wrap" }, badge, el("div", { class: "cmp-page" }, inner)),
+      el("div", { class: "cmp-split", title: "Drag to make the page or the panel wider (double-click: back to normal)", onpointerdown: dragSplit, ondblclick: () => setLayout({ side: null }) }),
       el(
         "div",
         { class: "cmp-side" },
-        el("div", { class: "cmp-file", title: sheet.file_name || sheet.scan_id }, el("strong", {}, sheet.file_name || sheet.scan_id.slice(0, 8)), sheet.key ? el("span", { class: "muted" }, ` · key ${sheet.key}`) : null, sheet.row_no ? el("span", { class: "muted" }, ` · their row ${sheet.row_no}`) : null),
-        el(
-          "div",
-          { class: "row gap wrap" },
-          viewSwitch(),
-          el("button", { class: "small", onclick: openInResults, title: "Open this sheet in Results to correct or regrade it; back here it is compared again (V)" }, el("kbd", {}, "V"), " Open in Results"),
-          el("button", { class: "small", id: "cmp-all", onclick: toggleAll, title: "Every compared field side by side, or the mismatches only (A)" }, el("kbd", {}, "A"), c.all ? " Mismatches only" : " All fields"),
-          sheet.save_to === "results" ? el("span", { class: "chip", title: "This comparison writes each choice to our results as a correction" }, "saves to our results") : null
-        ),
+        el("div", { class: "cmp-file", title: sheet.file_name || sheet.scan_id }, el("strong", {}, sheet.file_name || sheet.scan_id.slice(0, 8)), sheet.key ? el("span", { class: "muted" }, ` · key ${sheet.key}`) : null, sheet.row_no ? el("span", { class: "muted" }, ` · their row ${sheet.row_no}`) : null, sheet.save_to === "results" ? el("span", { class: "chip", title: "This comparison writes each choice to our results as a correction" }, "saves to our results") : null),
         el("div", { id: "cmp-pin", class: "cmp-pin" }),
         sheet.state === "done" ? el("div", { class: "rv-meta" }, `Reconciled by ${sheet.done_by || "someone"}: saving changes it.`) : null,
         el("canvas", { class: "cmp-zoom", width: 420, height: ZOOM_HEIGHT[zoomMode()] }),
-        el("div", { class: "row gap wrap cmp-zoom-bar" }, el("span", { class: "muted small", id: "cmp-zoom-view" }), el("span", { class: "spacer" }), el("button", { class: "small", id: "cmp-wide", onclick: toggleWide, title: "Close-up size: the field alone, the field with its neighbours, or a wide slice of the page (W steps through them)" }, el("kbd", {}, "W"), zoomButtonText())),
+        el("div", { class: "muted small", id: "cmp-zoom-view" }),
         el("div", { id: "cmp-current" }),
         el("input", { id: "cmp-filter", class: "small", placeholder: "Show only: q1..q50, roll", value: c.filter, hidden: !c.all, spellcheck: "false", oninput: (e) => { c.filter = e.target.value; render(); } }),
-        el("div", { class: `cmp-list${c.all ? " all" : ""}`, id: "cmp-list" }),
-        el(
-          "div",
-          { class: "cmp-actions" },
-          el("button", { onclick: () => choose("external"), title: "Keep the other reader's value (1)" }, el("kbd", {}, "1"), " External"),
-          el("button", { onclick: () => choose("ours"), title: "Keep our value (2)" }, el("kbd", {}, "2"), " Ours"),
-          el("button", { onclick: editValue, title: "Type the right value yourself (E)" }, el("kbd", {}, "E"), " Type value"),
-          el("button", { onclick: undo, title: "Undo the last choice, or go back a field (R)" }, el("kbd", {}, "R"), " Undo"),
-          el("button", { onclick: () => go(c.idx + 1), title: "Next mismatch on this sheet (S)" }, el("kbd", {}, "S"), " Next mismatch"),
-          el("button", { onclick: () => skipSheet(false), title: "Skip this sheet without saving (Tab)" }, el("kbd", {}, "Tab"), " Skip sheet"),
-          el("button", { onclick: () => skipSheet(true), title: "Previous sheet (Shift+Tab)" }, el("kbd", {}, "⇧Tab"), " Previous sheet"),
-          el("button", { class: "primary", onclick: saveAndNext, title: "Save the choices and go to the next sheet (Enter)" }, el("kbd", {}, "Enter"), " Save and next")
-        )
+        el("div", { class: `cmp-list${c.all ? " all" : ""}`, id: "cmp-list" })
+      ),
+      // Every button in one column at the right edge, so the panel keeps its room for the data
+      el(
+        "div",
+        { class: "cmp-ribbon", role: "toolbar", "aria-orientation": "vertical" },
+        rb("1", "External", () => choose("external"), "Keep the other reader's value (1)"),
+        rb("2", "Ours", () => choose("ours"), "Keep our value (2)"),
+        rb("E", "Type value", editValue, "Type the right value yourself (E)"),
+        rb("R", "Undo", undo, "Undo the last choice, or go back a field (R)"),
+        rb("S", "Next field", () => go(c.idx + 1), "Next mismatch on this sheet (S)"),
+        el("hr"),
+        rb("Enter", "Save + next", saveAndNext, "Save the choices and go to the next sheet (Enter)", { class: "primary" }),
+        rb("Tab", "Skip sheet", () => skipSheet(false), "Skip this sheet without saving (Tab)"),
+        rb("⇧Tab", "Previous", () => skipSheet(true), "Previous sheet (Shift+Tab)"),
+        el("hr"),
+        rb("O", VIEW_NAMES[c.view], cycleView, "Which page is shown: aligned, original scan or colour (O switches)", { id: "cmp-view" }),
+        rb("W", zoomButtonText(), toggleWide, "Close-up size: the field alone, the field with its neighbours, or a wide slice of the page (W steps through them)", { id: "cmp-wide" }),
+        rb("A", c.all ? "Mismatches" : "All fields", toggleAll, "Every compared field side by side, or the mismatches only (A)", { id: "cmp-all" }),
+        rb("V", "In Results", openInResults, "Open this sheet in Results to correct or regrade it; back here it is compared again (V)")
       )
-    )
+    ),
+    el("div", { class: "cmp-grip", title: "Drag to make the page and the panel taller or shorter (double-click: back to normal)", onpointerdown: dragHeight, ondblclick: () => setLayout({ height: null }) })
   );
+  applyLayout();
   img.addEventListener("load", () => {
     drawZoom();
     focusBox(false);
@@ -336,7 +339,7 @@ function toggleAll() {
   c.all = !c.all;
   c.peek = null;
   const button = document.getElementById("cmp-all");
-  if (button) button.lastChild.textContent = c.all ? " Mismatches only" : " All fields";
+  if (button) button.lastChild.textContent = c.all ? "Mismatches" : "All fields";
   if (c.all && !c.fields) return loadFields();
   matchBoxes();
   render();
@@ -474,16 +477,7 @@ function renderAllList(list) {
   list.prepend(el("div", { class: "cmp-row head muted small" }, el("span", {}, `${rows.length} of ${c.fields.list.length}`), el("span", {}, "theirs"), el("span", {}, "ours"), el("span", {}, `${counts.mismatch || 0} differ · ${counts.match || 0} same`)));
 }
 
-// O cycles the page shown; the three buttons show which one is on
-function viewSwitch() {
-  return el(
-    "div",
-    { class: "seg", id: "cmp-view", role: "group", title: "Which page is shown: O switches to the next one" },
-    el("kbd", {}, "O"),
-    VIEWS.map((view) => el("button", { class: `small${view === c.view ? " on" : ""}`, "data-view": view, "aria-pressed": String(view === c.view), onclick: () => setView(view) }, VIEW_NAMES[view]))
-  );
-}
-
+// O cycles the page shown; its ribbon button and the badge on the page say which one is on
 function cycleView() {
   setView(VIEWS[(VIEWS.indexOf(c.view) + 1) % VIEWS.length]);
   toast(`Showing: ${VIEW_NAMES[c.view]}`, "", 1200);
@@ -498,11 +492,8 @@ function setView(view) {
 // scan each box follows the outline mapped back through the page transform
 // (a box with no outline there, such as a joined value, is hidden)
 async function showView() {
-  for (const button of document.querySelectorAll("#cmp-view button")) {
-    const on = button.dataset.view === c.view;
-    button.classList.toggle("on", on);
-    button.setAttribute("aria-pressed", String(on));
-  }
+  const viewButton = document.getElementById("cmp-view");
+  if (viewButton) viewButton.lastChild.textContent = VIEW_NAMES[c.view];
   const badge = document.getElementById("cmp-view-badge");
   if (badge) badge.textContent = VIEW_NAMES[c.view];
   const alt = document.querySelector(".cmp-alt");
@@ -717,8 +708,64 @@ function zoomMode() {
 }
 
 function zoomButtonText() {
-  const next = ZOOMS[(ZOOMS.indexOf(zoomMode()) + 1) % ZOOMS.length];
-  return ` ${ZOOM_NAMES[zoomMode()]} → ${ZOOM_NAMES[next].toLowerCase()}`;
+  return `Close-up: ${ZOOM_NAMES[zoomMode()].toLowerCase()}`;
+}
+
+// The page and the panel: how wide the panel is and how tall both are, set
+// by dragging the divider and the grip under them; remembered
+function layout() {
+  try {
+    return JSON.parse(safeStorage("get", "omr_cmp_layout") || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function setLayout(change) {
+  safeStorage("set", "omr_cmp_layout", JSON.stringify({ ...layout(), ...change }));
+  applyLayout();
+  drawZoom();
+}
+
+function applyLayout() {
+  const review = document.getElementById("cmp-review");
+  if (!review) return;
+  const { side, height } = layout();
+  review.style.setProperty("--cmp-side-w", side ? `${side}px` : "");
+  review.style.setProperty("--cmp-h", height ? `${height}px` : "");
+}
+
+function drag(e, move, done) {
+  e.preventDefault();
+  const handle = e.currentTarget;
+  handle.setPointerCapture(e.pointerId);
+  handle.classList.add("on");
+  const onMove = (ev) => move(ev);
+  const onUp = (ev) => {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.classList.remove("on");
+    done(ev);
+  };
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+}
+
+function dragSplit(e) {
+  const review = document.getElementById("cmp-review");
+  const ribbon = review.querySelector(".cmp-ribbon");
+  const width = (ev) => {
+    const right = ribbon.getBoundingClientRect().left - 12;
+    return Math.round(Math.min(Math.max(300, right - ev.clientX), review.clientWidth - 360));
+  };
+  drag(e, (ev) => review.style.setProperty("--cmp-side-w", `${width(ev)}px`), (ev) => setLayout({ side: width(ev) }));
+}
+
+function dragHeight(e) {
+  const review = document.getElementById("cmp-review");
+  const top = review.getBoundingClientRect().top;
+  const height = (ev) => Math.round(Math.max(300, ev.clientY - top));
+  drag(e, (ev) => review.style.setProperty("--cmp-h", `${height(ev)}px`), (ev) => setLayout({ height: height(ev) }));
 }
 
 function toggleWide() {
@@ -738,6 +785,16 @@ function drawZoom() {
   if (!canvas || !c.image || !item || !item.box || !c.sheet.page_size) return;
   const { img, box, quad, scale } = zoomSource(item);
   if (!img.naturalWidth) return;
+  // Sharp at any panel width: as many canvas pixels as the screen shows
+  const shown = canvas.clientWidth;
+  if (shown) {
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.round(shown * dpr);
+    // A wider panel shows more around the field, not a taller close-up
+    const height = Math.round(ZOOM_HEIGHT[zoomMode()] * Math.min(1.25, shown / 420) * dpr);
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+  }
   const [x, y, w, h] = [box[0] * scale[0], box[1] * scale[1], box[2] * scale[0], box[3] * scale[1]];
   let sx, sy, sw, sh;
   const mode = zoomMode();
@@ -764,7 +821,7 @@ function drawZoom() {
   const dy = (canvas.height - sh * fit) / 2;
   ctx.drawImage(img, sx, sy, sw, sh, dx, dy, sw * fit, sh * fit);
   ctx.strokeStyle = "#ff8c00";
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 2 * (window.devicePixelRatio || 1);
   if (quad) {
     ctx.beginPath();
     quad.forEach(([px, py], i) => ctx[i ? "lineTo" : "moveTo"](dx + (px * scale[0] - sx) * fit, dy + (py * scale[1] - sy) * fit));
