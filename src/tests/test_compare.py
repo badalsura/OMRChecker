@@ -728,3 +728,23 @@ def test_a_pinned_field_is_returned_compared_or_not(compared):
     roll = client.get(url, params={"pin": "roll1"}).json()["pinned"]
     assert roll["external"] is None and roll["ours"] == result["responses"]["roll1"]
     assert "pinned" not in client.get(url).json()
+
+
+def test_find_goes_to_a_sheet_by_key_file_name_or_place(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview)
+    find = lambda q: client.get(f"/compare/sessions/{session['id']}/find", params={"q": q})
+    first = client.post(f"/compare/sessions/{session['id']}/claim", json={}).json()["sheet"]
+    assert find("#1").json()["scan_id"] == first["scan_id"]
+    assert find(first["key"]).json()["scan_id"] == first["scan_id"]
+    assert find(first["file_name"].upper()).json()["scan_id"] == first["scan_id"]
+    stem = first["file_name"].rsplit(".", 1)[0]
+    assert find(f"{stem}.").json()["scan_id"] == first["scan_id"]
+    assert find("#999").status_code == 404
+    assert find("no-such-file-xyz").status_code == 404
+    # Going there with claim opens that very sheet
+    again = client.post(f"/compare/sessions/{session['id']}/claim", json={"scan_id": first["scan_id"]}).json()["sheet"]
+    assert again["scan_id"] == first["scan_id"]
+    # The third sheet agrees everywhere: nothing to review, and it says so
+    answer = find("100003")
+    assert answer.status_code == 409 and "nothing to review" in answer.json()["detail"]

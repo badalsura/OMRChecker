@@ -108,6 +108,7 @@
         <button id="cmp-rebuild" class="ghost" title="Compare again with our current values (after corrections in the review queue). Runs in the background; choices whose two values did not change are kept.">Compare again</button>
         <button id="cmp-export" class="ghost">Export…</button>
         <button id="cmp-delete" class="ghost danger" title="Delete this comparison and its choices; read results are not touched">Delete</button>
+        <form id="cmp-goto" class="row gap" autocomplete="off" title="Go to one sheet: its roll/key (e.g. 112001), its file name or a part of it, or #12 for the 12th sheet to review (G)"><input id="cmp-goto-q" class="small" placeholder="Go to sheet: key, file or #12" spellcheck="false" /><button class="small ghost" type="submit">Go</button></form>
         <span class="spacer"></span>
         <span id="cmp-progress" class="muted"></span>
       </div>
@@ -125,7 +126,7 @@
         <kbd>Enter</kbd> save and next sheet ·
         <kbd>O</kbd> next page view (aligned / original / colour; the highlighted button is the one on) ·
         <kbd>V</kbd> open in Results (compared again when you come back) ·
-        <kbd>W</kbd> wider close-up / field only ·
+        <kbd>W</kbd> close-up size (field, nearby, wide) · <kbd>G</kbd> go to a sheet ·
         <kbd>A</kbd> all fields side by side / mismatches only ·
         choices go to a reconciled layer, or to our results when the rules say so; a sheet you have open is locked for others
       </div>

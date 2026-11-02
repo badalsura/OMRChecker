@@ -51,6 +51,10 @@ export function initCompare() {
   document.getElementById("cmp-delete").addEventListener("click", removeSession);
   document.getElementById("cmp-export").addEventListener("click", exportMenu);
   document.getElementById("cmp-session").addEventListener("change", (e) => openSession(e.target.value));
+  document.getElementById("cmp-goto").addEventListener("submit", (e) => {
+    e.preventDefault();
+    gotoSheet();
+  });
   document.addEventListener("keydown", onKey);
   // Template names arrive after the tab may have opened
   on("templates", () => {
@@ -97,7 +101,7 @@ async function loadSessions(reopen = false) {
 
 function syncButtons() {
   const has = Boolean(document.getElementById("cmp-session").value);
-  for (const id of ["cmp-rules", "cmp-rebuild", "cmp-delete", "cmp-export"]) document.getElementById(id).disabled = !has;
+  for (const id of ["cmp-rules", "cmp-rebuild", "cmp-delete", "cmp-export", "cmp-goto-q"]) document.getElementById(id).disabled = !has;
 }
 
 async function openSession(id) {
@@ -153,6 +157,23 @@ function showEmpty(text, extra) {
 // ---------------------------------------------------------------------------
 // moving between sheets
 // ---------------------------------------------------------------------------
+// Jump to one sheet by its key, file name or "#N" (its place among the
+// sheets to review); a sheet with nothing to review says why
+async function gotoSheet() {
+  const input = document.getElementById("cmp-goto-q");
+  const text = input.value.trim();
+  if (!c.session || !text) return;
+  try {
+    const found = await api(`/compare/sessions/${c.session.id}/find?q=${encodeURIComponent(text)}`);
+    if (c.sheet && c.sheet.scan_id === found.scan_id) return toast("That sheet is already open", "ok");
+    await claim({ scan_id: found.scan_id });
+    input.value = "";
+    input.blur();
+  } catch (error) {
+    toast(error.message, "error", 7000);
+  }
+}
+
 async function claim(body) {
   if (!c.session || c.busy) return;
   c.busy = true;
@@ -281,8 +302,8 @@ function showSheet(sheet) {
         ),
         el("div", { id: "cmp-pin", class: "cmp-pin" }),
         sheet.state === "done" ? el("div", { class: "rv-meta" }, `Reconciled by ${sheet.done_by || "someone"}: saving changes it.`) : null,
-        el("canvas", { class: "cmp-zoom", width: 420, height: wideZoom() ? 260 : 150 }),
-        el("div", { class: "row gap wrap cmp-zoom-bar" }, el("span", { class: "muted small", id: "cmp-zoom-view" }), el("span", { class: "spacer" }), el("button", { class: "small", id: "cmp-wide", onclick: toggleWide, title: "Close-up of the field alone, or of the field with the rows and columns around it (W)" }, el("kbd", {}, "W"), wideZoom() ? " Field only" : " Wider view")),
+        el("canvas", { class: "cmp-zoom", width: 420, height: ZOOM_HEIGHT[zoomMode()] }),
+        el("div", { class: "row gap wrap cmp-zoom-bar" }, el("span", { class: "muted small", id: "cmp-zoom-view" }), el("span", { class: "spacer" }), el("button", { class: "small", id: "cmp-wide", onclick: toggleWide, title: "Close-up size: the field alone, the field with its neighbours, or a wide slice of the page (W steps through them)" }, el("kbd", {}, "W"), zoomButtonText())),
         el("div", { id: "cmp-current" }),
         el("input", { id: "cmp-filter", class: "small", placeholder: "Show only: q1..q50, roll", value: c.filter, hidden: !c.all, spellcheck: "false", oninput: (e) => { c.filter = e.target.value; render(); } }),
         el("div", { class: `cmp-list${c.all ? " all" : ""}`, id: "cmp-list" }),
@@ -684,18 +705,30 @@ function zoomSource(item) {
   return { img, box: item.box, scale: [img.naturalWidth / size[0], img.naturalHeight / size[1]] };
 }
 
-// The wide close-up shows the field with the questions around it, centred
-// on the current field; it is the default and remembered
-function wideZoom() {
-  return safeStorage("get", "omr_cmp_zoom") !== "field";
+// The close-up: the field alone, the field with its neighbours, or a wide
+// slice of the page centred on the field. W steps through them; remembered
+const ZOOMS = ["field", "medium", "wide"];
+const ZOOM_NAMES = { field: "Field only", medium: "Nearby", wide: "Wide" };
+const ZOOM_HEIGHT = { field: 150, medium: 205, wide: 260 };
+
+function zoomMode() {
+  const mode = safeStorage("get", "omr_cmp_zoom");
+  return ZOOMS.includes(mode) ? mode : "wide";
+}
+
+function zoomButtonText() {
+  const next = ZOOMS[(ZOOMS.indexOf(zoomMode()) + 1) % ZOOMS.length];
+  return ` ${ZOOM_NAMES[zoomMode()]} → ${ZOOM_NAMES[next].toLowerCase()}`;
 }
 
 function toggleWide() {
-  safeStorage("set", "omr_cmp_zoom", wideZoom() ? "field" : "wide");
+  const mode = ZOOMS[(ZOOMS.indexOf(zoomMode()) + 1) % ZOOMS.length];
+  safeStorage("set", "omr_cmp_zoom", mode);
   const canvas = document.querySelector(".cmp-zoom");
-  if (canvas) canvas.height = wideZoom() ? 260 : 150;
+  if (canvas) canvas.height = ZOOM_HEIGHT[mode];
   const button = document.getElementById("cmp-wide");
-  if (button) button.lastChild.textContent = wideZoom() ? " Field only" : " Wider view";
+  if (button) button.lastChild.textContent = zoomButtonText();
+  toast(`Close-up: ${ZOOM_NAMES[mode].toLowerCase()}`, "ok", 1200);
   drawZoom();
 }
 
@@ -707,9 +740,12 @@ function drawZoom() {
   if (!img.naturalWidth) return;
   const [x, y, w, h] = [box[0] * scale[0], box[1] * scale[1], box[2] * scale[0], box[3] * scale[1]];
   let sx, sy, sw, sh;
-  if (wideZoom()) {
-    // About half the page wide, the canvas's shape, the field in the middle
-    sw = Math.min(img.naturalWidth, Math.max(w * 2.5, img.naturalWidth * 0.45));
+  const mode = zoomMode();
+  if (mode !== "field") {
+    // The canvas's shape, the field in the middle: about half the page wide
+    // (wide) or a quarter of it (nearby)
+    const [times, part] = mode === "wide" ? [2.5, 0.45] : [1.6, 0.26];
+    sw = Math.min(img.naturalWidth, Math.max(w * times, img.naturalWidth * part));
     sh = Math.min(img.naturalHeight, (sw * canvas.height) / canvas.width);
     sx = Math.min(Math.max(0, x + w / 2 - sw / 2), img.naturalWidth - sw);
     sy = Math.min(Math.max(0, y + h / 2 - sh / 2), img.naturalHeight - sh);
@@ -885,6 +921,9 @@ function onKey(e) {
   } else if (key === "w" || key === "W") {
     e.preventDefault();
     toggleWide();
+  } else if (key === "g" || key === "G") {
+    e.preventDefault();
+    document.getElementById("cmp-goto-q").focus();
   }
 }
 

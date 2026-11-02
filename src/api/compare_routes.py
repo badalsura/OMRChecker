@@ -12,6 +12,7 @@ OMR scanner such as Scantron OpScan 6, or any CSV / fixed-width file).
     GET    /compare/sessions/{id}/sheets/{scan}/fields   every compared field side by side
     DELETE /compare/sessions/{id}                   delete it and its decisions
     POST   /compare/sessions/{id}/claim             lock the next / previous / a given sheet
+    GET    /compare/sessions/{id}/find?q=           a sheet by its key, file name or #position
     POST   /compare/sessions/{id}/sheets/{scan}     save the choices for one sheet
     POST   /compare/sessions/{id}/sheets/{scan}/release   let go of a sheet (skip)
     GET    /compare/sessions/{id}/sheets/{scan}/page      the aligned page (JPEG)
@@ -668,6 +669,56 @@ def register(app, ctx, secured):
         if sheet is None:
             return {"sheet": None, "progress": store.progress(session_id)}
         return {"sheet": sheet_payload(session, sheet)}
+
+    REVIEWABLE = ("pending", "partial", "done")
+    STATE_WORDS = {
+        "clean": "agrees on every compared field, so there is nothing to review",
+        "no_record": "has no row in their file",
+        "not_read": "could not be read by us",
+        "replaced": "is an older scan of a file read again (its newest scan is compared)",
+        "duplicate": "is one of several scans of the same file, which are not compared",
+    }
+
+    @app.get("/compare/sessions/{session_id}/find", tags=["compare"], dependencies=secured)
+    def compare_find(session_id: str, q: str = Query(..., min_length=1)):
+        """One sheet of the comparison: by its key (their SEQ, our file
+        number), its file name (whole or a unique part) or "#N", its place
+        among the sheets to review. A sheet with nothing to review says why."""
+        session = session_or_404(session_id)
+        text = q.strip()
+        normalize = (session["settings"].get("key") or {}).get("normalize") or "digits"
+        sheets = store.query(
+            "SELECT scan_id, ord, key, file_name, state FROM sheets WHERE session_id=? ORDER BY ord",
+            (session_id,),
+        )
+        found = []
+        if text.startswith("#") and text[1:].strip().isdigit():
+            n = int(text[1:])
+            review = [row for row in sheets if row["state"] in REVIEWABLE]
+            if not 1 <= n <= len(review):
+                raise HTTPException(404, f"There are {len(review)} sheets to review: pick #1 to #{len(review)}")
+            found = [review[n - 1]]
+        if not found:
+            key = compare.key_of(text, normalize, file_like=True)
+            found = [row for row in sheets if key and row["key"] == key]
+        if not found:
+            low = text.casefold()
+            found = [row for row in sheets if (row["file_name"] or "").casefold() == low]
+            if not found:
+                found = [row for row in sheets if low in (row["file_name"] or "").casefold()]
+        if not found:
+            raise HTTPException(404, f"No sheet of this comparison matches '{text}'")
+        reviewable = [row for row in found if row["state"] in REVIEWABLE]
+        if not reviewable:
+            row = found[0]
+            raise HTTPException(
+                409,
+                f"{row['file_name'] or row['key']} {STATE_WORDS.get(row['state'], row['state'])}",
+            )
+        if len(reviewable) > 1:
+            names = ", ".join(row["file_name"] or row["key"] for row in reviewable[:5])
+            raise HTTPException(409, f"{len(reviewable)} sheets match '{text}': {names}…")
+        return reviewable[0]
 
     @app.post(
         "/compare/sessions/{session_id}/sheets/{scan_id}",
