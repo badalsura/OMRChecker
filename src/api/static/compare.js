@@ -807,12 +807,12 @@ function drawZoom() {
     sx = Math.min(Math.max(0, x + w / 2 - sw / 2), img.naturalWidth - sw);
     sy = Math.min(Math.max(0, y + h / 2 - sh / 2), img.naturalHeight - sh);
   } else if (mode === "medium") {
-    // Between the two: the field with about two rows above and below it
-    // and a little room at the sides
-    const unit = Math.min(w, h);
-    sh = Math.min(img.naturalHeight, h + 4 * unit);
-    sw = Math.min(img.naturalWidth, Math.max(w + 2 * unit, sh * aspect));
-    sh = Math.min(img.naturalHeight, Math.max(sh, sw / aspect));
+    // Halfway between field only and wide, on both sides: the field with
+    // its neighbours left and right as well as above and below
+    const fieldWide = w + 2 * Math.max(16, h * 0.8);
+    const pageWide = Math.max(w * 2.5, img.naturalWidth * 0.45);
+    sw = Math.min(img.naturalWidth, (fieldWide + pageWide) / 2);
+    sh = Math.min(img.naturalHeight, Math.max(h + 4 * Math.min(w, h), sw / aspect));
     sx = Math.min(Math.max(0, x + w / 2 - sw / 2), img.naturalWidth - sw);
     sy = Math.min(Math.max(0, y + h / 2 - sh / 2), img.naturalHeight - sh);
   } else {
