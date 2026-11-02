@@ -798,12 +798,21 @@ function drawZoom() {
   const [x, y, w, h] = [box[0] * scale[0], box[1] * scale[1], box[2] * scale[0], box[3] * scale[1]];
   let sx, sy, sw, sh;
   const mode = zoomMode();
-  if (mode !== "field") {
-    // The canvas's shape, the field in the middle: about half the page wide
-    // (wide) or a quarter of it (nearby)
-    const [times, part] = mode === "wide" ? [2.5, 0.45] : [1.6, 0.26];
-    sw = Math.min(img.naturalWidth, Math.max(w * times, img.naturalWidth * part));
-    sh = Math.min(img.naturalHeight, (sw * canvas.height) / canvas.width);
+  const aspect = canvas.width / canvas.height;
+  if (mode === "wide") {
+    // About half the page wide, the field in the middle: the same slice of
+    // the page whatever the panel's width
+    sw = Math.min(img.naturalWidth, Math.max(w * 2.5, img.naturalWidth * 0.45));
+    sh = Math.min(img.naturalHeight, (sw * ZOOM_HEIGHT.wide) / 420);
+    sx = Math.min(Math.max(0, x + w / 2 - sw / 2), img.naturalWidth - sw);
+    sy = Math.min(Math.max(0, y + h / 2 - sh / 2), img.naturalHeight - sh);
+  } else if (mode === "medium") {
+    // Between the two: the field with about two rows above and below it
+    // and a little room at the sides
+    const unit = Math.min(w, h);
+    sh = Math.min(img.naturalHeight, h + 4 * unit);
+    sw = Math.min(img.naturalWidth, Math.max(w + 2 * unit, sh * aspect));
+    sh = Math.min(img.naturalHeight, Math.max(sh, sw / aspect));
     sx = Math.min(Math.max(0, x + w / 2 - sw / 2), img.naturalWidth - sw);
     sy = Math.min(Math.max(0, y + h / 2 - sh / 2), img.naturalHeight - sh);
   } else {
