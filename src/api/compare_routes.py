@@ -16,6 +16,7 @@ OMR scanner such as Scantron OpScan 6, or any CSV / fixed-width file).
     POST   /compare/sessions/{id}/sheets/{scan}/release   let go of a sheet (skip)
     GET    /compare/sessions/{id}/sheets/{scan}/page      the aligned page (JPEG)
     GET    /compare/sessions/{id}/export?kind=      reconciled | audit | unmatched (CSV)
+    POST   /compare/preview/{token}/match           before comparing: how many of their rows find our sheets
 
 A comparison runs in the background, a part of the sheets at a time: the
 first sheets can be reviewed while the rest is compared, and the session
@@ -107,6 +108,14 @@ class DecideBody(BaseModel):
 class ReparseBody(BaseModel):
     template_id: str
     parse: Dict = Field(default_factory=dict)
+
+
+class MatchBody(BaseModel):
+    template_id: str
+    job_id: Optional[str] = None
+    parse: Dict = Field(default_factory=dict)
+    mapping: Dict[str, Optional[str]] = Field(default_factory=dict)
+    key: KeySpec = Field(default_factory=KeySpec)
 
 
 class ProfileBody(BaseModel):
@@ -369,6 +378,82 @@ def register(app, ctx, secured):
             "mapping": compare.suggest_mapping(columns, names, questions),
             "key": compare.suggest_key(columns, names, imprint),
             "rules": compare.DEFAULT_RULES,
+        }
+
+    @app.post(
+        "/compare/preview/{token}/match", tags=["compare"], dependencies=secured
+    )
+    def compare_match_check(token: str, body: MatchBody):
+        """Before comparing: how many of their rows find one of our sheets
+        with this key, examples of those that do not, and, when a job is
+        picked, the other jobs that hold sheets for their unmatched rows."""
+        template_json = template_or_404(body.template_id)
+        folder = uploads / token
+        if not token.isalnum() or not folder.is_dir():
+            raise HTTPException(404, "Read the file again (the preview expired)")
+        mapping = {k: v for k, v in body.mapping.items() if v}
+        session = {
+            "settings": {
+                "parse": body.parse,
+                "mapping": mapping,
+                "key": body.key.model_dump(),
+                "rules": {"fields": "all"},
+            }
+        }
+        try:
+            plan = compare.prepare(session, compare.load_source(folder), template_json)
+        except compare.CompareError as error:
+            fail(error)
+
+        def keyed(scans):
+            values = None
+            if plan["ours"] not in ("file", "order"):
+                values = key_values(scans, plan["ours"])
+            return compare.sheet_keys(plan, scans, load_result, values)
+
+        scans = our_sheets(body.template_id, body.job_id)
+        ours = {value: row for _, row, value in keyed(scans) if value}
+        theirs = {value: i for value, (i, _) in plan["external"].items()}
+        found = [value for value in theirs if value in ours]
+        missing = sorted(
+            (value for value in theirs if value not in ours), key=lambda v: theirs[v]
+        )
+        extra = [row for value, row in ours.items() if value not in theirs]
+        suggestions = []
+        if missing and body.job_id and not plan["by_order"]:
+            wanted = set(missing)
+            per_job = {}
+            for _, row, value in keyed(our_sheets(body.template_id, None)):
+                if value in wanted and row.get("job_id") != body.job_id:
+                    per_job.setdefault(row.get("job_id"), set()).add(value)
+            suggestions = sorted(
+                (
+                    {"job_id": job, "rows": len(values)}
+                    for job, values in per_job.items()
+                    if job
+                ),
+                key=lambda item: -item["rows"],
+            )[:3]
+        return {
+            "rows": plan["rows"],
+            "sheets": len(scans),
+            "matched": len(found),
+            "their_unmatched": len(missing) + len(plan["unmatched"]),
+            "their_examples": [
+                {"row": theirs[value] + 1, "key": value} for value in missing[:5]
+            ]
+            + [
+                {"row": row_no, "key": value, "reason": reason}
+                for row_no, value, reason in plan["unmatched"][:3]
+            ],
+            "our_unmatched": len(extra),
+            "our_examples": [
+                {"file": row.get("file_name"), "key": value}
+                for value, row in list(
+                    (v, r) for v, r in ours.items() if v not in theirs
+                )[:5]
+            ],
+            "other_jobs": suggestions,
         }
 
     @app.get("/compare/profiles", tags=["compare"], dependencies=secured)
@@ -850,13 +935,15 @@ def register(app, ctx, secured):
                 for row in store.audit(session_id)
             )
         elif kind == "unmatched":
-            header = ["side", "row_or_file", "key", "reason"]
+            # Their row number and our file name in columns of their own, so
+            # a row number is not read as a key
+            header = ["side", "their_row", "our_file", "key", "reason"]
             external = [
-                ["external", row["row_no"], row["key"], row["reason"]]
+                ["external", row["row_no"], "", row["key"], row["reason"]]
                 for row in store.unmatched(session_id)
             ]
             ours = [
-                ["ours", sheet["file_name"], sheet["key"], sheet["state"]]
+                ["ours", "", sheet["file_name"], sheet["key"], sheet["state"]]
                 for sheet in sheets
                 if sheet["state"] in ("no_record", "duplicate", "not_read")
             ]

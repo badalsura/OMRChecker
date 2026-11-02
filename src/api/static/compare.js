@@ -9,7 +9,7 @@
 // Choices go to the reconciled layer on the server; with the rule "save to our
 // results" they also become corrections of our results. A comparison runs in
 // the background: review starts on the first sheets while a counter shows the rest.
-import { api, chip, confidenceColor, displayName, el, emit, modal, on, safeStorage, saveAs, scrollWithin, state, toast, url } from "./api.js";
+import { api, chip, confidenceColor, displayName, el, emit, modal, on, safeStorage, saveAs, state, toast, url } from "./api.js";
 import { pickProfileFiles, saveProfileFile } from "./profile_files.js";
 
 const VIEWS = ["aligned", "original", "color"];
@@ -76,7 +76,7 @@ async function loadSessions(reopen = false) {
   for (const s of c.sessions) {
     const template = state.templates.find((t) => t.id === s.template_id);
     const left = s.progress.open;
-    select.append(el("option", { value: s.id }, `${s.name} · ${displayName(template && template.name, s.template_id)} · ${left ? `${left} sheets open` : "finished"}`));
+    select.append(el("option", { value: s.id }, `${s.name} · ${displayName(template && template.name, s.template_id)} · ${left ? `${left} sheet${left === 1 ? "" : "s"} left` : "finished"}`));
   }
   const pick = c.sessions.find((s) => s.id === wanted) || c.sessions[0];
   select.value = pick ? pick.id : "";
@@ -153,9 +153,9 @@ async function claim(body) {
       if (data.progress) c.session.progress = data.progress;
       const summary = c.session.summary || {};
       const left = data.progress ? data.progress.open : 0;
-      if (c.session.building) return showEmpty(left ? `The ${left} open sheet${left === 1 ? " is" : "s are"} being worked on by someone else; more come as the comparison goes on.` : "Comparing… the first sheets with a mismatch show here as soon as they are found.");
+      if (c.session.building) return showEmpty(left ? `The ${left} sheet${left === 1 ? "" : "s"} left ${left === 1 ? "is" : "are"} open for someone else; more come as the comparison goes on.` : "Comparing… the first sheets with a mismatch show here as soon as they are found.");
       return showEmpty(
-        summary.error ? `Comparing stopped: ${summary.error}. Use Compare again.` : left ? `The ${left} open sheet${left === 1 ? " is" : "s are"} being worked on by someone else.` : summary.mismatches ? "Every mismatch is reconciled. Export the reconciled data." : "No mismatches: the two readers agree on every compared field.",
+        summary.error ? `Comparing stopped: ${summary.error}. Use Compare again.` : left ? `The ${left} sheet${left === 1 ? "" : "s"} left ${left === 1 ? "is" : "are"} open for someone else.` : summary.mismatches ? "Every mismatch is reconciled. Export the reconciled data." : "No mismatches: the two readers agree on every compared field.",
         el("div", { class: "row gap", style: { justifyContent: "center" } }, exportButtons())
       );
     }
@@ -215,7 +215,7 @@ async function saveAndNext() {
     if (data.not_written && Object.keys(data.not_written).length) {
       const names = Object.keys(data.not_written);
       toast(`Not written to our results: ${names.join(", ")} (${Object.values(data.not_written)[0]}). Type the value with E.`, "error", 8000);
-    } else if (data.state !== "done") toast(`Saved; ${c.sheet.items.filter((i) => !c.choices[i.name]).length} mismatch(es) on this sheet left open`, "", 2500);
+    } else if (data.state !== "done") toast(`Saved; ${c.sheet.items.filter((i) => !c.choices[i.name]).length} mismatch(es) on this sheet still undecided`, "", 2500);
   } catch (error) {
     toast(error.message, "error", 5000);
     return;
@@ -245,6 +245,8 @@ function showSheet(sheet) {
   c.image = img;
   const shownImg = el("img", { class: "cmp-img cmp-alt", alt: "", hidden: true });
   const inner = el("div", { class: "cmp-page-inner" }, img, shownImg);
+  // Which page is on screen, on the page itself
+  const badge = el("div", { class: "cmp-view-badge", id: "cmp-view-badge" }, VIEW_NAMES[c.view]);
   for (const [i, item] of sheet.items.entries()) {
     const box = boxStyle(item.box);
     if (box) inner.append(el("div", { class: "cmp-box", "data-i": i, "data-name": item.name, style: box, title: `${item.name}: theirs ${item.external || "(blank)"} · ours ${item.ours || "(blank)"}`, onclick: () => go(i) }));
@@ -253,7 +255,7 @@ function showSheet(sheet) {
     el(
       "div",
       { class: "cmp-review" },
-      el("div", { class: "cmp-page" }, inner),
+      el("div", { class: "cmp-page-wrap" }, badge, el("div", { class: "cmp-page" }, inner)),
       el(
         "div",
         { class: "cmp-side" },
@@ -261,7 +263,7 @@ function showSheet(sheet) {
         el(
           "div",
           { class: "row gap wrap" },
-          el("button", { class: "small", id: "cmp-view", onclick: () => cycleView(), title: "Show the aligned page, the original scan or the page in colour (O)" }, el("kbd", {}, "O"), ` ${VIEW_NAMES[c.view]}`),
+          viewSwitch(),
           el("button", { class: "small", onclick: openInResults, title: "Open this sheet in Results to correct or regrade it; back here it is compared again (V)" }, el("kbd", {}, "V"), " Open in Results"),
           el("button", { class: "small", id: "cmp-all", onclick: toggleAll, title: "Every compared field side by side, or the mismatches only (A)" }, el("kbd", {}, "A"), c.all ? " Mismatches only" : " All fields"),
           sheet.save_to === "results" ? el("span", { class: "chip", title: "This comparison writes each choice to our results as a correction" }, "saves to our results") : null
@@ -289,7 +291,7 @@ function showSheet(sheet) {
   );
   img.addEventListener("load", () => {
     drawZoom();
-    focusBox();
+    focusBox(false);
   });
   if (c.view !== "aligned") showView();
   if (c.all) loadFields();
@@ -379,15 +381,30 @@ function renderAllList(list) {
         el("code", {}, field.name),
         el("span", { class: choice === "external" ? "picked" : "" }, shown(field.external)),
         el("span", { class: choice === "ours" ? "picked" : "" }, shown(field.ours)),
-        el("span", { class: choice === "manual" ? "picked" : "muted small" }, choice === "manual" ? shown(c.choices[field.name].value) : field.state === "mismatch" ? choice || "open" : FIELD_STATES[field.state])
+        el("span", { class: choice === "manual" ? "picked" : "muted small" }, choice === "manual" ? shown(c.choices[field.name].value) : field.state === "mismatch" ? choice || "undecided" : FIELD_STATES[field.state])
       )
     );
   }
   list.prepend(el("div", { class: "cmp-row head muted small" }, el("span", {}, `${rows.length} of ${c.fields.list.length}`), el("span", {}, "theirs"), el("span", {}, "ours"), el("span", {}, `${counts.mismatch || 0} differ · ${counts.match || 0} same`)));
 }
 
+// O cycles the page shown; the three buttons show which one is on
+function viewSwitch() {
+  return el(
+    "div",
+    { class: "seg", id: "cmp-view", role: "group", title: "Which page is shown: O switches to the next one" },
+    el("kbd", {}, "O"),
+    VIEWS.map((view) => el("button", { class: `small${view === c.view ? " on" : ""}`, "data-view": view, "aria-pressed": String(view === c.view), onclick: () => setView(view) }, VIEW_NAMES[view]))
+  );
+}
+
 function cycleView() {
-  c.view = VIEWS[(VIEWS.indexOf(c.view) + 1) % VIEWS.length];
+  setView(VIEWS[(VIEWS.indexOf(c.view) + 1) % VIEWS.length]);
+  toast(`Showing: ${VIEW_NAMES[c.view]}`, "", 1200);
+}
+
+function setView(view) {
+  c.view = view;
   showView();
 }
 
@@ -395,8 +412,13 @@ function cycleView() {
 // scan each box follows the outline mapped back through the page transform
 // (a box with no outline there, such as a joined value, is hidden)
 async function showView() {
-  const button = document.getElementById("cmp-view");
-  if (button) button.lastChild.textContent = ` ${VIEW_NAMES[c.view]}`;
+  for (const button of document.querySelectorAll("#cmp-view button")) {
+    const on = button.dataset.view === c.view;
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", String(on));
+  }
+  const badge = document.getElementById("cmp-view-badge");
+  if (badge) badge.textContent = VIEW_NAMES[c.view];
   const alt = document.querySelector(".cmp-alt");
   if (!alt || !c.sheet) return;
   const aligned = c.view === "aligned";
@@ -405,7 +427,7 @@ async function showView() {
   alt.hidden = aligned || !loaded;
   placeBoxes();
   drawZoom();
-  if (aligned || loaded) return;
+  if (aligned || loaded) return focusBox(false);
   const scanId = c.sheet.scan_id;
   const view = c.view;
   try {
@@ -562,7 +584,7 @@ function render() {
         el("code", {}, it.name),
         el("span", { class: choice === "external" ? "picked" : "" }, shown(it.external)),
         el("span", { class: choice === "ours" ? "picked" : "" }, shown(it.ours)),
-        el("span", { class: choice === "manual" ? "picked" : "muted small" }, choice === "manual" ? shown(c.choices[it.name].value) : choice || "open")
+        el("span", { class: choice === "manual" ? "picked" : "muted small" }, choice === "manual" ? shown(c.choices[it.name].value) : choice || "undecided")
       )
     );
   }
@@ -627,9 +649,17 @@ function drawZoom() {
   if (label) label.textContent = img === c.image && c.view !== "aligned" ? `Close-up: aligned page (${c.view === "original" ? "no outline on the original for this field" : "loading colour…"})` : `Close-up: ${VIEW_NAMES[c.view].toLowerCase()}`;
 }
 
-function focusBox() {
+// The page scrolls so the current field sits in the middle of it: on a new
+// sheet at once, on the next field smoothly
+function focusBox(smooth = true) {
   const node = c.peek ? document.querySelector(`.cmp-box.match[data-name="${CSS.escape(c.peek.name)}"]`) : document.querySelector(`.cmp-box[data-i="${c.idx}"]`);
-  if (node && !node.hidden) scrollWithin(document.querySelector(".cmp-page"), node);
+  const page = document.querySelector(".cmp-page");
+  if (!node || node.hidden || !page) return;
+  const outer = page.getBoundingClientRect();
+  const inner = node.getBoundingClientRect();
+  const top = page.scrollTop + inner.top - outer.top - (page.clientHeight - inner.height) / 2;
+  const left = page.scrollLeft + inner.left - outer.left - (page.clientWidth - inner.width) / 2;
+  page.scrollTo({ top: Math.max(0, top), left: Math.max(0, left), behavior: smooth ? "smooth" : "auto" });
 }
 
 function go(i) {
@@ -694,26 +724,34 @@ function undo() {
   toast("Nothing to undo on this sheet", "", 1500);
 }
 
+// The top row: where you are and what is left, as a few labelled numbers;
+// the rest of the comparison's counts on a quieter line below them
 function progressLine() {
   const node = document.getElementById("cmp-progress");
   if (!node) return;
+  node.innerHTML = "";
   const p = c.session && c.session.progress;
-  if (!p) return (node.textContent = "");
-  const parts = [];
+  if (!p) return;
   const b = c.session.building;
-  if (b) parts.push(b.total ? `Comparing ${b.done.toLocaleString()} of ${b.total.toLocaleString()} sheets…` : "Comparing…");
-  if (c.sheet) parts.push(`Sheet ${c.sheet.position} of ${p.to_review}${b ? " so far" : ""}`);
-  parts.push(`${p.open} open`, `decided ${p.decided} of ${p.mismatches} mismatches`);
-  if (p.chose_external) parts.push(`${p.chose_external} external kept`);
-  const summary = c.session.summary || {};
+  const stat = (label, value, title, extra) => el("div", { class: "cmp-stat", title }, el("span", { class: "k" }, label), el("span", { class: "v" }, value), extra || null);
+  const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+  const stats = [];
+  if (b) stats.push(stat("Comparing", b.total ? `${b.done.toLocaleString()} of ${b.total.toLocaleString()}` : "…", "The comparison is still running: sheets with a mismatch show up as they are found"));
+  if (c.sheet) stats.push(stat("This sheet", `${c.sheet.position} of ${p.to_review.toLocaleString()}${b ? "+" : ""}`, "Sheets with a mismatch, in order: where this one is"));
+  stats.push(stat("Sheets left", p.open.toLocaleString(), "Sheets with a mismatch not saved yet (this one included)"));
+  const pct = p.mismatches ? Math.round((100 * p.decided) / p.mismatches) : 100;
+  stats.push(stat("Mismatches decided", `${p.decided.toLocaleString()} of ${p.mismatches.toLocaleString()}`, "Fields where the two readers differ, and how many of them have a choice saved", el("span", { class: "cmp-bar" }, el("span", { style: { width: `${pct}%` } }))));
+  const notes = [];
   const states = p.sheets || {};
-  if (states.clean) parts.push(`${states.clean} agree`);
+  if (states.clean) notes.push(el("span", { title: "Sheets where both readers agree on every compared field: nothing to do" }, `${plural(states.clean, "sheet")} agree`));
+  if (p.chose_external) notes.push(el("span", { title: "Choices that kept the other reader's value" }, `their value kept ${p.chose_external.toLocaleString()}×`));
   const missing = states.no_record || 0;
-  if (p.unmatched_external || missing) parts.push(`unmatched: ${p.unmatched_external} of theirs, ${missing} of ours`);
-  if (states.replaced) parts.push(`${states.replaced} older scans of a file read again`);
-  if (states.duplicate) parts.push(`${states.duplicate} not compared (same file in several scans)`);
-  if (states.not_read) parts.push(`${states.not_read} not read`);
-  node.textContent = parts.join(" · ");
+  if (p.unmatched_external || missing) notes.push(el("span", { class: "fs-warn", title: "Rows of their file with no sheet of ours, and sheets of ours with no row in their file. Check the matching under Rules…" }, `not matched: ${plural(p.unmatched_external, "row")} of theirs, ${plural(missing, "sheet")} of ours`));
+  if (states.replaced) notes.push(el("span", { title: "A file read again: only its newest scan is compared" }, `${plural(states.replaced, "older scan")} of a file read again`));
+  if (states.duplicate) notes.push(el("span", { title: "The same file in several scans, set not to be compared" }, `${plural(states.duplicate, "sheet")} not compared (same file twice)`));
+  if (states.not_read) notes.push(el("span", { title: "Their row matched a sheet we could not read" }, `${plural(states.not_read, "sheet")} we could not read`));
+  node.append(el("div", { class: "cmp-stats" }, stats));
+  if (notes.length) node.append(el("div", { class: "cmp-notes muted small" }, notes.flatMap((n, i) => (i ? [" · ", n] : [n]))));
 }
 
 function onKey(e) {
@@ -928,7 +966,10 @@ async function newComparison() {
       /* jobs are optional */
     }
   };
-  template.addEventListener("change", fillJobs);
+  template.addEventListener("change", () => {
+    fillJobs();
+    if (preview) readFile();
+  });
   fillJobs();
 
   // A saved layout fills in every setting below and the mapping
@@ -998,6 +1039,10 @@ async function newComparison() {
   const fixed = el("textarea", { rows: 4, cols: 40, placeholder: "One column per line: NAME START LENGTH\nROLL 1 12\nq1..q200 13 1", spellcheck: "false" });
   const split = el("textarea", { rows: 3, cols: 40, placeholder: "One packed column per line: COLUMN FIELDS [width=N] [sep=X]\nANSWERS q1..q200\nA1 q1..q10\nA2 q11..q20", spellcheck: "false" });
   const fixedRow = el("label", { class: "field" }, "Fixed-width columns (START counts from 1)", fixed);
+  // The file is read as soon as it is picked; these settings are only for a
+  // file the automatic reading gets wrong (no header, fixed width, packed answers)
+  const howRead = el("details", { class: "cmp-how" }, el("summary", {}, "How the file is read (change only if the columns below look wrong)"));
+  file.addEventListener("change", () => file.files.length && readFile());
   const syncFormat = () => (fixedRow.style.display = format.value === "fixed" ? "" : "none");
   format.addEventListener("change", syncFormat);
   syncFormat();
@@ -1017,6 +1062,7 @@ async function newComparison() {
   });
   const applyParse = (saved) => {
     format.value = saved.format || "auto";
+    if (saved.format && saved.format !== "auto") howRead.open = true;
     delimiter.value = saved.delimiter || "";
     header.value = saved.header_row !== undefined && saved.header_row !== null ? saved.header_row : saved.header === false ? 0 : 1;
     names.value = saved.names || "";
@@ -1055,13 +1101,37 @@ async function newComparison() {
       return toast(error.message, "error", 6000);
     }
     if (!name.value) name.value = file.files[0].name.replace(/\.[^.]+$/, "");
+    // One column usually means the delimiter or the layout was not recognised
+    if (preview.columns.length < 2) howRead.open = true;
     const chosen = profiles.find((p) => p.name === profile.value);
     const settings = chosen ? chosen.settings : {};
     // Keep what was typed in the mapping for columns that are still there
     const mapping = chosen ? { ...(settings.mapping || {}) } : { ...preview.mapping };
     if (edited) for (const [column, value] of Object.entries(edited)) if (preview.columns.includes(column)) mapping[column] = value;
     parts = showPreview(step2, { ...preview, mapping }, settings);
+    parts.key.node.addEventListener("change", checkMatch);
+    checkMatch();
   };
+
+  // Step 3's check: how many of their rows find one of our sheets
+  const matchBox = el("div", { class: "cmp-match" });
+  let matchRun = 0;
+  const checkMatch = async () => {
+    if (!preview || !parts) return;
+    const run = ++matchRun;
+    matchBox.className = "cmp-match";
+    matchBox.textContent = "Checking which of their rows find our sheets…";
+    let m;
+    try {
+      m = await api(`/compare/preview/${preview.upload}/match`, { method: "POST", json: { template_id: template.value, job_id: job.value || null, parse: parse(), mapping: parts.mapping(), key: parts.key.read() } });
+    } catch (error) {
+      if (run === matchRun) matchBox.textContent = error.message;
+      return;
+    }
+    if (run !== matchRun) return;
+    showMatch(matchBox, m, { job, onJob: (id) => { job.value = id; checkMatch(); } });
+  };
+  job.addEventListener("change", checkMatch);
 
   const create = async () => {
     if (!preview) return readFile();
@@ -1103,18 +1173,25 @@ async function newComparison() {
     }
   };
 
+  for (const node of [el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Format ", format), el("label", { class: "field inline" }, "Delimiter ", delimiter), el("label", { class: "field inline" }, "Header row ", header)), el("label", { class: "field inline", title: "Name the columns yourself: replaces the header, or names a file without one (ranges like q1..q200 allowed)" }, "Column names ", names), fixedRow, el("label", { class: "field", title: "A column that holds many answers: split it into one column per field" }, "Packed answer columns (optional)", split), el("div", { class: "row gap" }, el("button", { class: "small", onclick: readFile }, "Read again with these settings"))]) howRead.append(node);
+  const step = (n, title, hint, ...content) => el("section", { class: "cmp-step" }, el("h4", {}, el("span", { class: "n" }, String(n)), title), hint ? el("p", { class: "muted small" }, hint) : null, ...content);
+  step2.append(el("p", { class: "muted small cmp-wait" }, "Pick their file above: the next steps appear once it is read."));
   const body = el(
     "div",
-    { class: "cmp-form" },
-    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Template ", template), el("label", { class: "field inline" }, "Our sheets ", job), el("label", { class: "field inline", title: "A layout saved earlier: how a file is read, mapped and compared" }, "Saved layout ", profile), el("button", { class: "small", title: "Save the chosen layout as a file, to use it on another computer", onclick: downloadProfile }, "Download"), el("button", { class: "small", title: "Add layouts from files downloaded on another computer", onclick: uploadProfiles }, "Upload…"), el("button", { class: "small danger ghost", title: "Delete the chosen saved layout", onclick: deleteProfile }, "Delete")),
-    el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Their file ", file), el("label", { class: "field inline" }, "Format ", format), el("label", { class: "field inline" }, "Delimiter ", delimiter), el("label", { class: "field inline" }, "Header row ", header)),
-    el("label", { class: "field inline", title: "Name the columns yourself: replaces the header, or names a file without one (ranges like q1..q200 allowed)" }, "Column names ", names),
-    fixedRow,
-    el("label", { class: "field", title: "A column that holds many answers: split it into one column per field" }, "Packed answer columns (optional)", split),
-    el("div", { class: "row gap" }, el("button", { onclick: readFile }, "Read file / read again"), el("span", { class: "muted small" }, "Change any setting above and read again to check the split.")),
+    { class: "cmp-form cmp-new" },
+    step(1, "Our sheets", "Which of our results their file is checked against.", el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "Template ", template), el("label", { class: "field inline" }, "Our sheets ", job))),
+    step(
+      2,
+      "Their file",
+      "The other scanner's export: OpScan .dat, CSV or fixed width. It is read as soon as you pick it. A saved layout fills in every setting from last time.",
+      el("div", { class: "row gap wrap" }, el("label", { class: "field inline" }, "File ", file), el("label", { class: "field inline", title: "A layout saved earlier: how a file is read, matched and compared" }, "Saved layout ", profile), el("button", { class: "small", title: "Save the chosen layout as a file, to use it on another computer", onclick: downloadProfile }, "Download"), el("button", { class: "small", title: "Add layouts from files downloaded on another computer", onclick: uploadProfiles }, "Upload…"), el("button", { class: "small danger ghost", title: "Delete the chosen saved layout", onclick: deleteProfile }, "Delete")),
+      howRead
+    ),
     step2,
-    el("label", { class: "field inline" }, "Name ", name)
+    el("label", { class: "field inline cmp-name" }, "Name this comparison ", name)
   );
+  // Their sample, the matching and the columns go into steps 3 to 5
+  step2.matchBox = matchBox;
   const dialog = modal(
     "New comparison",
     body,
@@ -1159,23 +1236,61 @@ function showPreview(container, preview, saved = {}) {
   const key = keyForm(preview, saved.key && preview.columns.includes(saved.key.column) ? saved.key : preview.key);
   const rules = rulesForm({ ...preview.rules, ...(saved.rules || {}) });
   const mapped = Object.values(preview.mapping).filter(Boolean).length;
+  const step = (n, title, hint, ...content) => el("section", { class: "cmp-step" }, el("h4", {}, el("span", { class: "n" }, String(n)), title), hint ? el("p", { class: "muted small" }, hint) : null, ...content);
   container.append(
-    el("div", { class: "rv-meta" }, `${preview.count} rows in ${preview.file_name}. First rows as read (␣ = a space):`),
+    el("div", { class: "rv-meta" }, `Read ${preview.count.toLocaleString()} rows and ${preview.columns.length} columns from ${preview.file_name}. The first rows (␣ = a space):`),
     el("div", { class: "cmp-sample" }, table),
-    el("h4", {}, "How their rows find our sheets"),
-    key.node,
-    el("h4", {}, `Columns to compare (${mapped} mapped; type our field for a column, clear a box to leave it out)`),
-    el("div", { class: "row gap wrap" }, el("span", { class: "small" }, "Map from column"), from, el("span", { class: "small" }, "onwards to"), range, el("button", { class: "small", onclick: fill }, "Fill"), el("button", { class: "small ghost", onclick: clear }, "Clear all")),
-    list,
-    mapping,
-    el("h4", {}, "Rules"),
-    rules.node
+    step(3, "Match their rows to our sheets", "Each row of their file is paired with one of our sheets by a value both sides have, usually the sheet number in their file and our file name.", key.node, container.matchBox || null),
+    step(
+      4,
+      "Columns to compare",
+      null,
+      el(
+        "details",
+        { open: !mapped },
+        el("summary", {}, mapped ? `${mapped} of their ${preview.columns.length} columns are matched to our fields. Open to check or change.` : "None of their columns matched our field names: map them here."),
+        el("p", { class: "muted small" }, "Type our field next to each of their columns; clear a box to leave that column out."),
+        el("div", { class: "row gap wrap" }, el("span", { class: "small" }, "Map from column"), from, el("span", { class: "small" }, "onwards to"), range, el("button", { class: "small", onclick: fill }, "Fill"), el("button", { class: "small ghost", onclick: clear }, "Clear all")),
+        list,
+        mapping
+      )
+    ),
+    step(5, "Rules", null, el("details", {}, el("summary", {}, "How values are compared (the defaults suit most files)"), rules.node))
   );
   return {
     key,
     rules,
     mapping: () => Object.fromEntries(Object.entries(inputs).map(([column, input]) => [column, input.value.trim() || null])),
   };
+}
+
+// The result of the match check, in words, with the jobs that hold the
+// sheets their unmatched rows need
+function showMatch(box, m, { job, onJob }) {
+  box.innerHTML = "";
+  const all = m.rows && m.matched === m.rows;
+  box.className = `cmp-match ${all ? "ok" : m.matched ? "warn" : "bad"}`;
+  box.append(el("div", { class: "cmp-match-line" }, el("strong", {}, `${m.matched.toLocaleString()} of ${m.rows.toLocaleString()} rows`), ` of their file find one of our ${m.sheets.toLocaleString()} sheets.`));
+  if (m.their_unmatched) {
+    box.append(
+      el(
+        "div",
+        { class: "small" },
+        `${m.their_unmatched.toLocaleString()} of their rows have no sheet here, for example `,
+        m.their_examples.map((x, i) => [i ? ", " : "", el("code", {}, x.key || "(empty)"), el("span", { class: "muted" }, ` (row ${x.row}${x.reason ? `, ${x.reason}` : ""})`)]),
+        "."
+      )
+    );
+  }
+  if (m.our_unmatched) {
+    box.append(el("div", { class: "small" }, `${m.our_unmatched.toLocaleString()} of our sheets have no row in their file, for example `, m.our_examples.map((x, i) => [i ? ", " : "", el("code", {}, x.file || x.key)]), "."));
+  }
+  for (const other of m.other_jobs || []) {
+    const option = [...job.options].find((o) => o.value === other.job_id);
+    const label = option ? option.textContent.split(" · ")[0] : other.job_id.slice(0, 8);
+    box.append(el("div", { class: "row gap wrap small" }, `The job ${label} holds sheets for ${other.rows.toLocaleString()} of those rows.`, el("button", { class: "small", onclick: () => onJob("") }, "Use every job of the template"), option ? el("button", { class: "small ghost", onclick: () => onJob(other.job_id) }, `Use ${label} instead`) : null));
+  }
+  if (!m.matched && m.rows) box.append(el("div", { class: "small" }, "Nothing matches: check the column and what it matches above, or pick other sheets in step 1."));
 }
 
 function expandRange(text) {

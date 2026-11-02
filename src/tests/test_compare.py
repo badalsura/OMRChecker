@@ -657,3 +657,55 @@ def test_their_bare_multi_mark_is_not_written_to_our_results(compared):
         client.get(f"/scans/{sheet['scan_id']}").json()["responses"]["q1"]
         == results[0]["responses"]["q1"]
     ), q1
+
+
+def test_match_check_counts_matches_and_names_the_job_holding_the_rest(tmp_path, spec):
+    """Their file covers two jobs; the check run on one job says which other
+    job holds the sheets of the unmatched rows (row numbers stay apart from keys)."""
+    from src.tests.test_api import png_bytes, wait_for_job
+
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        jobs = []
+        for names in (("100001.png", "100002.png"), ("112001.png", "112002.png")):
+            files = [
+                ("files", (name, png_bytes(flagged_sheet(spec, seed=i)), "image/png"))
+                for i, name in enumerate(names, start=len(jobs) * 2 + 1)
+            ]
+            job = client.post("/jobs", data={"template_id": template_id}, files=files)
+            assert job.status_code == 201, job.text
+            jobs.append(wait_for_job(client, job.json()["id"])["id"])
+        rows = ["SEQ,Q001"] + [f"{key},A" for key in (100001, 100002, 112001, 112002, 199999)]
+        preview = client.post(
+            "/compare/preview",
+            data={"template_id": template_id, "parse": "{}"},
+            files={"file": ("e.csv", "\n".join(rows).encode(), "text/csv")},
+        ).json()
+        body = {
+            "template_id": template_id,
+            "job_id": jobs[0],
+            "mapping": {"Q001": "q1"},
+            "key": {"column": "SEQ", "ours": "file", "normalize": "digits"},
+        }
+        check = client.post(f"/compare/preview/{preview['upload']}/match", json=body)
+        assert check.status_code == 200, check.text
+        m = check.json()
+        assert (m["rows"], m["sheets"], m["matched"]) == (5, 2, 2)
+        assert m["their_unmatched"] == 3 and m["our_unmatched"] == 0
+        assert m["their_examples"][0] == {"row": 3, "key": "112001"}
+        assert m["other_jobs"] == [{"job_id": jobs[1], "rows": 2}]
+        every = client.post(
+            f"/compare/preview/{preview['upload']}/match", json={**body, "job_id": None}
+        ).json()
+        assert every["matched"] == 4 and every["other_jobs"] == []
+        # The unmatched export keeps their row number apart from the key
+        session = client.post(
+            "/compare/sessions",
+            json={"upload": preview["upload"], **body},
+        ).json()
+        text = client.get(
+            f"/compare/sessions/{session['id']}/export", params={"kind": "unmatched"}
+        ).text
+        lines = text.strip().splitlines()
+        assert lines[0].lstrip("﻿") == "side,their_row,our_file,key,reason"
+        assert "external,3,,112001,no sheet" in lines

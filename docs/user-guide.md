@@ -826,10 +826,10 @@ The Compare tab checks our results against another reader's results for the same
 
 By default the choices go into a **separate reconciled layer**: the read results are not changed, so the Results tab, the review queue and the normal export still show what we read, and the **Reconciled CSV** export applies the choices on top. With the rule **Save choices to: our results, in place**, each choice also becomes a correction of our result, exactly as if it were typed on the Results tab: it is in the audit trail (source `compare`), it can be undone on the Results tab, and every export shows it. Several people can work on one comparison at once: a sheet someone has open is locked to them, and the others get the next sheet.
 
-**Starting a comparison** (**New comparison…**):
+**Starting a comparison** (**New comparison…**). The window walks through five numbered steps; steps 3 to 5 appear once their file is read.
 
-1. Pick the **template** and the **job**. The newest job of the template is picked for you. Choosing **Every job of the template** takes in every sheet ever read with it; when the same file was read in several jobs, only its newest readable scan is compared and the older ones count as `replaced` (rule **A file we read more than once**).
-2. Pick **their file**: a CSV (comma, semicolon, tab or pipe; found by itself) or a fixed-width text file such as a `.dat`. For fixed width, choose **Fixed width** and describe the columns, one per line, as `NAME START LENGTH` with START counting from 1. A range names consecutive one-character cells:
+1. **Our sheets**: pick the **template** and the **job**. The newest job of the template is picked for you. Choosing **Every job of the template** takes in every sheet ever read with it; when the same file was read in several jobs, only its newest readable scan is compared and the older ones count as `replaced` (rule **A file we read more than once**).
+2. **Their file**: pick it and it is read straight away. Pick a **Saved layout** first to fill in every setting from last time. The settings below are under **How the file is read**; open it only when the columns shown look wrong (it opens by itself when the file reads as a single column). Their file can be a CSV (comma, semicolon, tab or pipe; found by itself) or a fixed-width text file such as a `.dat`. For fixed width, choose **Fixed width** and describe the columns, one per line, as `NAME START LENGTH` with START counting from 1. A range names consecutive one-character cells:
 
    ```
    SEQ 1 10
@@ -848,7 +848,7 @@ By default the choices go into a **separate reconciled layer**: the read results
    RESP q1..q50 sep=,        answers separated by a comma (sep=space, sep=tab, any character)
    CODES q1..q20 width=2     two characters per answer
    ```
-3. Press **Read file**. The first rows are shown as read, after the split (␣ marks a single space), with the columns matched to our fields by name: `Q001`, `Q1`, `q-1` and a bare `1` all match `q1`, and `ROLL` matches `rollno` when it is the only name starting so. Type the field a column belongs to, or clear a box to leave it out. **Map from column … onwards to** fills a run of columns at once: from `Item 1` onwards to `q1..q200`. A question inside a custom label (`ans` = `q1..q200`) can be compared on its own, or the joined label as one value; when both are mapped, only the fields are compared. Change any setting and press **Read file / read again** to check it: the file is not uploaded again.
+   The first rows are then shown as read, after the split (␣ marks a single space), with the columns matched to our fields by name: `Q001`, `Q1`, `q-1` and a bare `1` all match `q1`, and `ROLL` matches `rollno` when it is the only name starting so. Type the field a column belongs to, or clear a box to leave it out. **Map from column … onwards to** fills a run of columns at once: from `Item 1` onwards to `q1..q200`. A question inside a custom label (`ans` = `q1..q200`) can be compared on its own, or the joined label as one value; when both are mapped, only the fields are compared. Change any setting under **How the file is read** and press **Read again with these settings** to check it: the file is not uploaded again. The matched columns are under step 4, **Columns to compare**, folded away when every column found a field.
 
    An OpScan / ScanTools Plus `.dat` is fixed width without a header. The TERI file (`E0811.dat`, 254 characters a line) reads with Header row `0` and:
 
@@ -863,7 +863,7 @@ By default the choices go into a **separate reconciled layer**: the read results
    with their `SEQ` matching our file name (digits only). A Ctrl-Z end-of-file mark after the last line is ignored.
 
    **Save layout…** keeps the settings, the mapping and the rules under a name (e.g. *OpScan TERI layout*). Next time pick it under **Saved layout** and read the file: nothing needs mapping again. **Download** saves the chosen layout as a `.compare-profile.json` file and **Upload…** adds layouts from such files, so a layout made on one computer can be used on another. **Delete** removes the chosen layout. A layout remembers its template; if that template is not on the other computer, pick the template yourself.
-4. Say **how their rows find our sheets**: their column, what it matches on our side, and how to compare the two.
+3. **Match their rows to our sheets**: their column, what it matches on our side, and how to compare the two. Below it a check says at once how many of their rows find one of our sheets (green: all of them), with examples of rows that find none, by their row number and key, and of our sheets with no row in their file. When a job is picked and another job of the template holds sheets for their unmatched rows, it says which and how many, with buttons to use every job of the template or that job instead. Example: a TERI `.dat` with 15,103 rows checked against a job of 12,000 sheets says 3,103 rows find no sheet (row 12001, key 112001, …) and that the job holding 112001.jpg onwards has them.
 
    | Our side | Use it when |
    |---|---|
@@ -873,7 +873,8 @@ By default the choices go into a **separate reconciled layer**: the read results
    | scan order | neither has a key: their row 1 is our first sheet of the job, and so on |
 
    **digits only** compares just the digits, without leading zeros (`S0123`, `123` and `123.jpg` match); **text** ignores case, folders and the image extension.
-5. Set the **rules** (below), give it a name and press **Compare**. A small comparison answers at once. A large one runs in the background: the first sheets with a mismatch open straight away, and the top line counts the rest (`Comparing 3,200 of 12,000 sheets…`). Several people can start while it runs.
+4. **Columns to compare**: open it to check or change which of their columns is compared with which of our fields.
+5. **Rules** (below; the defaults suit most files). Give the comparison a name and press **Compare**. A small comparison answers at once. A large one runs in the background: the first sheets with a mismatch open straight away, and the top line counts the rest (`Comparing 3,200 of 12,000 sheets…`). Several people can start while it runs.
 
 **Rules** (also under **Rules…** later; changing them compares again and keeps every choice whose two values did not change):
 
@@ -890,7 +891,7 @@ By default the choices go into a **separate reconciled layer**: the read results
 | Save choices to | a new reconciled layer (default: our results stay as read); or our results, in place (each choice is a correction of our result; undoing the choice puts the read value back). A bare `*` from their file cannot go into a bubble field: type the letters with `E` instead |
 | Only the questions of the level in field … (under *Compare only some questions per sheet*) | off by default. Give the field that holds the sheet's level (e.g. `level`), where to take it from (theirs, else ours where theirs is blank or `*` — the default; theirs only; ours; or either), and the bands: `1: q1..q50; 2: q51..q100; 3: q101..q150; 4: q151..q200`. Each sheet's questions are then compared only inside its band. A scanner can report stray marks in other bands (show-through, erasures); on the TERI OpScan file these were 85% of all answer differences. A sheet whose level is blank or not listed is compared in full |
 
-**Reviewing.** The sheet is on the left with every mismatch boxed (red: open, green: decided, orange: the current one; the rest of the page is dimmed around it so it is easy to find). The page scrolls to the current box by itself. On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
+**Reviewing.** The sheet is on the left with every mismatch boxed (red: open, green: decided, orange: the current one; the rest of the page is dimmed around it so it is easy to find). The page scrolls so the current box sits in the middle of it: as soon as a sheet opens, at each next mismatch, and when the page view changes. A label at the top left of the page says which page is shown. On the right are a close-up of the field, its name, our confidence and flags, the two values, and the list of this sheet's mismatches. Click a box or a row to go to it. The keys work as soon as the tab is open (not while you type in a box):
 
 | Key | Button | What it does |
 |---|---|---|
@@ -903,10 +904,10 @@ By default the choices go into a **separate reconciled layer**: the read results
 | `Shift`+`Tab` | Previous sheet | go back a sheet (also one already reconciled, to change it) |
 | `Enter` | Save and next | save the choices and go to the next open sheet |
 | `A` | All fields | every compared field of the sheet side by side (theirs, ours, and whether they differ, agree, or the rules skip it), not just the mismatches; differing names are red, agreeing fields get a quiet dashed green box on the page. The current field is highlighted and the list scrolls to it. Type `q1..q50, roll` in the box above the list to show only those. `A` again goes back to the mismatches |
-| `O` | Aligned / Original scan / Colour | switch the page between the aligned page, the scan as it came off the scanner, and the aligned page in colour. The boxes and the close-up follow: on the original scan each box is mapped back through the page transform (a joined value such as a roll number has no box there, and its close-up stays on the aligned page). The line under the close-up says which page it is cut from |
+| `O` | Aligned / Original scan / Colour | the three buttons show which page is on (the highlighted one); click one, or press `O` for the next. Switch the page between the aligned page, the scan as it came off the scanner, and the aligned page in colour. The boxes and the close-up follow: on the original scan each box is mapped back through the page transform (a joined value such as a roll number has no box there, and its close-up stays on the aligned page). The line under the close-up says which page it is cut from |
 | `V` | Open in Results | open this sheet on the Results tab with the field selected, to correct it, regrade it or look closer. Come back to the Compare tab and the sheet is compared again with our current values, keeping the choices that still apply |
 
-A sheet saved with a mismatch still open stays in the queue and comes round again at the end. The top line shows the sheet number, how many sheets are open, how many mismatches are decided, how many sheets agree completely, how many of their rows and our sheets matched nothing, and how many older scans were left out because the file was read again.
+A sheet saved with a mismatch still undecided stays in the queue and comes round again at the end. The top right shows three numbers: **This sheet** (its place among the sheets with a mismatch), **Sheets left** (sheets with a mismatch not saved yet, this one included; the comparison list says the same, e.g. "6 sheets left") and **Mismatches decided** (with a bar). A quieter line below gives the rest when there is any: how many sheets agree completely, how often their value was kept, how many of their rows and our sheets matched nothing (in amber), and how many older scans were left out because the file was read again. Hover over any of them for what it counts.
 
 **Compare again** re-reads our current values (after corrections in the review queue or on the Results tab). A choice is kept when both values are still the same; otherwise that mismatch is open again.
 
@@ -916,7 +917,7 @@ A sheet saved with a mismatch still open stays in the queue and comes round agai
 |---|---|
 | Reconciled CSV | every sheet in scope with all our columns, the kept value wherever someone decided, the status (`clean`, `pending`, `partial`, `done`, `no_record`: no row in their file, `replaced`: an older scan of a file we read again, `duplicate`: the same file in several of our scans with the rule set to compare none, `not_read`), how many external values were kept, the fields still open, and who reconciled it |
 | Audit CSV | every choice and undo: when, who, the sheet, the field, both values, the kept value and its source (`external`, `ours` or `manual`) |
-| Unmatched CSV | their rows that found no sheet (no key, duplicate key, no sheet) and our sheets that found no row |
+| Unmatched CSV | their rows that found no sheet (no key, duplicate key, no sheet) and our sheets that found no row. Columns: `side`, `their_row` (the line number in their file, not a key), `our_file`, `key`, `reason` |
 
 Deleting a comparison (administrators, or the person who made it) removes its choices only. Comparisons are stored in `compare.sqlite3` and the `compare` folder of the data folder.
 

@@ -509,3 +509,32 @@ body.desktop a { -webkit-user-drag: none; }
 .lic-facts dd { margin: 0; word-break: break-all; }
 .lic-bad { color: var(--err); font-weight: 600; }
 .lic-foot { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 10px; }
+/* Compare: top row, view switch */
+#cmp-progress { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.cmp-stats { display: flex; gap: 18px; flex-wrap: wrap; justify-content: flex-end; }
+.cmp-stat { display: flex; flex-direction: column; align-items: flex-start; min-width: 70px; }
+.cmp-stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.cmp-stat .v { font-size: 17px; font-weight: 600; color: var(--text, inherit); }
+.cmp-bar { display: block; width: 100%; height: 4px; border-radius: 2px; background: var(--border); margin-top: 2px; overflow: hidden; }
+.cmp-bar > span { display: block; height: 100%; background: var(--ok); }
+.cmp-notes { text-align: right; }
+.seg { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
+.seg kbd { margin: 0 6px 0 4px; }
+.seg button { border: 0; border-radius: 4px; background: transparent; }
+.seg button.on { background: var(--accent); color: #fff; }
+.cmp-page-wrap { position: relative; min-width: 0; }
+.cmp-view-badge { position: absolute; top: 8px; left: 8px; z-index: 3; padding: 2px 8px; border-radius: 4px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 12px; pointer-events: none; }
+/* Compare: New comparison in numbered steps */
+.cmp-new { gap: 14px; }
+.cmp-step { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.cmp-step h4 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--text); }
+.cmp-step h4 .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; }
+.cmp-step > p { margin: 0; }
+.cmp-step details > summary { cursor: pointer; }
+.cmp-how { padding: 6px 10px; border: 1px dashed var(--border); border-radius: 6px; }
+.cmp-how[open] { display: flex; flex-direction: column; gap: 8px; }
+.cmp-match { padding: 8px 10px; border-radius: 6px; background: var(--bg); display: flex; flex-direction: column; gap: 4px; }
+.cmp-match.ok { background: var(--ok-soft); }
+.cmp-match.warn { background: var(--warn-soft); }
+.cmp-match.bad { background: var(--err-soft); }
+.cmp-name { padding-top: 10px; border-top: 1px solid var(--border); }
