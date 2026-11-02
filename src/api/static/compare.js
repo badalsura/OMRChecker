@@ -32,7 +32,17 @@ const c = {
   peek: null, // a matching field picked in that list (zoom and page box)
   filter: "",
   alt: null, // {scan_id, view, img, meta} of the colour or original page once loaded
+  pinned: null, // {name, external, ours, box} of the field always shown (e.g. rollno)
 };
+
+// The field shown on every sheet next to the mismatches; by default the roll
+// number when their file has one. "" = none (the choice is remembered).
+function pinName() {
+  const saved = safeStorage("get", "omr_cmp_pin");
+  if (saved !== null && saved !== undefined) return saved;
+  const mapped = Object.values((c.session && c.session.settings && c.session.settings.mapping) || {}).filter(Boolean);
+  return mapped.find((name) => /^roll/i.test(name)) || "";
+}
 
 export function initCompare() {
   document.getElementById("cmp-new").addEventListener("click", newComparison);
@@ -236,6 +246,7 @@ function showSheet(sheet) {
   c.fields = null;
   c.peek = null;
   c.alt = null;
+  c.pinned = null;
   const firstOpen = sheet.items.findIndex((item) => !item.source);
   c.idx = firstOpen >= 0 ? firstOpen : 0;
   const main = document.getElementById("cmp-main");
@@ -268,6 +279,7 @@ function showSheet(sheet) {
           el("button", { class: "small", id: "cmp-all", onclick: toggleAll, title: "Every compared field side by side, or the mismatches only (A)" }, el("kbd", {}, "A"), c.all ? " Mismatches only" : " All fields"),
           sheet.save_to === "results" ? el("span", { class: "chip", title: "This comparison writes each choice to our results as a correction" }, "saves to our results") : null
         ),
+        el("div", { id: "cmp-pin", class: "cmp-pin" }),
         sheet.state === "done" ? el("div", { class: "rv-meta" }, `Reconciled by ${sheet.done_by || "someone"}: saving changes it.`) : null,
         el("canvas", { class: "cmp-zoom", width: 420, height: 150 }),
         el("div", { class: "muted small", id: "cmp-zoom-view" }),
@@ -294,7 +306,7 @@ function showSheet(sheet) {
     focusBox(false);
   });
   if (c.view !== "aligned") showView();
-  if (c.all) loadFields();
+  if (c.all || pinName()) loadFields();
   render();
   main.focus({ preventScroll: true });
 }
@@ -313,16 +325,69 @@ function toggleAll() {
 async function loadFields() {
   if (!c.sheet) return;
   const scanId = c.sheet.scan_id;
+  const pin = pinName();
   try {
-    const data = await api(`/compare/sessions/${c.session.id}/sheets/${scanId}/fields`);
+    const data = await api(`/compare/sessions/${c.session.id}/sheets/${scanId}/fields${pin ? `?pin=${encodeURIComponent(pin)}` : ""}`);
     if (!c.sheet || c.sheet.scan_id !== scanId) return;
     c.fields = { scan_id: scanId, list: data.fields };
+    c.pinned = data.pinned || null;
   } catch (error) {
     return toast(error.message, "error", 5000);
   }
   matchBoxes();
   render();
-  focusBox();
+  if (c.all) focusBox();
+}
+
+// The pinned field: a picker, its two values and a close-up of it
+function renderPin() {
+  const box = document.getElementById("cmp-pin");
+  if (!box || !c.sheet) return;
+  box.innerHTML = "";
+  const pin = pinName();
+  const names = [...new Set([...Object.values((c.session.settings || {}).mapping || {}).filter(Boolean), ...(pin ? [pin] : [])])];
+  const picker = el("select", { class: "small", title: "A field shown on every sheet, compared or not (e.g. the roll number)" }, el("option", { value: "" }, "nothing"), names.map((name) => el("option", { value: name }, name)));
+  picker.value = pin;
+  picker.addEventListener("change", () => {
+    safeStorage("set", "omr_cmp_pin", picker.value);
+    c.pinned = null;
+    if (picker.value) loadFields();
+    else renderPin();
+  });
+  const p = pin && c.pinned && c.pinned.name === pin ? c.pinned : null;
+  const head = el("div", { class: "row gap wrap" }, el("span", { class: "muted small" }, "Always show"), picker);
+  if (!pin) return box.append(head);
+  if (!p) return box.append(head, el("span", { class: "muted small" }, "loading…"));
+  const same = p.external !== null && p.external !== undefined && String(p.external).replace(/\s/g, "") === String(p.ours ?? "").replace(/\s/g, "");
+  head.append(
+    el("span", { class: "cmp-pin-v" }, el("span", { class: "k" }, "theirs "), p.external === null || p.external === undefined ? el("span", { class: "muted" }, "not in their file") : shown(p.external)),
+    el("span", { class: "cmp-pin-v" }, el("span", { class: "k" }, "ours "), shown(p.ours)),
+    p.external === null || p.external === undefined ? null : el("span", { class: same ? "chip ok" : "chip flag" }, same ? "same" : "differ")
+  );
+  box.append(head);
+  if (p.box && c.image) {
+    const canvas = el("canvas", { class: "cmp-pin-zoom", width: 420, height: 70 });
+    box.append(canvas);
+    const draw = () => drawCrop(canvas, c.image, p.box, c.sheet.page_size);
+    if (c.image.naturalWidth) draw();
+    else c.image.addEventListener("load", draw, { once: true });
+  }
+}
+
+function drawCrop(canvas, img, box, size) {
+  if (!img.naturalWidth || !box || !size) return;
+  const scale = [img.naturalWidth / size[0], img.naturalHeight / size[1]];
+  const [x, y, w, h] = [box[0] * scale[0], box[1] * scale[1], box[2] * scale[0], box[3] * scale[1]];
+  const pad = 8;
+  const sx = Math.max(0, x - pad);
+  const sy = Math.max(0, y - pad);
+  const sw = Math.min(img.naturalWidth - sx, w + 2 * pad);
+  const sh = Math.min(img.naturalHeight - sy, h + 2 * pad);
+  const fit = Math.min(canvas.width / sw, canvas.height / sh);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, sx, sy, sw, sh, (canvas.width - sw * fit) / 2, (canvas.height - sh * fit) / 2, sw * fit, sh * fit);
 }
 
 // In the all-fields list the agreeing fields get a quiet box on the page too
@@ -597,6 +662,7 @@ function render() {
   }
   progressLine();
   drawZoom();
+  renderPin();
 }
 
 // The close-up is cut from the page shown: aligned, colour or original
@@ -951,7 +1017,8 @@ async function newComparison() {
   if (current && current.value) template.value = current.value;
   const everyJob = "Every job of the template (a file read again: its newest scan)";
   const job = el("select", {}, el("option", { value: "" }, everyJob));
-  // The newest job of the template is picked: one run of the sheets
+  // Every job of the template by default: the newest job can be a small
+  // test run that holds none of their rows
   const fillJobs = async () => {
     job.innerHTML = "";
     job.append(el("option", { value: "" }, everyJob));
@@ -961,7 +1028,6 @@ async function newComparison() {
       for (const j of jobs) {
         job.append(el("option", { value: j.id }, `${j.name || j.id.slice(0, 8)} · ${j.total_files || j.processed_files || 0} sheets · ${j.created_at ? new Date(j.created_at * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : ""}`));
       }
-      if (jobs.length) job.value = jobs[0].id;
     } catch (error) {
       /* jobs are optional */
     }
@@ -1074,7 +1140,7 @@ async function newComparison() {
     const chosen = profiles.find((p) => p.name === profile.value);
     if (!chosen) return;
     applyParse(chosen.settings.parse || {});
-    if (chosen.template_id && state.templates.some((t) => t.id === chosen.template_id)) {
+    if (chosen.template_id && chosen.template_id !== template.value && state.templates.some((t) => t.id === chosen.template_id)) {
       template.value = chosen.template_id;
       fillJobs();
     }
@@ -1129,6 +1195,14 @@ async function newComparison() {
       return;
     }
     if (run !== matchRun) return;
+    // A job that holds none of their rows while others do: take every job
+    if (!m.matched && job.value && (m.other_jobs || []).length) {
+      const from = job.options[job.selectedIndex].textContent.split(" · ")[0];
+      job.value = "";
+      await checkMatch();
+      matchBox.prepend(el("div", { class: "small" }, `The job ${from} holds none of their rows, so every job of the template is used instead.`));
+      return;
+    }
     showMatch(matchBox, m, { job, onJob: (id) => { job.value = id; checkMatch(); } });
   };
   job.addEventListener("change", checkMatch);
@@ -1290,7 +1364,9 @@ function showMatch(box, m, { job, onJob }) {
     const label = option ? option.textContent.split(" · ")[0] : other.job_id.slice(0, 8);
     box.append(el("div", { class: "row gap wrap small" }, `The job ${label} holds sheets for ${other.rows.toLocaleString()} of those rows.`, el("button", { class: "small", onclick: () => onJob("") }, "Use every job of the template"), option ? el("button", { class: "small ghost", onclick: () => onJob(other.job_id) }, `Use ${label} instead`) : null));
   }
-  if (!m.matched && m.rows) box.append(el("div", { class: "small" }, "Nothing matches: check the column and what it matches above, or pick other sheets in step 1."));
+  // Far apart key ranges say "wrong file or wrong sheets" at a glance
+  if (m.their_range && m.our_range && m.matched < m.rows) box.append(el("div", { class: "small" }, `Their keys run ${m.their_range[0]}–${m.their_range[1]}; these sheets run ${m.our_range[0]}–${m.our_range[1]}.`));
+  if (!m.matched && m.rows) box.append(el("div", { class: "small" }, "Nothing matches: check the column and what it matches above, pick other sheets in step 1, or check that this is the right file."));
 }
 
 function expandRange(text) {

@@ -434,9 +434,15 @@ def register(app, ctx, secured):
                 ),
                 key=lambda item: -item["rows"],
             )[:3]
+        def span(keys):
+            numbers = [int(k) for k in keys if k.isdigit()]
+            return [str(min(numbers)), str(max(numbers))] if numbers else None
+
         return {
             "rows": plan["rows"],
             "sheets": len(scans),
+            "their_range": span(theirs),
+            "our_range": span(ours),
             "matched": len(found),
             "their_unmatched": len(missing) + len(plan["unmatched"]),
             "their_examples": [
@@ -774,9 +780,17 @@ def register(app, ctx, secured):
         tags=["compare"],
         dependencies=secured,
     )
-    def compare_fields(session_id: str, scan_id: str):
+    def compare_fields(
+        session_id: str,
+        scan_id: str,
+        pin: Optional[str] = Query(
+            None, description="Also return this field (compared or not), e.g. rollno"
+        ),
+    ):
         """Every compared field of the sheet side by side (their value, ours,
-        mismatch / match / skipped / outside), with its box on the page."""
+        mismatch / match / skipped / outside), with its box on the page; with
+        pin, also that one field as "pinned" (their value when a column of
+        their file is mapped to it)."""
         session = session_or_404(session_id)
         try:
             sheet = store.sheet(session_id, scan_id)
@@ -784,17 +798,38 @@ def register(app, ctx, secured):
             fail(error)
         plan = plan_of(session)
         found = plan["external"].get(sheet["key"])
-        if found is None:
-            return {"fields": []}
         result = load_result(scan_id) or {}
         info = ctx.results.template_info(result) if result else {}
         labels = info.get("custom_labels") or {}
-        fields = compare.sheet_fields(
-            plan, found[1], result, info.get("empty_values") or {}
-        )
-        for field in fields:
-            field["box"] = item_box(result, field["name"], labels)[1]
-        return {"fields": fields}
+        empty = info.get("empty_values") or {}
+        fields = []
+        if found is not None:
+            fields = compare.sheet_fields(plan, found[1], result, empty)
+            for field in fields:
+                field["box"] = item_box(result, field["name"], labels)[1]
+        out = {"fields": fields}
+        if pin:
+            column = next(
+                (
+                    c
+                    for c, name in (session["settings"].get("mapping") or {}).items()
+                    if name == pin and c in plan["index"]
+                ),
+                None,
+            )
+            theirs = (
+                found[1][plan["index"][column]]
+                if found is not None and column is not None
+                else None
+            )
+            ours = compare.our_side(result, pin, empty)[0] if result else None
+            out["pinned"] = {
+                "name": pin,
+                "external": theirs,
+                "ours": ours,
+                "box": item_box(result, pin, labels)[1] if result else None,
+            }
+        return out
 
     @app.post(
         "/compare/sessions/{session_id}/sheets/{scan_id}/recompare",
@@ -859,6 +894,13 @@ def register(app, ctx, secured):
         result = load_result(scan_id)
         image = ctx.aligned_image(scan_id, result) if result else None
         if image is None:
+            # A sheet that never registered has no page to rebuild
+            if result and not result.get("geometry"):
+                raise HTTPException(
+                    404,
+                    "No page to show: this sheet could not be read "
+                    f"({result.get('error') or 'page not found'})",
+                )
             raise HTTPException(
                 404, "No image of this sheet (the original file moved or changed)"
             )

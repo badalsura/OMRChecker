@@ -694,6 +694,7 @@ def test_match_check_counts_matches_and_names_the_job_holding_the_rest(tmp_path,
         assert m["their_unmatched"] == 3 and m["our_unmatched"] == 0
         assert m["their_examples"][0] == {"row": 3, "key": "112001"}
         assert m["other_jobs"] == [{"job_id": jobs[1], "rows": 2}]
+        assert m["their_range"] == ["100001", "199999"] and m["our_range"] == ["100001", "100002"]
         every = client.post(
             f"/compare/preview/{preview['upload']}/match", json={**body, "job_id": None}
         ).json()
@@ -709,3 +710,21 @@ def test_match_check_counts_matches_and_names_the_job_holding_the_rest(tmp_path,
         lines = text.strip().splitlines()
         assert lines[0].lstrip("﻿") == "side,their_row,our_file,key,reason"
         assert "external,3,,112001,no sheet" in lines
+
+
+def test_a_pinned_field_is_returned_compared_or_not(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview, rules={"fields": "list", "list": "q1"})
+    sheet = client.post(f"/compare/sessions/{session['id']}/claim", json={}).json()["sheet"]
+    url = f"/compare/sessions/{session['id']}/sheets/{sheet['scan_id']}/fields"
+    data = client.get(url, params={"pin": "q4"}).json()
+    assert [f["name"] for f in data["fields"]] == ["q1"]
+    result = next(r for r in results if r["scan_id"] == sheet["scan_id"])
+    pinned = data["pinned"]
+    assert pinned["name"] == "q4" and pinned["box"]
+    assert pinned["ours"] == result["responses"]["q4"]
+    assert pinned["external"] is not None  # their Q004 column is mapped to q4
+    # Not one of their columns: our value only
+    roll = client.get(url, params={"pin": "roll1"}).json()["pinned"]
+    assert roll["external"] is None and roll["ours"] == result["responses"]["roll1"]
+    assert "pinned" not in client.get(url).json()

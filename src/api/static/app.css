@@ -538,3 +538,7 @@ body.desktop a { -webkit-user-drag: none; }
 .cmp-match.warn { background: var(--warn-soft); }
 .cmp-match.bad { background: var(--err-soft); }
 .cmp-name { padding-top: 10px; border-top: 1px solid var(--border); }
+.cmp-pin { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.cmp-pin-v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+.cmp-pin-v .k { font-family: inherit; font-size: 11px; font-weight: 400; color: var(--muted); }
+.cmp-pin-zoom { width: 100%; height: auto; border-radius: 4px; background: #fff; }
