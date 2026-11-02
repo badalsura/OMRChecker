@@ -281,8 +281,8 @@ function showSheet(sheet) {
         ),
         el("div", { id: "cmp-pin", class: "cmp-pin" }),
         sheet.state === "done" ? el("div", { class: "rv-meta" }, `Reconciled by ${sheet.done_by || "someone"}: saving changes it.`) : null,
-        el("canvas", { class: "cmp-zoom", width: 420, height: 150 }),
-        el("div", { class: "muted small", id: "cmp-zoom-view" }),
+        el("canvas", { class: "cmp-zoom", width: 420, height: wideZoom() ? 260 : 150 }),
+        el("div", { class: "row gap wrap cmp-zoom-bar" }, el("span", { class: "muted small", id: "cmp-zoom-view" }), el("span", { class: "spacer" }), el("button", { class: "small", id: "cmp-wide", onclick: toggleWide, title: "Close-up of the field alone, or of the field with the rows and columns around it (W)" }, el("kbd", {}, "W"), wideZoom() ? " Field only" : " Wider view")),
         el("div", { id: "cmp-current" }),
         el("input", { id: "cmp-filter", class: "small", placeholder: "Show only: q1..q50, roll", value: c.filter, hidden: !c.all, spellcheck: "false", oninput: (e) => { c.filter = e.target.value; render(); } }),
         el("div", { class: `cmp-list${c.all ? " all" : ""}`, id: "cmp-list" }),
@@ -684,6 +684,21 @@ function zoomSource(item) {
   return { img, box: item.box, scale: [img.naturalWidth / size[0], img.naturalHeight / size[1]] };
 }
 
+// The wide close-up shows the field with the questions around it, centred
+// on the current field; it is the default and remembered
+function wideZoom() {
+  return safeStorage("get", "omr_cmp_zoom") !== "field";
+}
+
+function toggleWide() {
+  safeStorage("set", "omr_cmp_zoom", wideZoom() ? "field" : "wide");
+  const canvas = document.querySelector(".cmp-zoom");
+  if (canvas) canvas.height = wideZoom() ? 260 : 150;
+  const button = document.getElementById("cmp-wide");
+  if (button) button.lastChild.textContent = wideZoom() ? " Field only" : " Wider view";
+  drawZoom();
+}
+
 function drawZoom() {
   const canvas = document.querySelector(".cmp-zoom");
   const item = c.peek || (c.sheet && c.sheet.items[c.idx]);
@@ -691,11 +706,20 @@ function drawZoom() {
   const { img, box, quad, scale } = zoomSource(item);
   if (!img.naturalWidth) return;
   const [x, y, w, h] = [box[0] * scale[0], box[1] * scale[1], box[2] * scale[0], box[3] * scale[1]];
-  const pad = Math.max(16, h * 0.8);
-  const sx = Math.max(0, x - pad);
-  const sy = Math.max(0, y - pad);
-  const sw = Math.min(img.naturalWidth - sx, w + 2 * pad);
-  const sh = Math.min(img.naturalHeight - sy, h + 2 * pad);
+  let sx, sy, sw, sh;
+  if (wideZoom()) {
+    // About half the page wide, the canvas's shape, the field in the middle
+    sw = Math.min(img.naturalWidth, Math.max(w * 2.5, img.naturalWidth * 0.45));
+    sh = Math.min(img.naturalHeight, (sw * canvas.height) / canvas.width);
+    sx = Math.min(Math.max(0, x + w / 2 - sw / 2), img.naturalWidth - sw);
+    sy = Math.min(Math.max(0, y + h / 2 - sh / 2), img.naturalHeight - sh);
+  } else {
+    const pad = Math.max(16, h * 0.8);
+    sx = Math.max(0, x - pad);
+    sy = Math.max(0, y - pad);
+    sw = Math.min(img.naturalWidth - sx, w + 2 * pad);
+    sh = Math.min(img.naturalHeight - sy, h + 2 * pad);
+  }
   const fit = Math.min(canvas.width / sw, canvas.height / sh);
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#fff";
@@ -799,25 +823,25 @@ function progressLine() {
   const p = c.session && c.session.progress;
   if (!p) return;
   const b = c.session.building;
-  const stat = (label, value, title, extra) => el("div", { class: "cmp-stat", title }, el("span", { class: "k" }, label), el("span", { class: "v" }, value), extra || null);
+  const stat = (label, value, title, extra) => el("span", { class: "cmp-stat", title }, el("span", { class: "k" }, label), el("span", { class: "v" }, value), extra || null);
   const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
   const stats = [];
   if (b) stats.push(stat("Comparing", b.total ? `${b.done.toLocaleString()} of ${b.total.toLocaleString()}` : "…", "The comparison is still running: sheets with a mismatch show up as they are found"));
-  if (c.sheet) stats.push(stat("This sheet", `${c.sheet.position} of ${p.to_review.toLocaleString()}${b ? "+" : ""}`, "Sheets with a mismatch, in order: where this one is"));
+  if (c.sheet) stats.push(stat("Sheet", `${c.sheet.position} of ${p.to_review.toLocaleString()}${b ? "+" : ""}`, "Sheets with a mismatch, in order: where this one is"));
   stats.push(stat("Sheets left", p.open.toLocaleString(), "Sheets with a mismatch not saved yet (this one included)"));
   const pct = p.mismatches ? Math.round((100 * p.decided) / p.mismatches) : 100;
-  stats.push(stat("Mismatches decided", `${p.decided.toLocaleString()} of ${p.mismatches.toLocaleString()}`, "Fields where the two readers differ, and how many of them have a choice saved", el("span", { class: "cmp-bar" }, el("span", { style: { width: `${pct}%` } }))));
+  stats.push(stat("Decided", `${p.decided.toLocaleString()} of ${p.mismatches.toLocaleString()} mismatches`, "Fields where the two readers differ, and how many of them have a choice saved", el("span", { class: "cmp-bar" }, el("span", { style: { width: `${pct}%` } }))));
   const notes = [];
   const states = p.sheets || {};
   if (states.clean) notes.push(el("span", { title: "Sheets where both readers agree on every compared field: nothing to do" }, `${plural(states.clean, "sheet")} agree`));
   if (p.chose_external) notes.push(el("span", { title: "Choices that kept the other reader's value" }, `their value kept ${p.chose_external.toLocaleString()}×`));
   const missing = states.no_record || 0;
-  if (p.unmatched_external || missing) notes.push(el("span", { class: "fs-warn", title: "Rows of their file with no sheet of ours, and sheets of ours with no row in their file. Check the matching under Rules…" }, `not matched: ${plural(p.unmatched_external, "row")} of theirs, ${plural(missing, "sheet")} of ours`));
+  if (p.unmatched_external || missing) notes.push(el("span", { title: "Rows of their file with no sheet of ours, and sheets of ours with no row in their file. Check the matching under Rules…" }, `not matched: ${plural(p.unmatched_external, "row")} of theirs, ${plural(missing, "sheet")} of ours`));
   if (states.replaced) notes.push(el("span", { title: "A file read again: only its newest scan is compared" }, `${plural(states.replaced, "older scan")} of a file read again`));
   if (states.duplicate) notes.push(el("span", { title: "The same file in several scans, set not to be compared" }, `${plural(states.duplicate, "sheet")} not compared (same file twice)`));
   if (states.not_read) notes.push(el("span", { title: "Their row matched a sheet we could not read" }, `${plural(states.not_read, "sheet")} we could not read`));
-  node.append(el("div", { class: "cmp-stats" }, stats));
-  if (notes.length) node.append(el("div", { class: "cmp-notes muted small" }, notes.flatMap((n, i) => (i ? [" · ", n] : [n]))));
+  node.append(...stats);
+  if (notes.length) node.append(el("span", { class: "cmp-notes muted small" }, notes.flatMap((n, i) => (i ? [" · ", n] : [n]))));
 }
 
 function onKey(e) {
@@ -858,6 +882,9 @@ function onKey(e) {
   } else if (key === "a" || key === "A") {
     e.preventDefault();
     toggleAll();
+  } else if (key === "w" || key === "W") {
+    e.preventDefault();
+    toggleWide();
   }
 }
 
