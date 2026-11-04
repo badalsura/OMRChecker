@@ -12,10 +12,12 @@ OMR scanner such as Scantron OpScan 6, or any CSV / fixed-width file).
     GET    /compare/sessions/{id}/sheets/{scan}/fields   every compared field side by side
     DELETE /compare/sessions/{id}                   delete it and its decisions
     POST   /compare/sessions/{id}/claim             lock the next / previous / a given sheet
+    GET    /compare/sessions/{id}/find?q=           a sheet by its key, file name or #position
     POST   /compare/sessions/{id}/sheets/{scan}     save the choices for one sheet
     POST   /compare/sessions/{id}/sheets/{scan}/release   let go of a sheet (skip)
     GET    /compare/sessions/{id}/sheets/{scan}/page      the aligned page (JPEG)
     GET    /compare/sessions/{id}/export?kind=      reconciled | audit | unmatched (CSV)
+    POST   /compare/preview/{token}/match           before comparing: how many of their rows find our sheets
 
 A comparison runs in the background, a part of the sheets at a time: the
 first sheets can be reviewed while the rest is compared, and the session
@@ -107,6 +109,14 @@ class DecideBody(BaseModel):
 class ReparseBody(BaseModel):
     template_id: str
     parse: Dict = Field(default_factory=dict)
+
+
+class MatchBody(BaseModel):
+    template_id: str
+    job_id: Optional[str] = None
+    parse: Dict = Field(default_factory=dict)
+    mapping: Dict[str, Optional[str]] = Field(default_factory=dict)
+    key: KeySpec = Field(default_factory=KeySpec)
 
 
 class ProfileBody(BaseModel):
@@ -371,6 +381,88 @@ def register(app, ctx, secured):
             "rules": compare.DEFAULT_RULES,
         }
 
+    @app.post(
+        "/compare/preview/{token}/match", tags=["compare"], dependencies=secured
+    )
+    def compare_match_check(token: str, body: MatchBody):
+        """Before comparing: how many of their rows find one of our sheets
+        with this key, examples of those that do not, and, when a job is
+        picked, the other jobs that hold sheets for their unmatched rows."""
+        template_json = template_or_404(body.template_id)
+        folder = uploads / token
+        if not token.isalnum() or not folder.is_dir():
+            raise HTTPException(404, "Read the file again (the preview expired)")
+        mapping = {k: v for k, v in body.mapping.items() if v}
+        session = {
+            "settings": {
+                "parse": body.parse,
+                "mapping": mapping,
+                "key": body.key.model_dump(),
+                "rules": {"fields": "all"},
+            }
+        }
+        try:
+            plan = compare.prepare(session, compare.load_source(folder), template_json)
+        except compare.CompareError as error:
+            fail(error)
+
+        def keyed(scans):
+            values = None
+            if plan["ours"] not in ("file", "order"):
+                values = key_values(scans, plan["ours"])
+            return compare.sheet_keys(plan, scans, load_result, values)
+
+        scans = our_sheets(body.template_id, body.job_id)
+        ours = {value: row for _, row, value in keyed(scans) if value}
+        theirs = {value: i for value, (i, _) in plan["external"].items()}
+        found = [value for value in theirs if value in ours]
+        missing = sorted(
+            (value for value in theirs if value not in ours), key=lambda v: theirs[v]
+        )
+        extra = [row for value, row in ours.items() if value not in theirs]
+        suggestions = []
+        if missing and body.job_id and not plan["by_order"]:
+            wanted = set(missing)
+            per_job = {}
+            for _, row, value in keyed(our_sheets(body.template_id, None)):
+                if value in wanted and row.get("job_id") != body.job_id:
+                    per_job.setdefault(row.get("job_id"), set()).add(value)
+            suggestions = sorted(
+                (
+                    {"job_id": job, "rows": len(values)}
+                    for job, values in per_job.items()
+                    if job
+                ),
+                key=lambda item: -item["rows"],
+            )[:3]
+        def span(keys):
+            numbers = [int(k) for k in keys if k.isdigit()]
+            return [str(min(numbers)), str(max(numbers))] if numbers else None
+
+        return {
+            "rows": plan["rows"],
+            "sheets": len(scans),
+            "their_range": span(theirs),
+            "our_range": span(ours),
+            "matched": len(found),
+            "their_unmatched": len(missing) + len(plan["unmatched"]),
+            "their_examples": [
+                {"row": theirs[value] + 1, "key": value} for value in missing[:5]
+            ]
+            + [
+                {"row": row_no, "key": value, "reason": reason}
+                for row_no, value, reason in plan["unmatched"][:3]
+            ],
+            "our_unmatched": len(extra),
+            "our_examples": [
+                {"file": row.get("file_name"), "key": value}
+                for value, row in list(
+                    (v, r) for v, r in ours.items() if v not in theirs
+                )[:5]
+            ],
+            "other_jobs": suggestions,
+        }
+
     @app.get("/compare/profiles", tags=["compare"], dependencies=secured)
     def compare_profiles():
         return {"profiles": store.profiles()}
@@ -578,6 +670,56 @@ def register(app, ctx, secured):
             return {"sheet": None, "progress": store.progress(session_id)}
         return {"sheet": sheet_payload(session, sheet)}
 
+    REVIEWABLE = ("pending", "partial", "done")
+    STATE_WORDS = {
+        "clean": "agrees on every compared field, so there is nothing to review",
+        "no_record": "has no row in their file",
+        "not_read": "could not be read by us",
+        "replaced": "is an older scan of a file read again (its newest scan is compared)",
+        "duplicate": "is one of several scans of the same file, which are not compared",
+    }
+
+    @app.get("/compare/sessions/{session_id}/find", tags=["compare"], dependencies=secured)
+    def compare_find(session_id: str, q: str = Query(..., min_length=1)):
+        """One sheet of the comparison: by its key (their SEQ, our file
+        number), its file name (whole or a unique part) or "#N", its place
+        among the sheets to review. A sheet with nothing to review says why."""
+        session = session_or_404(session_id)
+        text = q.strip()
+        normalize = (session["settings"].get("key") or {}).get("normalize") or "digits"
+        sheets = store.query(
+            "SELECT scan_id, ord, key, file_name, state FROM sheets WHERE session_id=? ORDER BY ord",
+            (session_id,),
+        )
+        found = []
+        if text.startswith("#") and text[1:].strip().isdigit():
+            n = int(text[1:])
+            review = [row for row in sheets if row["state"] in REVIEWABLE]
+            if not 1 <= n <= len(review):
+                raise HTTPException(404, f"There are {len(review)} sheets to review: pick #1 to #{len(review)}")
+            found = [review[n - 1]]
+        if not found:
+            key = compare.key_of(text, normalize, file_like=True)
+            found = [row for row in sheets if key and row["key"] == key]
+        if not found:
+            low = text.casefold()
+            found = [row for row in sheets if (row["file_name"] or "").casefold() == low]
+            if not found:
+                found = [row for row in sheets if low in (row["file_name"] or "").casefold()]
+        if not found:
+            raise HTTPException(404, f"No sheet of this comparison matches '{text}'")
+        reviewable = [row for row in found if row["state"] in REVIEWABLE]
+        if not reviewable:
+            row = found[0]
+            raise HTTPException(
+                409,
+                f"{row['file_name'] or row['key']} {STATE_WORDS.get(row['state'], row['state'])}",
+            )
+        if len(reviewable) > 1:
+            names = ", ".join(row["file_name"] or row["key"] for row in reviewable[:5])
+            raise HTTPException(409, f"{len(reviewable)} sheets match '{text}': {names}…")
+        return reviewable[0]
+
     @app.post(
         "/compare/sessions/{session_id}/sheets/{scan_id}",
         tags=["compare"],
@@ -689,9 +831,17 @@ def register(app, ctx, secured):
         tags=["compare"],
         dependencies=secured,
     )
-    def compare_fields(session_id: str, scan_id: str):
+    def compare_fields(
+        session_id: str,
+        scan_id: str,
+        pin: Optional[str] = Query(
+            None, description="Also return this field (compared or not), e.g. rollno"
+        ),
+    ):
         """Every compared field of the sheet side by side (their value, ours,
-        mismatch / match / skipped / outside), with its box on the page."""
+        mismatch / match / skipped / outside), with its box on the page; with
+        pin, also that one field as "pinned" (their value when a column of
+        their file is mapped to it)."""
         session = session_or_404(session_id)
         try:
             sheet = store.sheet(session_id, scan_id)
@@ -699,17 +849,38 @@ def register(app, ctx, secured):
             fail(error)
         plan = plan_of(session)
         found = plan["external"].get(sheet["key"])
-        if found is None:
-            return {"fields": []}
         result = load_result(scan_id) or {}
         info = ctx.results.template_info(result) if result else {}
         labels = info.get("custom_labels") or {}
-        fields = compare.sheet_fields(
-            plan, found[1], result, info.get("empty_values") or {}
-        )
-        for field in fields:
-            field["box"] = item_box(result, field["name"], labels)[1]
-        return {"fields": fields}
+        empty = info.get("empty_values") or {}
+        fields = []
+        if found is not None:
+            fields = compare.sheet_fields(plan, found[1], result, empty)
+            for field in fields:
+                field["box"] = item_box(result, field["name"], labels)[1]
+        out = {"fields": fields}
+        if pin:
+            column = next(
+                (
+                    c
+                    for c, name in (session["settings"].get("mapping") or {}).items()
+                    if name == pin and c in plan["index"]
+                ),
+                None,
+            )
+            theirs = (
+                found[1][plan["index"][column]]
+                if found is not None and column is not None
+                else None
+            )
+            ours = compare.our_side(result, pin, empty)[0] if result else None
+            out["pinned"] = {
+                "name": pin,
+                "external": theirs,
+                "ours": ours,
+                "box": item_box(result, pin, labels)[1] if result else None,
+            }
+        return out
 
     @app.post(
         "/compare/sessions/{session_id}/sheets/{scan_id}/recompare",
@@ -774,6 +945,13 @@ def register(app, ctx, secured):
         result = load_result(scan_id)
         image = ctx.aligned_image(scan_id, result) if result else None
         if image is None:
+            # A sheet that never registered has no page to rebuild
+            if result and not result.get("geometry"):
+                raise HTTPException(
+                    404,
+                    "No page to show: this sheet could not be read "
+                    f"({result.get('error') or 'page not found'})",
+                )
             raise HTTPException(
                 404, "No image of this sheet (the original file moved or changed)"
             )
@@ -850,13 +1028,15 @@ def register(app, ctx, secured):
                 for row in store.audit(session_id)
             )
         elif kind == "unmatched":
-            header = ["side", "row_or_file", "key", "reason"]
+            # Their row number and our file name in columns of their own, so
+            # a row number is not read as a key
+            header = ["side", "their_row", "our_file", "key", "reason"]
             external = [
-                ["external", row["row_no"], row["key"], row["reason"]]
+                ["external", row["row_no"], "", row["key"], row["reason"]]
                 for row in store.unmatched(session_id)
             ]
             ours = [
-                ["ours", sheet["file_name"], sheet["key"], sheet["state"]]
+                ["ours", "", sheet["file_name"], sheet["key"], sheet["state"]]
                 for sheet in sheets
                 if sheet["state"] in ("no_record", "duplicate", "not_read")
             ]

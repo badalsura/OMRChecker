@@ -657,3 +657,94 @@ def test_their_bare_multi_mark_is_not_written_to_our_results(compared):
         client.get(f"/scans/{sheet['scan_id']}").json()["responses"]["q1"]
         == results[0]["responses"]["q1"]
     ), q1
+
+
+def test_match_check_counts_matches_and_names_the_job_holding_the_rest(tmp_path, spec):
+    """Their file covers two jobs; the check run on one job says which other
+    job holds the sheets of the unmatched rows (row numbers stay apart from keys)."""
+    from src.tests.test_api import png_bytes, wait_for_job
+
+    with make_client(tmp_path) as client:
+        template_id = upload_template(client, spec)
+        jobs = []
+        for names in (("100001.png", "100002.png"), ("112001.png", "112002.png")):
+            files = [
+                ("files", (name, png_bytes(flagged_sheet(spec, seed=i)), "image/png"))
+                for i, name in enumerate(names, start=len(jobs) * 2 + 1)
+            ]
+            job = client.post("/jobs", data={"template_id": template_id}, files=files)
+            assert job.status_code == 201, job.text
+            jobs.append(wait_for_job(client, job.json()["id"])["id"])
+        rows = ["SEQ,Q001"] + [f"{key},A" for key in (100001, 100002, 112001, 112002, 199999)]
+        preview = client.post(
+            "/compare/preview",
+            data={"template_id": template_id, "parse": "{}"},
+            files={"file": ("e.csv", "\n".join(rows).encode(), "text/csv")},
+        ).json()
+        body = {
+            "template_id": template_id,
+            "job_id": jobs[0],
+            "mapping": {"Q001": "q1"},
+            "key": {"column": "SEQ", "ours": "file", "normalize": "digits"},
+        }
+        check = client.post(f"/compare/preview/{preview['upload']}/match", json=body)
+        assert check.status_code == 200, check.text
+        m = check.json()
+        assert (m["rows"], m["sheets"], m["matched"]) == (5, 2, 2)
+        assert m["their_unmatched"] == 3 and m["our_unmatched"] == 0
+        assert m["their_examples"][0] == {"row": 3, "key": "112001"}
+        assert m["other_jobs"] == [{"job_id": jobs[1], "rows": 2}]
+        assert m["their_range"] == ["100001", "199999"] and m["our_range"] == ["100001", "100002"]
+        every = client.post(
+            f"/compare/preview/{preview['upload']}/match", json={**body, "job_id": None}
+        ).json()
+        assert every["matched"] == 4 and every["other_jobs"] == []
+        # The unmatched export keeps their row number apart from the key
+        session = client.post(
+            "/compare/sessions",
+            json={"upload": preview["upload"], **body},
+        ).json()
+        text = client.get(
+            f"/compare/sessions/{session['id']}/export", params={"kind": "unmatched"}
+        ).text
+        lines = text.strip().splitlines()
+        assert lines[0].lstrip("﻿") == "side,their_row,our_file,key,reason"
+        assert "external,3,,112001,no sheet" in lines
+
+
+def test_a_pinned_field_is_returned_compared_or_not(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview, rules={"fields": "list", "list": "q1"})
+    sheet = client.post(f"/compare/sessions/{session['id']}/claim", json={}).json()["sheet"]
+    url = f"/compare/sessions/{session['id']}/sheets/{sheet['scan_id']}/fields"
+    data = client.get(url, params={"pin": "q4"}).json()
+    assert [f["name"] for f in data["fields"]] == ["q1"]
+    result = next(r for r in results if r["scan_id"] == sheet["scan_id"])
+    pinned = data["pinned"]
+    assert pinned["name"] == "q4" and pinned["box"]
+    assert pinned["ours"] == result["responses"]["q4"]
+    assert pinned["external"] is not None  # their Q004 column is mapped to q4
+    # Not one of their columns: our value only
+    roll = client.get(url, params={"pin": "roll1"}).json()["pinned"]
+    assert roll["external"] is None and roll["ours"] == result["responses"]["roll1"]
+    assert "pinned" not in client.get(url).json()
+
+
+def test_find_goes_to_a_sheet_by_key_file_name_or_place(compared):
+    client, template_id, results, preview = compared
+    session = create(client, template_id, preview)
+    find = lambda q: client.get(f"/compare/sessions/{session['id']}/find", params={"q": q})
+    first = client.post(f"/compare/sessions/{session['id']}/claim", json={}).json()["sheet"]
+    assert find("#1").json()["scan_id"] == first["scan_id"]
+    assert find(first["key"]).json()["scan_id"] == first["scan_id"]
+    assert find(first["file_name"].upper()).json()["scan_id"] == first["scan_id"]
+    stem = first["file_name"].rsplit(".", 1)[0]
+    assert find(f"{stem}.").json()["scan_id"] == first["scan_id"]
+    assert find("#999").status_code == 404
+    assert find("no-such-file-xyz").status_code == 404
+    # Going there with claim opens that very sheet
+    again = client.post(f"/compare/sessions/{session['id']}/claim", json={"scan_id": first["scan_id"]}).json()["sheet"]
+    assert again["scan_id"] == first["scan_id"]
+    # The third sheet agrees everywhere: nothing to review, and it says so
+    answer = find("100003")
+    assert answer.status_code == 409 and "nothing to review" in answer.json()["detail"]
